@@ -213,7 +213,7 @@ class DriveUploader:
         return web_link
 
     @staticmethod
-    def upload_movie(movie_data: dict, downloaded_files: dict) -> dict:
+    def upload_movie(movie_data: dict, downloaded_files) -> dict:
         upload_settings = UploadSettings.objects.filter(pk=1).first()
         if not upload_settings:
             raise Exception("UploadSettings not configured. Please set upload_folder_id in admin.")
@@ -227,19 +227,46 @@ class DriveUploader:
         service = DriveUploader._get_drive_service()
         movie_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
 
-        drive_links = {}
-        for quality, file_path in downloaded_files.items():
-            if not file_path or not os.path.exists(file_path):
-                logger.warning(f"Skipping '{quality}': file not found at {file_path}")
-                continue
-            try:
-                drive_links[quality] = DriveUploader._upload_file(service, file_path, movie_folder_id)
-            except Exception as e:
-                logger.error(f"Upload failed for quality '{quality}': {e}", exc_info=True)
-                drive_links[quality] = f"UPLOAD_FAILED: {e}"
+        if isinstance(downloaded_files, list):
+            # TV Show format
+            drive_links = []
+            for item in downloaded_files:
+                item_title = item.get("title")
+                item_links = {}
+                for quality, file_path in item.get("resolutions", {}).items():
+                    if not file_path or not os.path.exists(file_path):
+                        logger.warning(f"Skipping '{quality}' for '{item_title}': file not found at {file_path}")
+                        continue
+                    try:
+                        item_links[quality] = DriveUploader._upload_file(service, file_path, movie_folder_id)
+                    except Exception as e:
+                        logger.error(f"Upload failed for '{item_title}' quality '{quality}': {e}", exc_info=True)
+                        item_links[quality] = f"UPLOAD_FAILED: {e}"
+                
+                if item_links:
+                    drive_links.append({"title": item_title, "resolutions": item_links})
+            
+            if drive_links:
+                movie_data["download_links"] = drive_links
+            
+            logger.info(f"Upload complete for TV Show '{folder_name}'.")
 
-        if drive_links:
-            movie_data["download_links"] = drive_links
+        else:
+            # Movie format
+            drive_links = {}
+            for quality, file_path in downloaded_files.items():
+                if not file_path or not os.path.exists(file_path):
+                    logger.warning(f"Skipping '{quality}': file not found at {file_path}")
+                    continue
+                try:
+                    drive_links[quality] = DriveUploader._upload_file(service, file_path, movie_folder_id)
+                except Exception as e:
+                    logger.error(f"Upload failed for quality '{quality}': {e}", exc_info=True)
+                    drive_links[quality] = f"UPLOAD_FAILED: {e}"
 
-        logger.info(f"Upload complete for '{folder_name}'. Qualities: {list(drive_links.keys())}")
+            if drive_links:
+                movie_data["download_links"] = drive_links
+
+            logger.info(f"Upload complete for '{folder_name}'. Qualities: {list(drive_links.keys())}")
+            
         return movie_data

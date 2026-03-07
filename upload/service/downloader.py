@@ -56,32 +56,70 @@ class Downloader:
             return None
 
     @staticmethod
-    def download_all(download_links: dict, filenames: dict, movie_title: str) -> dict:
+    def download_all(download_links, filenames, main_title: str):
         """
-        Download all available qualities for a movie.
+        Download all available qualities for a movie or tv show.
         """
-        safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in movie_title).strip()
-        results = {}
+        safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in main_title).strip()
+        
+        if isinstance(download_links, list):
+            # TV Show format
+            results = []
+            for link_item in download_links:
+                item_title = link_item.get("title")
+                resolutions = link_item.get("resolutions", {})
+                
+                # find matching filename item
+                fname_item = next((f for f in filenames if f.get("title") == item_title), {})
+                fname_resolutions = fname_item.get("resolutions", {})
+                
+                downloaded_resolutions = {}
+                for quality in ["480p", "720p", "1080p"]:
+                    urls = resolutions.get(quality)
+                    fname = fname_resolutions.get(quality)
+                    
+                    if not urls or not fname:
+                        continue
+                        
+                    url_list = urls if isinstance(urls, list) else [urls]
+                    for url in url_list:
+                        file_path = Downloader.download(url, fname, sub_folder=safe_title)
+                        if file_path:
+                            downloaded_resolutions[quality] = file_path
+                            break
+                            
+                    if quality not in downloaded_resolutions:
+                        logger.warning(f"Could not download quality: {quality} for {item_title}")
+                
+                if downloaded_resolutions:
+                    results.append({
+                        "title": item_title,
+                        "resolutions": downloaded_resolutions
+                    })
+            return results
 
-        for quality in ["480p", "720p", "1080p"]:
-            urls = download_links.get(quality)
-            fname = filenames.get(quality)
+        else:
+            # Movie format
+            results = {}
+            for quality in ["480p", "720p", "1080p"]:
+                urls = download_links.get(quality)
+                fname = filenames.get(quality)
 
-            if not urls or not fname:
-                continue
+                if not urls or not fname:
+                    continue
 
-            url_list = urls if isinstance(urls, list) else [urls]
-            
-            for url in url_list:
-                file_path = Downloader.download(url, fname, sub_folder=safe_title)
-                if file_path:
-                    results[quality] = file_path
-                    break 
+                url_list = urls if isinstance(urls, list) else [urls]
+                
+                for url in url_list:
+                    file_path = Downloader.download(url, fname, sub_folder=safe_title)
+                    if file_path:
+                        results[quality] = file_path
+                        break 
 
-            if quality not in results:
-                logger.warning(f"Could not download quality: {quality}")
+                if quality not in results:
+                    logger.warning(f"Could not download quality: {quality}")
 
-        return results
+            return results
 
     @staticmethod
     def _cleanup(file_path: str):
