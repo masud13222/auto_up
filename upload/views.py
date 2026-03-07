@@ -1,13 +1,6 @@
-from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse
 from django_q.tasks import async_task
 from .models import MovieTask
-
-
-def index(request):
-    """Home page with URL input and recent tasks list."""
-    recent_tasks = MovieTask.objects.all()[:20]
-    return render(request, 'upload/index.html', {'tasks': recent_tasks})
 
 
 def process_movie(request):
@@ -31,7 +24,7 @@ def process_movie(request):
                 'duplicate': True,
                 'task_id': existing.pk,
                 'message': 'Already processed! Redirecting to results...',
-                'redirect': f'/upload/task/{existing.pk}/'
+                'redirect': f'/panel/task/{existing.pk}/'
             })
         elif existing.status in ('pending', 'processing'):
             return JsonResponse({
@@ -39,7 +32,7 @@ def process_movie(request):
                 'duplicate': True,
                 'task_id': existing.pk,
                 'message': 'Already in queue! Redirecting...',
-                'redirect': f'/upload/task/{existing.pk}/'
+                'redirect': f'/panel/task/{existing.pk}/'
             })
         elif existing.status == 'failed':
             # Reset and re-queue
@@ -59,7 +52,7 @@ def process_movie(request):
                 'success': True,
                 'task_id': existing.pk,
                 'message': 'Re-queued failed task!',
-                'redirect': f'/upload/task/{existing.pk}/'
+                'redirect': f'/panel/task/{existing.pk}/'
             })
 
     # Create new task
@@ -77,22 +70,5 @@ def process_movie(request):
         'success': True,
         'task_id': movie_task.pk,
         'message': 'Task queued!',
-        'redirect': f'/upload/task/{movie_task.pk}/'
-    })
-
-
-def task_detail(request, pk):
-    """Task detail page — shows status and results."""
-    movie_task = get_object_or_404(MovieTask, pk=pk)
-    return render(request, 'upload/task_detail.html', {'task': movie_task})
-
-
-def task_status_api(request, pk):
-    """AJAX endpoint for polling task status."""
-    movie_task = get_object_or_404(MovieTask, pk=pk)
-    return JsonResponse({
-        'status': movie_task.status,
-        'title': movie_task.title,
-        'error': movie_task.error_message,
-        'result': movie_task.result,
+        'redirect': f'/panel/task/{movie_task.pk}/'
     })

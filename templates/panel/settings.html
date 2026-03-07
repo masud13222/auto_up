@@ -1,0 +1,27 @@
+{% extends 'panel/base.html' %}
+{% block title %}Settings — FlixBD{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="max-w-lg">
+    <div class="card p-5">
+        <form method="post" class="space-y-4">
+            {% csrf_token %}
+            <div>
+                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Drive Folder ID</label>
+                <input type="text" name="upload_folder_id" value="{{ obj.upload_folder_id|default:'' }}"
+                       placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs"
+                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Workers</label>
+                <input type="number" name="worker_count" min="1" max="10" value="{{ obj.worker_count|default:1 }}"
+                       class="w-24 bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm">
+                <p class="text-[11px] text-[#444] mt-1">Restart qcluster after changing.</p>
+            </div>
+            <button type="submit" class="btn-primary px-5 py-2 rounded-lg text-sm">Save</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

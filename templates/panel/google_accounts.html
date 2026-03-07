@@ -1,0 +1,70 @@
+{% extends 'panel/base.html' %}
+{% block title %}Google Accounts — FlixBD{% endblock %}
+{% block page_title %}Google Accounts{% endblock %}
+{% block nav_accounts %}active{% endblock %}
+
+{% block content %}
+<div class="max-w-lg space-y-4" x-data="{ addDialog: false }">
+    <div class="card overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e1e1e]">
+            <p class="text-xs font-semibold text-[#666]">Connected</p>
+            <button @click="addDialog = true" class="text-xs btn-primary px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer shadow-sm hover:translate-y-[-1px]">+ Add</button>
+        </div>
+        {% for acc in accounts %}
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e1e1e] last:border-0">
+            <div>
+                <p class="text-sm font-medium text-[#d4d4d4]">{{ acc.name }}</p>
+                <p class="text-[10px] text-[#444]">Added {{ acc.created_at|timesince }} ago</p>
+            </div>
+            <form method="post" action="{% url 'panel:delete_google_account' acc.pk %}" onsubmit="return confirm('Remove?')">{% csrf_token %}
+                <button class="text-xs text-red-500/50 hover:text-red-500 p-1 rounded-md hover:bg-red-500/5 transition-colors">Remove</button>
+            </form>
+        </div>
+        {% empty %}
+        <p class="py-12 text-center text-[#333] text-sm">No accounts found. Add one to start processing.</p>
+        {% endfor %}
+    </div>
+
+    <!-- Add Dialog Modal -->
+    <div x-show="addDialog" 
+         class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 scale-95"
+         x-transition:enter-end="opacity-100 scale-100"
+         @keydown.escape.window="addDialog = false"
+         style="display: none;">
+        
+        <div class="card w-full max-w-sm p-6 shadow-2xl relative" @click.away="addDialog = false">
+            <h3 class="text-white font-bold mb-4">Add Google Account</h3>
+            
+            <form method="post" action="{% url 'panel:add_google_account' %}" enctype="multipart/form-data" class="space-y-4">
+                {% csrf_token %}
+                <div>
+                    <label class="block text-[10px] font-semibold text-[#555] uppercase tracking-wider mb-1.5">Account Name</label>
+                    <input type="text" name="name" required placeholder="e.g. My Token"
+                           class="w-full bg-[#111] border border-[#222] text-white rounded-lg px-3.5 py-2.5 text-sm outline-none focus:border-[#f97316]">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-semibold text-[#555] uppercase tracking-wider mb-1.5">JSON File (token.json)</label>
+                    <div class="relative">
+                        <input type="file" name="config_file" accept=".json" required
+                               class="w-full bg-[#111] border border-[#222] text-white rounded-lg px-3.5 py-2.5 text-xs file:bg-transparent file:border-0 file:text-[#444] file:text-xs file:font-semibold">
+                    </div>
+                    <p class="text-[10px] text-[#444] mt-2 italic">Upload your Google token.json or credential JSON file.</p>
+                </div>
+                
+                <div class="flex gap-2 pt-2">
+                    <button type="button" @click="addDialog = false" 
+                            class="flex-1 px-4 py-2.5 bg-[#161616] border border-[#1e1e1e] text-[#666] text-xs font-semibold rounded-lg hover:text-white hover:border-[#333] transition-all">
+                        Cancel
+                    </button>
+                    <button type="submit" 
+                            class="flex-1 px-4 py-2.5 btn-primary text-xs font-semibold rounded-lg shadow-sm transition-all hover:translate-y-[-1px]">
+                        Add Account
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

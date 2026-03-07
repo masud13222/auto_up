@@ -1,0 +1,55 @@
+{% extends 'panel/base.html' %}
+{% block title %}Process — FlixBD{% endblock %}
+{% block page_title %}Process Movie{% endblock %}
+{% block nav_process %}active{% endblock %}
+
+{% block content %}
+<div class="max-w-lg mx-auto" x-data="movieForm">
+    <div class="card p-5 space-y-4">
+        <div>
+            <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Movie URL</label>
+            <input type="text" x-model="url" @keydown.enter="submit()"
+                   placeholder="https://cinefreak.net/movie-page/"
+                   class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]"
+                   :disabled="loading">
+        </div>
+
+        <div x-show="error" class="text-red-400 text-xs bg-red-500/5 border border-red-500/10 rounded-lg p-3" x-text="error"></div>
+
+        <div x-show="message" class="text-green-400 text-xs bg-green-500/5 border border-green-500/10 rounded-lg p-3">
+            <span x-text="message"></span>
+            <a x-show="redirectUrl" :href="redirectUrl" class="underline ml-1 accent">View →</a>
+        </div>
+
+        <button @click="submit()" :disabled="loading"
+                class="w-full btn-primary py-2.5 rounded-lg text-sm disabled:opacity-40 transition-all">
+            <span x-show="!loading">Queue for Processing</span>
+            <span x-show="loading">Queuing...</span>
+        </button>
+    </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('movieForm', () => ({
+        url: '', loading: false, error: '', message: '', redirectUrl: '',
+        async submit() {
+            if (!this.url.trim()) { this.error = 'Enter a URL'; return; }
+            this.loading = true; this.error = ''; this.message = '';
+            const fd = new FormData();
+            fd.append('url', this.url);
+            fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+            try {
+                const r = await fetch("{% url 'upload:process_movie' %}", { method:'POST', body:fd });
+                const d = await r.json();
+                if (!r.ok) throw new Error(d.error || 'Failed');
+                this.message = d.message || 'Queued!';
+                this.redirectUrl = d.redirect || '';
+                this.url = '';
+            } catch(e) { this.error = e.message; }
+            finally { this.loading = false; }
+        }
+    }));
+});
+</script>
+{% endblock %}

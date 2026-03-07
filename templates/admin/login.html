@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlixBD — Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>* { font-family: 'Inter', sans-serif; } body { background: #0e0e0e; }</style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-sm">
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-[#f97316] mb-3">
+                <span class="text-black text-lg font-bold">F</span>
+            </div>
+            <h1 class="text-xl font-bold text-white">FlixBD</h1>
+            <p class="text-[#555] text-sm mt-1">Sign in to continue</p>
+        </div>
+
+        <div class="bg-[#161616] border border-[#1e1e1e] rounded-xl p-6">
+            {% if form.errors %}
+            <div class="text-red-400 text-xs bg-red-500/5 border border-red-500/10 rounded-lg p-3 mb-4">
+                Invalid username or password.
+            </div>
+            {% endif %}
+
+            <form method="post" action="{{ request.path }}" class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ next }}">
+                <div>
+                    <label class="block text-xs font-medium text-[#555] mb-1.5">Username</label>
+                    <input type="text" name="username" autofocus autocomplete="username"
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm outline-none focus:border-[#f97316] placeholder:text-[#333]"
+                           placeholder="Enter username">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-[#555] mb-1.5">Password</label>
+                    <input type="password" name="password" autocomplete="current-password"
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm outline-none focus:border-[#f97316] placeholder:text-[#333]"
+                           placeholder="Enter password">
+                </div>
+                <button type="submit" class="w-full bg-[#f97316] text-black font-semibold py-2.5 rounded-lg text-sm hover:bg-[#fb923c] transition-all">
+                    Sign In
+                </button>
+            </form>
+        </div>
+        <p class="text-center text-[#333] text-[10px] mt-5">FlixBD Panel</p>
+    </div>
+</body>
+</html>

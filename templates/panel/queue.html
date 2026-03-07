@@ -1,0 +1,85 @@
+{% extends 'panel/base.html' %}
+{% block title %}Queue — FlixBD{% endblock %}
+{% block page_title %}Queue{% endblock %}
+{% block nav_queue %}active{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <!-- Filters -->
+    <div class="flex gap-1.5 flex-wrap">
+        {% for s, label, col in statuses %}
+        <a href="{% if s %}?status={{ s }}{% else %}?{% endif %}"
+           class="px-3 py-1 rounded-lg text-xs font-medium transition-all
+                  {% if current_status == s %}bg-[#f97316] text-black{% else %}text-[#555] hover:text-white bg-[#161616] border border-[#1e1e1e]{% endif %}">
+            {{ label }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <!-- Table -->
+    <div class="card overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-[#222] text-left">
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider">Movie</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider hidden md:table-cell">URL</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider">Status</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider hidden sm:table-cell">Time</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider w-20"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-[#222]">
+                {% for task in tasks %}
+                <tr class="hover:bg-[#1a1a1a] transition-colors">
+                    <td class="px-4 py-3">
+                        <p class="text-[#ccc] font-medium truncate max-w-[200px] md:max-w-xs">{{ task.title|default:"—" }}</p>
+                    </td>
+                    <td class="px-4 py-3 hidden md:table-cell">
+                        <span class="text-[#444] text-xs font-mono truncate max-w-xs block">{{ task.url|truncatechars:45 }}</span>
+                    </td>
+                    <td class="px-4 py-3">
+                        {% if task.status == 'completed' %}
+                            <span class="text-green-400 text-xs font-semibold">Done</span>
+                        {% elif task.status == 'processing' %}
+                            <span class="text-yellow-400 text-xs font-semibold">Running</span>
+                        {% elif task.status == 'pending' %}
+                            <span class="text-blue-400 text-xs font-semibold">Pending</span>
+                        {% else %}
+                            <span class="text-red-400 text-xs font-semibold">Failed</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3 hidden sm:table-cell text-[11px] text-[#444]">{{ task.created_at|timesince }}</td>
+                    <td class="px-4 py-3">
+                        <div class="flex gap-1">
+                            <a href="{% url 'panel:task_detail' task.pk %}" class="text-[#444] hover:text-white p-1" title="View">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                            </a>
+                            {% if task.status == 'failed' %}
+                            <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="inline">{% csrf_token %}
+                                <button class="text-[#444] hover:text-green-400 p-1" title="Retry"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>
+                            </form>
+                            {% endif %}
+                            <form method="post" action="{% url 'panel:delete_task' task.pk %}" class="inline" onsubmit="return confirm('Delete?')">{% csrf_token %}
+                                <button class="text-[#444] hover:text-red-400 p-1" title="Delete"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="px-4 py-10 text-center text-[#333] text-sm">No tasks.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if tasks.has_other_pages %}
+        <div class="px-4 py-3 border-t border-[#222] flex justify-between text-xs text-[#555]">
+            <span>Page {{ tasks.number }} / {{ tasks.paginator.num_pages }}</span>
+            <div class="flex gap-2">
+                {% if tasks.has_previous %}<a href="?page={{ tasks.previous_page_number }}{% if current_status %}&status={{ current_status }}{% endif %}" class="hover:text-white">← Prev</a>{% endif %}
+                {% if tasks.has_next %}<a href="?page={{ tasks.next_page_number }}{% if current_status %}&status={{ current_status }}{% endif %}" class="hover:text-white">Next →</a>{% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% for task in tasks %}
+<a href="{% url 'panel:task_detail' task.pk %}" class="flex items-center gap-3 px-4 py-3 hover:bg-[#1a1a1a] transition-colors border-b border-[#222] last:border-0">
+    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0
+        {% if task.status == 'completed' %}bg-green-400
+        {% elif task.status == 'processing' %}bg-yellow-400 animate-pulse
+        {% elif task.status == 'pending' %}bg-blue-400 animate-pulse
+        {% else %}bg-red-400{% endif %}"></span>
+    <span class="text-sm text-[#ccc] truncate flex-1">{{ task.title|default:task.url|truncatechars:50 }}</span>
+    <span class="text-[10px] font-semibold text-[#555] flex-shrink-0">{{ task.created_at|timesince }} ago</span>
+</a>
+{% empty %}
+<p class="py-8 text-center text-[#333] text-sm">No tasks yet.</p>
+{% endfor %}

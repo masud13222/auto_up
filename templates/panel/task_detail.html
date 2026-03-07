@@ -1,0 +1,166 @@
+{% extends 'panel/base.html' %}
+{% block title %}{{ task.title|default:"Task" }} — FlixBD{% endblock %}
+{% block page_title %}Task #{{ task.pk }}{% endblock %}
+{% block nav_queue %}active{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-4" x-data="taskDetail" x-init="init()">
+
+    <!-- Header -->
+    <div class="card p-5">
+        <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div class="min-w-0">
+                <p class="text-lg font-bold text-white truncate" x-text="title ? title : 'Processing...'"></p>
+                <p class="text-xs text-[#444] font-mono mt-1 break-all">{{ task.url }}</p>
+            </div>
+            <div x-html="badge()" class="flex-shrink-0"></div>
+        </div>
+
+        <template x-if="status === 'processing' || status === 'pending'">
+            <div class="mt-4">
+                <div class="w-full bg-[#1e1e1e] rounded-full h-1 overflow-hidden">
+                    <div class="h-full bg-[#f97316] rounded-full animate-pulse" style="width:60%"></div>
+                </div>
+                <p class="text-[11px] text-[#444] mt-2" x-text="status === 'pending' ? 'Waiting in queue...' : 'Processing...'"></p>
+            </div>
+        </template>
+
+        <template x-if="status === 'failed' && error">
+            <div class="mt-4 bg-red-500/5 border border-red-500/10 rounded-lg p-3">
+                <p class="text-xs text-red-400 break-words" x-text="error"></p>
+                <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="mt-2">{% csrf_token %}
+                    <button class="text-xs accent hover:underline">↺ Retry</button>
+                </form>
+            </div>
+        </template>
+    </div>
+
+    <!-- Result -->
+    <template x-if="status === 'completed' && result">
+        <div class="space-y-4">
+
+            <!-- Movie Info -->
+            <div class="card p-5">
+                <div class="flex gap-4">
+                    <template x-if="result.poster_url">
+                        <img :src="result.poster_url" class="w-24 sm:w-28 rounded-lg border border-[#1e1e1e] flex-shrink-0 object-cover" alt="">
+                    </template>
+                    <div class="space-y-2 min-w-0 flex-1">
+                        <div class="flex flex-wrap gap-1.5">
+                            <template x-if="result.year"><span class="text-[10px] font-semibold accent bg-orange-500/10 px-2 py-0.5 rounded" x-text="result.year"></span></template>
+                            <template x-if="result.genre"><span class="text-[10px] font-semibold text-[#888] bg-[#1e1e1e] px-2 py-0.5 rounded" x-text="result.genre"></span></template>
+                            <template x-if="result.rating"><span class="text-[10px] font-semibold text-[#888] bg-[#1e1e1e] px-2 py-0.5 rounded" x-text="'⭐ ' + result.rating"></span></template>
+                        </div>
+                        <template x-if="result.plot">
+                            <p class="text-sm text-[#888] leading-relaxed" x-text="result.plot"></p>
+                        </template>
+                        <template x-if="result.director">
+                            <p class="text-xs text-[#555]">Director: <span class="text-[#999]" x-text="result.director"></span></p>
+                        </template>
+                        <template x-if="result.cast">
+                            <p class="text-xs text-[#555]">Cast: <span class="text-[#999]" x-text="result.cast"></span></p>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Drive Links -->
+            <template x-if="result.download_links && Object.keys(result.download_links).length > 0">
+                <div class="card p-5">
+                    <p class="text-[10px] font-semibold text-[#444] uppercase tracking-wider mb-3">Download Links</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <template x-for="(link, quality) in result.download_links" :key="quality">
+                            <a :href="link" target="_blank"
+                               class="flex items-center justify-between bg-orange-500/5 border border-orange-500/15 hover:border-orange-500/30 text-[#d4d4d4] py-2.5 px-3.5 rounded-lg text-sm font-medium transition-colors">
+                                <span x-text="quality"></span>
+                                <svg class="w-3.5 h-3.5 accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                            </a>
+                        </template>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Full Data -->
+            <div class="card overflow-hidden">
+                <details>
+                    <summary class="px-5 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider cursor-pointer hover:text-[#888] select-none">
+                        Full Data
+                    </summary>
+                    <div class="px-5 pb-5">
+                        <div class="bg-[#0e0e0e] rounded-lg p-4 overflow-auto max-h-80">
+                            <pre class="text-xs font-mono whitespace-pre-wrap break-words" x-html="syntaxHighlight(result)"></pre>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </template>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('taskDetail', () => ({
+        status: '{{ task.status }}',
+        title: '',
+        error: '',
+        result: null,
+        timer: null,
+
+        init() {
+            this.title = '{{ task.title|escapejs }}' || '';
+            this.error = '{{ task.error_message|escapejs }}' || '';
+            this.result = {{ result_json }};
+
+            if (this.status === 'pending' || this.status === 'processing') {
+                this.timer = setInterval(() => this.poll(), 5000);
+            }
+        },
+
+        async poll() {
+            try {
+                const r = await fetch("{% url 'panel:task_status_api' task.pk %}");
+                const d = await r.json();
+                this.status = d.status || this.status;
+                if (d.title) this.title = d.title;
+                if (d.error) this.error = d.error;
+                if (d.result && typeof d.result === 'object') this.result = d.result;
+                if (d.status === 'completed' || d.status === 'failed') clearInterval(this.timer);
+            } catch(_) {}
+        },
+
+        syntaxHighlight(json) {
+            if (!json) return "";
+            if (typeof json !== 'string') {
+                json = JSON.stringify(json, null, 2);
+            }
+            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, function (match) {
+                var cls = 'text-blue-400'; // numbers
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'text-orange-400'; // keys
+                    } else {
+                        cls = 'text-green-400'; // strings
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'text-purple-400'; // booleans
+                } else if (/null/.test(match)) {
+                    cls = 'text-red-400'; // null
+                }
+                return '<span class="' + cls + '">' + match + '</span>';
+            });
+        },
+
+        badge() {
+            const m = {
+                completed: '<span class="text-xs font-semibold text-green-400">✓ Done</span>',
+                processing: '<span class="text-xs font-semibold accent animate-pulse">● Running</span>',
+                pending: '<span class="text-xs font-semibold text-blue-400 animate-pulse">● Pending</span>',
+                failed: '<span class="text-xs font-semibold text-red-400">✗ Failed</span>',
+            };
+            return m[this.status] || this.status;
+        }
+    }));
+});
+</script>
+{% endblock %}

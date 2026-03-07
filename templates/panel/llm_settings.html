@@ -1,0 +1,32 @@
+{% extends 'panel/base.html' %}
+{% block title %}LLM — FlixBD{% endblock %}
+{% block page_title %}LLM Settings{% endblock %}
+{% block nav_llm %}active{% endblock %}
+
+{% block content %}
+<div class="max-w-lg">
+    <div class="card p-5">
+        <form method="post" class="space-y-4">
+            {% csrf_token %}
+            <div>
+                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">API Key</label>
+                <input type="password" name="api_key" value="{{ obj.api_key|default:'' }}"
+                       placeholder="sk-..."
+                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Base URL</label>
+                <input type="url" name="base_url" value="{{ obj.base_url|default:'https://openrouter.ai/api/v1' }}"
+                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Model</label>
+                <input type="text" name="model" value="{{ obj.model_name|default:'' }}"
+                       placeholder="arcee-ai/trinity-large-preview:free"
+                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+            </div>
+            <button type="submit" class="btn-primary px-5 py-2 rounded-lg text-sm">Save</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
