@@ -11,3 +11,4 @@ wheels/
 db.sqlite3
 media/
 downloads/
+staticfiles/

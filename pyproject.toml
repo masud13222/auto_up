@@ -16,5 +16,6 @@ dependencies = [
     "httpx>=0.28.1",
     "openai>=2.26.0",
     "psycopg2-binary>=2.9.11",
+    "python-dotenv>=1.2.2",
     "selectolax>=0.4.7",
 ]
