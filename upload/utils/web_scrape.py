@@ -1,13 +1,14 @@
 import httpx
 import re
 import logging
+from django.conf import settings
 from selectolax.lexbor import LexborHTMLParser
 
 logger = logging.getLogger(__name__)
 
 class WebScrapeService:
     DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7339.124 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
     }
@@ -22,9 +23,15 @@ class WebScrapeService:
         """
         Fetches the HTML of a specific container from the given URL.
         """
+        proxy = getattr(settings, 'SCRAPE_PROXY', None)
         try:
-            logger.debug(f"Fetching page content from: {url}")
-            with httpx.Client(headers=WebScrapeService.DEFAULT_HEADERS, timeout=30.0, follow_redirects=True) as client:
+            logger.debug(f"Fetching page content from: {url} (Proxy: {bool(proxy)})")
+            with httpx.Client(
+                headers=WebScrapeService.DEFAULT_HEADERS, 
+                proxy=proxy,
+                timeout=30.0, 
+                follow_redirects=True
+            ) as client:
                 r = client.get(url)
                 r.raise_for_status()
                 
@@ -47,10 +54,16 @@ class WebScrapeService:
         Uses specific headers including Referer for cinefreak.net.
         """
         headers = WebScrapeService.R2_HEADERS
+        proxy = getattr(settings, 'SCRAPE_PROXY', None)
         
         try:
-            logger.debug(f"Extracting R2 links from: {url}")
-            with httpx.Client(headers=headers, timeout=30.0, follow_redirects=True) as client:
+            logger.debug(f"Extracting R2 links from: {url} (Proxy: {bool(proxy)})")
+            with httpx.Client(
+                headers=headers, 
+                proxy=proxy,
+                timeout=30.0, 
+                follow_redirects=True
+            ) as client:
                 # 1. Initial request to find window.location.href
                 r = client.get(url)
                 
