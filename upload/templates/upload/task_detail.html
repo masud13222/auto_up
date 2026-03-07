@@ -1,0 +1,158 @@
+{% extends 'upload/base.html' %}
+
+{% block title %}FlixBD - {{ task.title|default:"Processing..." }}{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto space-y-8" x-data="{
+    status: '{{ task.status }}',
+    title: '{{ task.title|escapejs }}',
+    error: '{{ task.error_message|escapejs }}',
+    result: {{ task.result|default:'null'|safe }},
+    polling: null,
+    
+    init() {
+        if(this.status === 'pending' || this.status === 'processing') {
+            this.startPolling();
+        }
+    },
+    
+    startPolling() {
+        this.polling = setInterval(async () => {
+            try {
+                const res = await fetch('{% url "upload:task_status" task.pk %}');
+                const data = await res.json();
+                this.status = data.status;
+                this.title = data.title || this.title;
+                this.error = data.error || '';
+                if(data.result) this.result = data.result;
+                
+                if(data.status === 'completed' || data.status === 'failed') {
+                    clearInterval(this.polling);
+                }
+            } catch(e) {}
+        }, 3000);
+    },
+    
+    destroy() {
+        if(this.polling) clearInterval(this.polling);
+    }
+}">
+    <!-- Back Button -->
+    <a href="{% url 'upload:index' %}" class="inline-flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        Back to Home
+    </a>
+
+    <!-- Status Card -->
+    <div class="glass-card p-8 rounded-3xl shadow-2xl">
+        <!-- Pending / Processing -->
+        <template x-if="status === 'pending' || status === 'processing'">
+            <div class="text-center space-y-6 py-8">
+                <div class="relative inline-block">
+                    <svg class="animate-spin h-16 w-16 text-purple-500 mx-auto" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-2xl font-bold text-white" x-text="title || 'Processing...'"></h2>
+                    <p class="text-gray-400 mt-2" x-text="status === 'pending' ? 'Waiting in queue...' : 'Scraping → Downloading → Uploading...'"></p>
+                    <p class="text-gray-600 text-xs mt-4">Auto-refreshing every 3 seconds</p>
+                </div>
+            </div>
+        </template>
+
+        <!-- Failed -->
+        <template x-if="status === 'failed'">
+            <div class="text-center space-y-4 py-8">
+                <svg class="w-16 h-16 text-red-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <h2 class="text-2xl font-bold text-red-400">Task Failed</h2>
+                <p class="text-gray-400" x-text="error"></p>
+            </div>
+        </template>
+
+        <!-- Completed -->
+        <template x-if="status === 'completed' && result">
+            <div class="space-y-8">
+                <!-- Movie Header -->
+                <div class="flex flex-col md:flex-row gap-6">
+                    <!-- Poster -->
+                    <template x-if="result.poster_url">
+                        <div class="flex-shrink-0">
+                            <img :src="result.poster_url" class="w-48 rounded-2xl shadow-lg border border-gray-700" alt="Poster">
+                        </div>
+                    </template>
+                    <!-- Info -->
+                    <div class="space-y-3 flex-1">
+                        <h2 class="text-3xl font-bold text-white" x-text="result.title"></h2>
+                        <p class="text-gray-400 text-sm font-mono" x-text="result.website_movie_title"></p>
+                        
+                        <div class="flex flex-wrap gap-3 mt-2">
+                            <template x-if="result.year">
+                                <span class="bg-purple-500/20 text-purple-300 px-3 py-1 rounded-full text-xs font-bold" x-text="result.year"></span>
+                            </template>
+                            <template x-if="result.genre">
+                                <span class="bg-blue-500/20 text-blue-300 px-3 py-1 rounded-full text-xs font-bold" x-text="result.genre"></span>
+                            </template>
+                            <template x-if="result.rating">
+                                <span class="bg-yellow-500/20 text-yellow-300 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1">
+                                    ⭐ <span x-text="result.rating"></span>
+                                </span>
+                            </template>
+                            <template x-if="result.director">
+                                <span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-xs font-bold" x-text="'🎬 ' + result.director"></span>
+                            </template>
+                        </div>
+
+                        <template x-if="result.plot">
+                            <p class="text-gray-300 text-sm leading-relaxed mt-4" x-text="result.plot"></p>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Drive Links -->
+                <template x-if="result.download_links && Object.keys(result.download_links).length > 0">
+                    <div class="border-t border-gray-800 pt-6">
+                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"></path></svg>
+                            Google Drive Links
+                        </h3>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <template x-for="(link, quality) in result.download_links" :key="quality">
+                                <a :href="link" target="_blank"
+                                   class="bg-gradient-to-r from-green-600 to-emerald-700 hover:from-green-500 hover:to-emerald-600 text-white font-bold py-4 px-6 rounded-2xl text-center transition-all shadow-lg flex items-center justify-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                    <span x-text="quality"></span>
+                                </a>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Screenshots -->
+                <template x-if="result.screen_shots_url && result.screen_shots_url.length > 0">
+                    <div class="border-t border-gray-800 pt-6">
+                        <h3 class="text-lg font-bold text-white mb-4">Screenshots</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                            <template x-for="(img, i) in result.screen_shots_url" :key="i">
+                                <img :src="img" class="rounded-xl border border-gray-700 w-full object-cover hover:scale-105 transition-transform cursor-pointer" alt="Screenshot">
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Raw JSON -->
+                <div class="border-t border-gray-800 pt-6">
+                    <details class="group">
+                        <summary class="cursor-pointer text-gray-400 hover:text-white text-sm font-bold flex items-center gap-2">
+                            <svg class="w-4 h-4 group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                            View Raw JSON
+                        </summary>
+                        <pre class="mt-4 bg-black/50 rounded-xl p-4 text-xs text-green-400 overflow-auto max-h-96 font-mono" x-text="JSON.stringify(result, null, 2)"></pre>
+                    </details>
+                </div>
+            </div>
+        </template>
+    </div>
+</div>
+{% endblock %}
