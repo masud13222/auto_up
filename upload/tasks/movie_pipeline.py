@@ -81,10 +81,11 @@ def process_movie_pipeline(media_task, movie_data):
         cleaned = process_downloaded_files({quality: file_path})
         file_path = cleaned.get(quality, file_path)
 
-        # Upload to Drive
+        # Upload to Drive (each thread gets its OWN service — NOT thread-safe)
         logger.info(f"Uploading {quality} to Drive")
         try:
-            link = DriveUploader._upload_file(service, file_path, movie_folder_id)
+            thread_service = DriveUploader._get_drive_service()
+            link = DriveUploader._upload_file(thread_service, file_path, movie_folder_id)
         except Exception as e:
             logger.error(f"Upload failed for {quality}: {e}")
             link = f"UPLOAD_FAILED: {e}"

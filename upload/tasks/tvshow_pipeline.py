@@ -142,7 +142,9 @@ def process_tvshow_pipeline(media_task, tvshow_data):
         """Upload to Drive + delete — runs in PARALLEL thread."""
         log_memory(f"Before upload {quality}")
         try:
-            link = DriveUploader._upload_file(service, file_path, season_folder_id)
+            # Each thread gets its OWN service (google-api-python-client is NOT thread-safe)
+            thread_service = DriveUploader._get_drive_service()
+            link = DriveUploader._upload_file(thread_service, file_path, season_folder_id)
             logger.info(f"Uploaded S{season_num} {item_label} {quality}")
         except Exception as e:
             logger.error(f"Upload failed for S{season_num} {item_label} {quality}: {e}")

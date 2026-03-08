@@ -15,7 +15,7 @@ from credentials.services import GoogleAuthService
 logger = logging.getLogger(__name__)
 
 # Retry শুধু এই HTTP status codes এ হবে
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {308, 429, 500, 502, 503, 504}
 
 
 class DriveUploader:
