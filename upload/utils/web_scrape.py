@@ -102,7 +102,7 @@ class WebScrapeService:
             with httpx.Client(
                 headers=WebScrapeService.DEFAULT_HEADERS, 
                 proxy=proxy,
-                timeout=30.0, 
+                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
                 follow_redirects=True
             ) as client:
                 r = WebScrapeService._request_with_retry(client, url)
@@ -146,7 +146,7 @@ class WebScrapeService:
             with httpx.Client(
                 headers=headers, 
                 proxy=proxy,
-                timeout=30.0, 
+                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
                 follow_redirects=True
             ) as client:
                 # 1. Initial request to find window.location.href
