@@ -170,7 +170,10 @@ Q_CLUSTER = {
     'timeout': 7200,       # 2 hours max per task
     'retry': 7500,         # Retry after 2.5 hours if no result
     'queue_limit': 50,
-    'bulk': 10,
+    'bulk': 1,             # Pick 1 task at a time per worker (prevents grabbing multiple)
+    'recycle': 100,        # Restart worker after 100 tasks (prevents memory leaks)
+    'ack_failures': True,  # Mark failed tasks as done (don't auto-retry)
+    'max_attempts': 1,     # Don't retry failed tasks
     'orm': 'default',      # Use Django ORM as broker (no Redis needed)
 }
 
