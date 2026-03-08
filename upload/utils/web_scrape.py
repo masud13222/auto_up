@@ -127,6 +127,35 @@ class WebScrapeService:
             return None
 
     @staticmethod
+    def cinefreak_title(url):
+        """
+        Fetches the page title from div.single-service-content h1.
+        Quick fetch — no markdown conversion, just the raw h1 text.
+        """
+        proxy = getattr(settings, 'SCRAPE_PROXY', None) or None
+        try:
+            with httpx.Client(
+                headers=WebScrapeService.DEFAULT_HEADERS,
+                proxy=proxy,
+                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
+                follow_redirects=True
+            ) as client:
+                r = WebScrapeService._request_with_retry(client, url)
+                r.raise_for_status()
+
+                parser = LexborHTMLParser(r.text)
+                node = parser.css_first("div.single-service-content h1")
+                if node:
+                    title = node.text(strip=True)
+                    logger.debug(f"Cinefreak title: {title}")
+                    return title
+                logger.warning(f"h1 not found in {url}")
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching cinefreak title from {url}: {e}")
+            return None
+
+    @staticmethod
     def get_url(url):
         """
         Follows window.location.href redirects and extracts Cloudflare R2 links.

@@ -3,6 +3,7 @@ import logging
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
+from upload.service.duplicate_checker import check_duplicate
 
 from .helpers import save_task
 from .movie_pipeline import process_movie_pipeline
@@ -14,12 +15,13 @@ logger = logging.getLogger(__name__)
 def process_media_task(task_pk: int) -> str:
     """
     Background task: Full pipeline from URL to Google Drive upload.
-    Auto-detects whether content is a Movie or TV Show and routes accordingly.
-    Saves progress to DB at every step for crash recovery.
+    1. Duplicate check (title fetch + DB search + LLM compare)
+    2. Auto-detect content type and extract data (single LLM call)
+    3. Route to movie or tvshow pipeline
     """
     media_task = MediaTask.objects.get(pk=task_pk)
 
-    # Skip if already completed (prevents duplicate processing from stale queue entries)
+    # Skip if already completed
     if media_task.status == 'completed':
         logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
         return json.dumps({"status": "skipped", "message": "Already completed"})
@@ -30,6 +32,32 @@ def process_media_task(task_pk: int) -> str:
         url = media_task.url
         logger.info(f"Task started for URL: {url}")
 
+        # ── Step 0: Duplicate Check ──
+        dup = check_duplicate(url)
+        action = dup["action"]
+        reason = dup["reason"]
+
+        if action == "skip":
+            logger.info(f"DUPLICATE SKIP: {reason}")
+            save_task(media_task, status='completed',
+                      title=dup.get("extracted_name") or media_task.title,
+                      error_message=f"Skipped (duplicate): {reason}")
+            return json.dumps({"status": "skipped", "message": reason})
+
+        if action == "replace":
+            old_task = dup.get("existing_task")
+            if old_task:
+                logger.info(f"DUPLICATE REPLACE: Marking old task [{old_task.pk}] '{old_task.title}' for replacement. Reason: {reason}")
+                # Mark old task as replaced (keep in DB for history)
+                old_task.status = 'failed'
+                old_task.error_message = f"Replaced by task {media_task.pk}: {reason}"
+                old_task.save(update_fields=['status', 'error_message', 'updated_at'])
+
+        # action == "process" or "replace" → continue with pipeline
+        if dup.get("extracted_name"):
+            save_task(media_task, title=dup["extracted_name"])
+
+        # ── Step 1: Extract content info ──
         def _on_progress(data):
             title = data.get("title", "")
             if title and not media_task.title:
@@ -38,11 +66,9 @@ def process_media_task(task_pk: int) -> str:
             else:
                 save_task(media_task, result=data)
 
-        # Step 1: Auto-detect content type and extract info
         content_type, data = get_content_info(url, on_progress=_on_progress)
         title = data.get("title", "Unknown")
 
-        # Save: fully resolved data
         save_task(media_task, title=title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
