@@ -82,10 +82,10 @@ def resolve_movie_links(movie_data: dict) -> dict:
     download_links = movie_data.get("download_links", {})
     if download_links:
         logger.info("Resolving movie download links...")
-        for quality in ["480p", "720p", "1080p"]:
-            if download_links.get(quality):
-                logger.debug(f"Resolving {quality}: {download_links[quality]}")
-                movie_data["download_links"][quality] = WebScrapeService.get_url(download_links[quality])
+        for quality, url in list(download_links.items()):
+            if url:
+                logger.debug(f"Resolving {quality}: {url}")
+                movie_data["download_links"][quality] = WebScrapeService.get_url(url)
     return movie_data
 
 
@@ -112,10 +112,10 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None) -> dict:
             item_label = item.get("label", "Unknown")
             resolutions = item.get("resolutions", {})
 
-            for quality in ["480p", "720p", "1080p"]:
-                if resolutions.get(quality):
-                    logger.debug(f"Resolving S{season_num} {item_label} {quality}: {resolutions[quality]}")
-                    resolved = WebScrapeService.get_url(resolutions[quality])
+            for quality, url in list(resolutions.items()):
+                if url:
+                    logger.debug(f"Resolving S{season_num} {item_label} {quality}: {url}")
+                    resolved = WebScrapeService.get_url(url)
                     item["resolutions"][quality] = resolved
 
             # Callback after each item is fully resolved

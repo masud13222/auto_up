@@ -1,15 +1,9 @@
 from django.contrib import admin
-from .models import LLMSettings
+from .models import LLMConfig
 
-# Register your models here.
-@admin.register(LLMSettings)
-class LLMSettingsAdmin(admin.ModelAdmin):
-    list_display = ('model_name', 'base_url', 'updated_at')
-    
-    def has_add_permission(self, request):
-        if self.model.objects.exists():
-            return False
-        return super().has_add_permission(request)
 
-    def has_delete_permission(self, request, obj=None):
-        return False
+@admin.register(LLMConfig)
+class LLMConfigAdmin(admin.ModelAdmin):
+    list_display = ('name', 'sdk', 'model_name', 'is_primary', 'is_active', 'updated_at')
+    list_editable = ('is_primary', 'is_active')
+    list_filter = ('sdk', 'is_primary', 'is_active')

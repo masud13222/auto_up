@@ -70,8 +70,7 @@ class Downloader:
         safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in main_title).strip()
 
         results = {}
-        for quality in ["480p", "720p", "1080p"]:
-            urls = download_links.get(quality)
+        for quality, urls in download_links.items():
             fname = filenames.get(quality)
 
             if not urls or not fname:
@@ -134,8 +133,7 @@ class Downloader:
                 fname_resolutions = fname_item.get("resolutions", {})
 
                 downloaded_resolutions = {}
-                for quality in ["480p", "720p", "1080p"]:
-                    urls = resolutions.get(quality)
+                for quality, urls in resolutions.items():
                     fname = fname_resolutions.get(quality)
 
                     if not urls or not fname:

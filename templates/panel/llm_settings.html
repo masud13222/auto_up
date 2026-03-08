@@ -1,32 +1,137 @@
 {% extends 'panel/base.html' %}
 {% block title %}LLM — FlixBD{% endblock %}
-{% block page_title %}LLM Settings{% endblock %}
+{% block page_title %}LLM Configs{% endblock %}
 {% block nav_llm %}active{% endblock %}
 
 {% block content %}
-<div class="max-w-lg">
+<div class="space-y-4" x-data="llmSettings">
+
+    <!-- Existing Configs -->
+    {% for config in configs %}
+    <div class="card p-5 {{ config.is_primary|yesno:'border-l-2 border-l-[#f97316],' }}">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="text-white font-semibold text-sm">{{ config.name }}</span>
+                    {% if config.is_primary %}
+                        <span class="text-[10px] font-bold accent bg-orange-500/10 px-1.5 py-0.5 rounded">PRIMARY</span>
+                    {% endif %}
+                    {% if not config.is_active %}
+                        <span class="text-[10px] font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">DISABLED</span>
+                    {% endif %}
+                </div>
+                <div class="flex flex-wrap gap-2 text-[11px]">
+                    <span class="text-[#444] bg-[#1e1e1e] px-2 py-0.5 rounded font-mono">{{ config.sdk }}</span>
+                    <span class="text-[#888] font-mono">{{ config.model_name }}</span>
+                </div>
+                {% if config.base_url %}
+                <p class="text-[10px] text-[#333] font-mono mt-1 truncate">{{ config.base_url }}</p>
+                {% endif %}
+            </div>
+            <div class="flex gap-1.5 flex-shrink-0">
+                {% if not config.is_primary %}
+                <form method="post" class="inline">{% csrf_token %}
+                    <input type="hidden" name="action" value="set_primary">
+                    <input type="hidden" name="pk" value="{{ config.pk }}">
+                    <button class="text-[10px] text-[#444] hover:accent bg-[#161616] border border-[#1e1e1e] px-2 py-1 rounded transition-colors" title="Set Primary">★ Primary</button>
+                </form>
+                {% endif %}
+                <form method="post" class="inline">{% csrf_token %}
+                    <input type="hidden" name="action" value="toggle_active">
+                    <input type="hidden" name="pk" value="{{ config.pk }}">
+                    <button class="text-[10px] {{ config.is_active|yesno:'text-green-400,text-red-400' }} bg-[#161616] border border-[#1e1e1e] px-2 py-1 rounded transition-colors">
+                        {{ config.is_active|yesno:"Active,Enable" }}
+                    </button>
+                </form>
+                <button @click="editConfig({{ config.pk }}, '{{ config.name|escapejs }}', '{{ config.sdk }}', '{{ config.base_url|escapejs }}', '{{ config.api_key|escapejs }}', '{{ config.model_name|escapejs }}')"
+                        class="text-[10px] text-[#444] hover:text-white bg-[#161616] border border-[#1e1e1e] px-2 py-1 rounded transition-colors">Edit</button>
+                <form method="post" class="inline" onsubmit="return confirm('Delete this config?')">{% csrf_token %}
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="pk" value="{{ config.pk }}">
+                    <button class="text-[10px] text-[#444] hover:text-red-400 bg-[#161616] border border-[#1e1e1e] px-2 py-1 rounded transition-colors">✕</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="card p-8 text-center">
+        <p class="text-[#333] text-sm">No LLM configs yet. Add one below.</p>
+    </div>
+    {% endfor %}
+
+    <!-- Add / Edit Form -->
     <div class="card p-5">
-        <form method="post" class="space-y-4">
+        <p class="text-[10px] font-semibold text-[#444] uppercase tracking-wider mb-4"
+           x-text="editMode ? 'Edit Config' : 'Add New Config'"></p>
+        <form method="post" class="space-y-3">
             {% csrf_token %}
-            <div>
-                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">API Key</label>
-                <input type="password" name="api_key" value="{{ obj.api_key|default:'' }}"
-                       placeholder="sk-..."
-                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+            <input type="hidden" name="action" :value="editMode ? 'edit' : 'add'">
+            <input type="hidden" name="pk" :value="editPk" x-show="editMode">
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[10px] font-medium text-[#444] uppercase tracking-wider mb-1">Name</label>
+                    <input type="text" name="name" x-model="form.name" placeholder="e.g. OpenRouter Free"
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[#333]">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-medium text-[#444] uppercase tracking-wider mb-1">SDK</label>
+                    <select name="sdk" x-model="form.sdk"
+                            class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3 py-2 text-sm">
+                        <option value="openai">OpenAI Compatible</option>
+                        <option value="google">Google Gemini</option>
+                        <option value="mistral">Mistral AI</option>
+                    </select>
+                </div>
             </div>
-            <div>
-                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Base URL</label>
-                <input type="url" name="base_url" value="{{ obj.base_url|default:'https://openrouter.ai/api/v1' }}"
-                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+
+            <div x-show="form.sdk === 'openai'">
+                <label class="block text-[10px] font-medium text-[#444] uppercase tracking-wider mb-1">Base URL</label>
+                <input type="text" name="base_url" x-model="form.base_url" placeholder="https://openrouter.ai/api/v1"
+                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[#333]">
             </div>
-            <div>
-                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Model</label>
-                <input type="text" name="model" value="{{ obj.model_name|default:'' }}"
-                       placeholder="arcee-ai/trinity-large-preview:free"
-                       class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[10px] font-medium text-[#444] uppercase tracking-wider mb-1">API Key</label>
+                    <input type="password" name="api_key" x-model="form.api_key" placeholder="sk-..."
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[#333]">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-medium text-[#444] uppercase tracking-wider mb-1">Model</label>
+                    <input type="text" name="model_name" x-model="form.model_name" placeholder="gpt-4o / gemini-2.0-flash / mistral-large-latest"
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3 py-2 text-sm font-mono placeholder:text-[#333]">
+                </div>
             </div>
-            <button type="submit" class="btn-primary px-5 py-2 rounded-lg text-sm">Save</button>
+
+            <div class="flex gap-2">
+                <button type="submit" class="btn-primary px-4 py-2 rounded-lg text-sm" x-text="editMode ? 'Update' : 'Add Config'"></button>
+                <button type="button" x-show="editMode" @click="cancelEdit()" class="text-[#444] hover:text-white px-4 py-2 rounded-lg text-sm border border-[#1e1e1e]">Cancel</button>
+            </div>
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('llmSettings', () => ({
+        editMode: false,
+        editPk: null,
+        form: { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '' },
+
+        editConfig(pk, name, sdk, baseUrl, apiKey, modelName) {
+            this.editMode = true;
+            this.editPk = pk;
+            this.form = { name, sdk, base_url: baseUrl, api_key: apiKey, model_name: modelName };
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        },
+
+        cancelEdit() {
+            this.editMode = false;
+            this.editPk = null;
+            this.form = { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '' };
+        }
+    }));
+});
+</script>
 {% endblock %}

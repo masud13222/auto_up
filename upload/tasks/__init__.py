@@ -18,6 +18,12 @@ def process_media_task(task_pk: int) -> str:
     Saves progress to DB at every step for crash recovery.
     """
     media_task = MediaTask.objects.get(pk=task_pk)
+
+    # Skip if already completed (prevents duplicate processing from stale queue entries)
+    if media_task.status == 'completed':
+        logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
+        return json.dumps({"status": "skipped", "message": "Already completed"})
+
     save_task(media_task, status='processing')
 
     try:

@@ -177,7 +177,7 @@ def process_tvshow_pipeline(media_task, tvshow_data):
         # Collect resolutions to process (skip already-uploaded ones)
         to_process = []
         already_uploaded = {}
-        for quality in ["480p", "720p", "1080p"]:
+        for quality in resolutions:
             urls = resolutions.get(quality)
             fname = fname_resolutions.get(quality)
 

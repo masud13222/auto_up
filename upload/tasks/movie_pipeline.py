@@ -99,7 +99,7 @@ def process_movie_pipeline(media_task, movie_data):
 
     # Collect downloadable qualities (skip already-uploaded ones)
     to_process = []
-    for quality in ["480p", "720p", "1080p"]:
+    for quality in download_links:
         urls = download_links.get(quality)
         fname = filenames.get(quality)
 

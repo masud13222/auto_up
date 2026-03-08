@@ -155,17 +155,45 @@ def delete_google_account(request, pk):
 
 @login_required
 def llm_settings(request):
-    from llm.models import LLMSettings
-    obj = LLMSettings.objects.first()
+    from llm.models import LLMConfig
     if request.method == 'POST':
-        if not obj:
-            obj = LLMSettings()
-        obj.api_key = request.POST.get('api_key', '').strip()
-        obj.base_url = request.POST.get('base_url', '').strip()
-        obj.model_name = request.POST.get('model', '').strip()
-        obj.save()
+        action = request.POST.get('action', '')
+
+        if action == 'add':
+            LLMConfig.objects.create(
+                name=request.POST.get('name', 'New Config').strip(),
+                sdk=request.POST.get('sdk', 'openai').strip(),
+                base_url=request.POST.get('base_url', '').strip(),
+                api_key=request.POST.get('api_key', '').strip(),
+                model_name=request.POST.get('model_name', '').strip(),
+                is_primary=not LLMConfig.objects.filter(is_primary=True).exists(),
+            )
+        elif action == 'edit':
+            pk = request.POST.get('pk')
+            config = LLMConfig.objects.get(pk=pk)
+            config.name = request.POST.get('name', config.name).strip()
+            config.sdk = request.POST.get('sdk', config.sdk).strip()
+            config.base_url = request.POST.get('base_url', '').strip()
+            config.api_key = request.POST.get('api_key', config.api_key).strip()
+            config.model_name = request.POST.get('model_name', config.model_name).strip()
+            config.save()
+        elif action == 'delete':
+            pk = request.POST.get('pk')
+            LLMConfig.objects.filter(pk=pk).delete()
+        elif action == 'set_primary':
+            pk = request.POST.get('pk')
+            LLMConfig.objects.update(is_primary=False)
+            LLMConfig.objects.filter(pk=pk).update(is_primary=True)
+        elif action == 'toggle_active':
+            pk = request.POST.get('pk')
+            config = LLMConfig.objects.get(pk=pk)
+            config.is_active = not config.is_active
+            config.save(update_fields=['is_active'])
+
         return redirect('panel:llm_settings')
-    return render(request, 'panel/llm_settings.html', {'obj': obj})
+
+    configs = LLMConfig.objects.all().order_by('-is_primary', 'pk')
+    return render(request, 'panel/llm_settings.html', {'configs': configs})
 
 
 def logout_view(request):
