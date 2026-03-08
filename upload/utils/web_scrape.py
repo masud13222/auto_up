@@ -53,6 +53,7 @@ class WebScrapeService:
                 return r
 
             except (httpx.ConnectError, httpx.TimeoutException,
+                    httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError,
                     httpx.ProxyError, httpx.HTTPStatusError) as e:
                 last_error = e
 
