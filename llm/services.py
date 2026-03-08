@@ -42,7 +42,8 @@ class LLMService:
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                temperature=0.1,
             )
             logger.debug("LLM response received successfully.")
             return response.choices[0].message.content
