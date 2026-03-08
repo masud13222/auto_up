@@ -1,5 +1,4 @@
 import json
-import re
 import logging
 from upload.utils.web_scrape import WebScrapeService
 from llm.services import LLMService
@@ -42,9 +41,10 @@ def detect_content_type(html_content: str) -> str:
         return "movie"
 
 
-def _extract_movie_from_html(html_content: str) -> dict:
+def extract_movie_data(html_content: str) -> dict:
     """
-    Internal: Extract movie data from already-scraped HTML content.
+    Extract movie data from HTML content (no URL resolution).
+    Returns raw LLM-extracted data with generate.php URLs.
     """
     logger.debug("Sending HTML content to LLM for movie extraction...")
     llm_response = LLMService.generate_completion(
@@ -55,22 +55,13 @@ def _extract_movie_from_html(html_content: str) -> dict:
     logger.debug("Parsing structured JSON from LLM response...")
     movie_data = get_structured_output(llm_response, movie_schema)
     logger.info(f"Extracted info for: {movie_data.get('title', 'Unknown Title')}")
-
-    # Resolve download links
-    download_links = movie_data.get("download_links", {})
-    if download_links:
-        logger.info("Resolving download links via R2 extraction...")
-        for quality in ["480p", "720p", "1080p"]:
-            if download_links.get(quality):
-                logger.debug(f"Resolving {quality}: {download_links[quality]}")
-                movie_data["download_links"][quality] = WebScrapeService.get_url(download_links[quality])
-
     return movie_data
 
 
-def _extract_tvshow_from_html(html_content: str) -> dict:
+def extract_tvshow_data(html_content: str) -> dict:
     """
-    Internal: Extract TV show data from already-scraped HTML content.
+    Extract TV show data from HTML content (no URL resolution).
+    Returns raw LLM-extracted data with generate.php URLs.
     """
     logger.debug("Sending HTML content to LLM for TV show extraction...")
     llm_response = LLMService.generate_completion(
@@ -81,65 +72,71 @@ def _extract_tvshow_from_html(html_content: str) -> dict:
     logger.debug("Parsing structured JSON from LLM response...")
     tvshow_data = get_structured_output(llm_response, tvshow_schema)
     logger.info(f"Extracted TV show info for: {tvshow_data.get('title', 'Unknown Title')}")
-
-    # Resolve download links for each season > download_item > resolution
-    seasons = tvshow_data.get("seasons", [])
-    if seasons:
-        logger.info(f"Resolving download links for {len(seasons)} season(s)...")
-        for season in seasons:
-            season_num = season.get("season_number", "?")
-            download_items = season.get("download_items", [])
-
-            for item in download_items:
-                item_label = item.get("label", "Unknown")
-                resolutions = item.get("resolutions", {})
-
-                for quality in ["480p", "720p", "1080p"]:
-                    if resolutions.get(quality):
-                        logger.debug(f"Resolving S{season_num} {item_label} {quality}: {resolutions[quality]}")
-                        resolved = WebScrapeService.get_url(resolutions[quality])
-                        item["resolutions"][quality] = resolved
-
     return tvshow_data
 
 
-def get_movie_info(url):
+def resolve_movie_links(movie_data: dict) -> dict:
     """
-    Full pipeline for MOVIE info extraction.
-    Scrapes the page and extracts movie data.
+    Resolve download links for a movie (generate.php → actual R2 URLs).
     """
-    logger.info(f"Starting movie info extraction for: {url}")
-    html_content = WebScrapeService.get_page_content(url)
-    if not html_content:
-        logger.error(f"Failed to scrape content from {url}")
-        raise Exception("Failed to scrape page content from the given URL.")
-
-    movie_data = _extract_movie_from_html(html_content)
-    logger.info("Movie info extraction complete.")
+    download_links = movie_data.get("download_links", {})
+    if download_links:
+        logger.info("Resolving movie download links...")
+        for quality in ["480p", "720p", "1080p"]:
+            if download_links.get(quality):
+                logger.debug(f"Resolving {quality}: {download_links[quality]}")
+                movie_data["download_links"][quality] = WebScrapeService.get_url(download_links[quality])
     return movie_data
 
 
-def get_tvshow_info(url):
+def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None) -> dict:
     """
-    Full pipeline for TV SHOW info extraction.
-    Scrapes the page and extracts TV show data with season-wise links.
+    Resolve download links for a TV show (generate.php → actual R2 URLs).
+    
+    Args:
+        tvshow_data: TV show data with generate.php URLs
+        on_item_resolved: Optional callback(tvshow_data) called after each 
+                          download item is fully resolved. Use this to save 
+                          progress to DB incrementally.
     """
-    logger.info(f"Starting TV show info extraction for: {url}")
-    html_content = WebScrapeService.get_page_content(url)
-    if not html_content:
-        logger.error(f"Failed to scrape content from {url}")
-        raise Exception("Failed to scrape page content from the given URL.")
+    seasons = tvshow_data.get("seasons", [])
+    if not seasons:
+        return tvshow_data
 
-    tvshow_data = _extract_tvshow_from_html(html_content)
-    logger.info("TV show info extraction complete.")
+    logger.info(f"Resolving download links for {len(seasons)} season(s)...")
+    for season in seasons:
+        season_num = season.get("season_number", "?")
+        download_items = season.get("download_items", [])
+
+        for item in download_items:
+            item_label = item.get("label", "Unknown")
+            resolutions = item.get("resolutions", {})
+
+            for quality in ["480p", "720p", "1080p"]:
+                if resolutions.get(quality):
+                    logger.debug(f"Resolving S{season_num} {item_label} {quality}: {resolutions[quality]}")
+                    resolved = WebScrapeService.get_url(resolutions[quality])
+                    item["resolutions"][quality] = resolved
+
+            # Callback after each item is fully resolved
+            if on_item_resolved:
+                on_item_resolved(tvshow_data)
+                logger.debug(f"Progress saved: S{season_num} {item_label} resolved")
+
     return tvshow_data
 
 
-def get_content_info(url):
+def get_content_info(url, on_progress=None):
     """
-    Main entry point: Detects content type (movie vs tvshow) and extracts info accordingly.
-    Scrapes only ONCE, then reuses the HTML for both detection and extraction.
-    Returns a tuple: (content_type, data)
+    Main entry point: Detects content type and extracts info.
+    Scrapes only ONCE, then reuses the HTML.
+    
+    Args:
+        url: Page URL to scrape
+        on_progress: Optional callback(data) for incremental DB saves during 
+                     URL resolution. Called after each download item is resolved.
+    
+    Returns: (content_type, data)
     """
     # Step 1: Scrape page content (only once)
     logger.info(f"Starting content info extraction for: {url}")
@@ -151,14 +148,28 @@ def get_content_info(url):
     # Step 2: Detect content type
     content_type = detect_content_type(html_content)
 
-    # Step 3: Extract info based on type (reuse same HTML, no re-scrape)
+    # Step 3: Extract info based on type
     if content_type == "tvshow":
         logger.info("Content identified as TV Show. Using TV show extraction pipeline.")
-        data = _extract_tvshow_from_html(html_content)
+        data = extract_tvshow_data(html_content)
+
+        # Save immediately after LLM extraction (before URL resolution)
+        if on_progress:
+            on_progress(data)
+
+        # Step 4: Resolve URLs with progress callback
+        data = resolve_tvshow_links(data, on_item_resolved=on_progress)
         logger.info("TV show info extraction complete.")
         return "tvshow", data
     else:
         logger.info("Content identified as Movie. Using movie extraction pipeline.")
-        data = _extract_movie_from_html(html_content)
+        data = extract_movie_data(html_content)
+
+        # Save immediately after LLM extraction
+        if on_progress:
+            on_progress(data)
+
+        # Step 4: Resolve URLs
+        data = resolve_movie_links(data)
         logger.info("Movie info extraction complete.")
         return "movie", data

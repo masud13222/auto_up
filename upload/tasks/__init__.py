@@ -15,8 +15,7 @@ def process_media_task(task_pk: int) -> str:
     """
     Background task: Full pipeline from URL to Google Drive upload.
     Auto-detects whether content is a Movie or TV Show and routes accordingly.
-    Updates MediaTask status at each step.
-    Supports resume — skips already-uploaded files on re-queue.
+    Saves progress to DB at every step for crash recovery.
     """
     media_task = MediaTask.objects.get(pk=task_pk)
     save_task(media_task, status='processing')
@@ -25,11 +24,19 @@ def process_media_task(task_pk: int) -> str:
         url = media_task.url
         logger.info(f"Task started for URL: {url}")
 
+        def _on_progress(data):
+            title = data.get("title", "")
+            if title and not media_task.title:
+                save_task(media_task, title=title, result=data)
+                logger.info(f"Saved title: {title}")
+            else:
+                save_task(media_task, result=data)
+
         # Step 1: Auto-detect content type and extract info
-        content_type, data = get_content_info(url)
+        content_type, data = get_content_info(url, on_progress=_on_progress)
         title = data.get("title", "Unknown")
 
-        # Save: Title + initial extraction result
+        # Save: fully resolved data
         save_task(media_task, title=title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
