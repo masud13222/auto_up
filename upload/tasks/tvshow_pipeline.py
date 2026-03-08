@@ -9,7 +9,7 @@ from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
 from llm.services import LLMService
-from llm.tvshow_schema import TVSHOW_FILENAME_SYSTEM_PROMPT, tvshow_filename_schema
+from llm.schema import TVSHOW_FILENAME_SYSTEM_PROMPT, tvshow_filename_schema
 from django.conf import settings
 
 from .helpers import save_task, is_drive_link, log_memory

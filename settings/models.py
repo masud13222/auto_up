@@ -24,6 +24,18 @@ class GoogleConfig(models.Model):
 class UploadSettings(models.Model):
     upload_folder_id = models.CharField(max_length=255, help_text="Google Drive Folder ID for uploads")
     worker_count = models.PositiveIntegerField(default=1, help_text="Number of queue workers (requires qcluster restart)")
+    extra_res_below = models.BooleanField(
+        default=False,
+        help_text="Allow resolutions below 480p (e.g. 360p, 240p)"
+    )
+    extra_res_above = models.BooleanField(
+        default=False,
+        help_text="Allow resolutions above 1080p (e.g. 2160p, 4K)"
+    )
+    max_extra_resolutions = models.PositiveIntegerField(
+        default=0,
+        help_text="Max extra resolutions to include (0 = unlimited)"
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

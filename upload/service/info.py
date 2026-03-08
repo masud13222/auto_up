@@ -3,14 +3,12 @@ import logging
 from upload.utils.web_scrape import WebScrapeService
 from llm.services import LLMService
 from llm.json_repair import repair_json
-from llm.schema import SYSTEM_PROMPT, movie_schema
-from llm.tvshow_schema import TVSHOW_SYSTEM_PROMPT, tvshow_schema
-from llm.content_type_detector import CONTENT_TYPE_DETECTION_PROMPT
+from llm.schema import get_combined_system_prompt
 
 logger = logging.getLogger(__name__)
 
 
-def get_structured_output(llm_response: str, schema: dict) -> dict:
+def get_structured_output(llm_response: str) -> dict:
     """
     Extracts and validates JSON from LLM response string.
     Uses json_repair to handle truncated/malformed responses.
@@ -18,61 +16,37 @@ def get_structured_output(llm_response: str, schema: dict) -> dict:
     return repair_json(llm_response)
 
 
-def detect_content_type(html_content: str) -> str:
+def detect_and_extract(html_content: str) -> tuple:
     """
-    Uses LLM to detect whether the HTML content is about a movie or TV show.
-    Returns: 'movie' or 'tvshow'
+    Single LLM call: detects content type AND extracts structured data.
+    Reads resolution settings from UploadSettings.
+    Returns: (content_type, data)
     """
-    logger.info("Detecting content type (movie vs tvshow)...")
+    from settings.models import UploadSettings
+    settings = UploadSettings.objects.first()
+    extra_below = settings.extra_res_below if settings else False
+    extra_above = settings.extra_res_above if settings else False
+    max_extra = settings.max_extra_resolutions if settings else 0
+
+    system_prompt = get_combined_system_prompt(
+        extra_below=extra_below,
+        extra_above=extra_above,
+        max_extra=max_extra,
+    )
+    logger.info(f"Detecting + extracting (res: below={extra_below}, above={extra_above}, max={max_extra})...")
+
     llm_response = LLMService.generate_completion(
         prompt=html_content,
-        system_prompt=CONTENT_TYPE_DETECTION_PROMPT
+        system_prompt=system_prompt
     )
 
-    try:
-        result = get_structured_output(llm_response, {})
-        content_type = result.get("content_type", "movie")
-        confidence = result.get("confidence", 0)
-        reason = result.get("reason", "N/A")
-        logger.info(f"Content type detected: {content_type} (confidence: {confidence}, reason: {reason})")
-        return content_type
-    except Exception as e:
-        logger.warning(f"Content type detection failed, defaulting to 'movie': {e}")
-        return "movie"
+    result = get_structured_output(llm_response)
+    content_type = result.get("content_type", "movie")
+    data = result.get("data", {})
 
-
-def extract_movie_data(html_content: str) -> dict:
-    """
-    Extract movie data from HTML content (no URL resolution).
-    Returns raw LLM-extracted data with generate.php URLs.
-    """
-    logger.debug("Sending HTML content to LLM for movie extraction...")
-    llm_response = LLMService.generate_completion(
-        prompt=html_content,
-        system_prompt=SYSTEM_PROMPT
-    )
-
-    logger.debug("Parsing structured JSON from LLM response...")
-    movie_data = get_structured_output(llm_response, movie_schema)
-    logger.info(f"Extracted info for: {movie_data.get('title', 'Unknown Title')}")
-    return movie_data
-
-
-def extract_tvshow_data(html_content: str) -> dict:
-    """
-    Extract TV show data from HTML content (no URL resolution).
-    Returns raw LLM-extracted data with generate.php URLs.
-    """
-    logger.debug("Sending HTML content to LLM for TV show extraction...")
-    llm_response = LLMService.generate_completion(
-        prompt=html_content,
-        system_prompt=TVSHOW_SYSTEM_PROMPT
-    )
-
-    logger.debug("Parsing structured JSON from LLM response...")
-    tvshow_data = get_structured_output(llm_response, tvshow_schema)
-    logger.info(f"Extracted TV show info for: {tvshow_data.get('title', 'Unknown Title')}")
-    return tvshow_data
+    title = data.get("title", "Unknown")
+    logger.info(f"Detected: {content_type} — Title: {title}")
+    return content_type, data
 
 
 def resolve_movie_links(movie_data: dict) -> dict:
@@ -128,7 +102,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None) -> dict:
 
 def get_content_info(url, on_progress=None):
     """
-    Main entry point: Detects content type and extracts info.
+    Main entry point: Single LLM call detects type + extracts info, then resolves URLs.
     Scrapes only ONCE, then reuses the HTML.
     
     Args:
@@ -145,31 +119,19 @@ def get_content_info(url, on_progress=None):
         logger.error(f"Failed to scrape content from {url}")
         raise Exception("Failed to scrape page content from the given URL.")
 
-    # Step 2: Detect content type
-    content_type = detect_content_type(html_content)
+    # Step 2: Single LLM call — detect type + extract data
+    content_type, data = detect_and_extract(html_content)
 
-    # Step 3: Extract info based on type
+    # Save immediately after LLM extraction (before URL resolution)
+    if on_progress:
+        on_progress(data)
+
+    # Step 3: Resolve URLs based on content type
     if content_type == "tvshow":
-        logger.info("Content identified as TV Show. Using TV show extraction pipeline.")
-        data = extract_tvshow_data(html_content)
-
-        # Save immediately after LLM extraction (before URL resolution)
-        if on_progress:
-            on_progress(data)
-
-        # Step 4: Resolve URLs with progress callback
         data = resolve_tvshow_links(data, on_item_resolved=on_progress)
         logger.info("TV show info extraction complete.")
-        return "tvshow", data
     else:
-        logger.info("Content identified as Movie. Using movie extraction pipeline.")
-        data = extract_movie_data(html_content)
-
-        # Save immediately after LLM extraction
-        if on_progress:
-            on_progress(data)
-
-        # Step 4: Resolve URLs
         data = resolve_movie_links(data)
         logger.info("Movie info extraction complete.")
-        return "movie", data
+
+    return content_type, data

@@ -1,5 +1,5 @@
 import json
-from .schema import BLOCKED_SITE_NAMES, SITE_NAME
+from .blocked_names import BLOCKED_SITE_NAMES, SITE_NAME
 
 _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 
@@ -92,22 +92,8 @@ tvshow_schema = {
                                 },
                                 "resolutions": {
                                     "type": "object",
-                                    "properties": {
-                                        "480p": {
-                                            "type": "string",
-                                            "description": "480p download link - prefer x264 encode"
-                                        },
-                                        "720p": {
-                                            "type": "string",
-                                            "description": "720p download link - prefer x264 encode"
-                                        },
-                                        "1080p": {
-                                            "type": "string",
-                                            "description": "1080p download link - prefer x264 encode"
-                                        }
-                                    },
-                                    "minProperties": 1,
-                                    "additionalProperties": False
+                                    "additionalProperties": {"type": "string"},
+                                    "description": "Download URLs keyed by resolution (e.g. '480p', '720p', '1080p'). Keys are dynamic. Prefer x264 encodes."
                                 }
                             },
                             "required": ["type", "label", "resolutions"]
@@ -273,11 +259,8 @@ tvshow_filename_schema = {
             },
             "resolutions": {
                 "type": "object",
-                "properties": {
-                    "480p": {"type": "string", "description": "Filename for 480p"},
-                    "720p": {"type": "string", "description": "Filename for 720p"},
-                    "1080p": {"type": "string", "description": "Filename for 1080p"}
-                }
+                "additionalProperties": {"type": "string"},
+                "description": "Filenames keyed by resolution. Only include resolutions that exist in the download item."
             }
         },
         "required": ["season_number", "type", "label", "resolutions"]

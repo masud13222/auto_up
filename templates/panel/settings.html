@@ -4,9 +4,9 @@
 {% block nav_settings %}active{% endblock %}
 
 {% block content %}
-<div class="max-w-lg">
+<div class="max-w-lg space-y-4">
     <div class="card p-5">
-        <form method="post" class="space-y-4">
+        <form method="post" class="space-y-5">
             {% csrf_token %}
             <div>
                 <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Drive Folder ID</label>
@@ -20,6 +20,42 @@
                        class="w-24 bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm">
                 <p class="text-[11px] text-[#444] mt-1">Restart qcluster after changing.</p>
             </div>
+
+            <!-- Resolution Settings -->
+            <div class="border-t border-[#1e1e1e] pt-4">
+                <p class="text-[10px] font-semibold text-[#444] uppercase tracking-wider mb-3">Extra Resolutions</p>
+                <p class="text-[11px] text-[#333] mb-3">Base: 480p, 720p, 1080p always included.</p>
+
+                <div class="space-y-3">
+                    <label class="flex items-center gap-3 cursor-pointer group">
+                        <input type="checkbox" name="extra_res_below"
+                               {% if obj.extra_res_below %}checked{% endif %}
+                               class="w-4 h-4 bg-[#0e0e0e] border border-[#1e1e1e] rounded accent-[#f97316] cursor-pointer">
+                        <div>
+                            <span class="text-xs font-medium text-[#ccc] group-hover:text-white transition-colors">Below 480p</span>
+                            <p class="text-[11px] text-[#444]">Allow 360p, 240p etc.</p>
+                        </div>
+                    </label>
+
+                    <label class="flex items-center gap-3 cursor-pointer group">
+                        <input type="checkbox" name="extra_res_above"
+                               {% if obj.extra_res_above %}checked{% endif %}
+                               class="w-4 h-4 bg-[#0e0e0e] border border-[#1e1e1e] rounded accent-[#f97316] cursor-pointer">
+                        <div>
+                            <span class="text-xs font-medium text-[#ccc] group-hover:text-white transition-colors">Above 1080p</span>
+                            <p class="text-[11px] text-[#444]">Allow 2160p, 4K etc.</p>
+                        </div>
+                    </label>
+
+                    <div>
+                        <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Max Extra Resolutions</label>
+                        <input type="number" name="max_extra_resolutions" min="0" max="10" value="{{ obj.max_extra_resolutions|default:0 }}"
+                               class="w-24 bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm">
+                        <p class="text-[11px] text-[#444] mt-1">0 = unlimited. Limits how many extra resolutions to include.</p>
+                    </div>
+                </div>
+            </div>
+
             <button type="submit" class="btn-primary px-5 py-2 rounded-lg text-sm">Save</button>
         </form>
     </div>

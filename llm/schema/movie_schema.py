@@ -1,20 +1,7 @@
 import json
+from .blocked_names import SITE_NAME, BLOCKED_SITE_NAMES
 
-# ───────────────────────────────────────────────
-# Default Config
-# ───────────────────────────────────────────────
-
-SITE_NAME = "FlixBD"
-
-# Site names to strip from extracted titles/filenames
-BLOCKED_SITE_NAMES = [
-    "cinefreak", "cinefreak.net", "cinefreak.top",
-    "mlsbd", "mlsbd.shop",
-    "cinemaza", "mkvking", "hdmovie99",
-    "moviesmod", "vegamovies", "katmoviehd",
-    "extramovies", "filmyzilla", "bolly4u",
-    "themoviesflix", "movieverse",
-]
+_blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 
 
 # ───────────────────────────────────────────────
@@ -35,33 +22,15 @@ movie_schema = {
         "screen_shots_url": {"type": "array", "items": {"type": "string"}, "description": "The screen shots url of the movie"},
         "download_links": {
             "type": "object",
-            "properties": {
-                "480p": {
-                    "type": "string",
-                    "description": "480p download link here – always go for the x264 encode (it's the reliable one!)"
-                },
-                "720p": {
-                    "type": "string",
-                    "description": "720p download link here – always go for the x264 encode (it's the reliable one!)"
-                },
-                "1080p": {
-                    "type": "string",
-                    "description": "1080p download link here – always go for the x264 encode (it's the reliable one!)"
-                }
-            },
-            "minProperties": 1,      
-            "additionalProperties": False,
-            "description": "Download links for different resolutions. At least one resolution is required."
+            "additionalProperties": {"type": "string"},
+            "description": "Download links keyed by resolution (e.g. '480p', '720p', '1080p'). Keys are dynamic — any resolution is allowed. Values are download URLs. Prefer x264 encodes."
         }
     },
     "required": ["website_movie_title", "title", "year"]
 }
 
 
-_blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
-
-
-SYSTEM_PROMPT = f"""You are an expert web scraping assistant specialized in extracting movie information from HTML content.
+MOVIE_SYSTEM_PROMPT = f"""You are an expert web scraping assistant specialized in extracting movie information from HTML content.
 
 Your task is to analyze the provided HTML and extract movie details accurately.
 
@@ -98,20 +67,8 @@ Return only the JSON object. Nothing else."""
 
 filename_schema = {
     "type": "object",
-    "properties": {
-        "480p": {
-            "type": "string",
-            "description": "Filename for 480p"
-        },
-        "720p": {
-            "type": "string",
-            "description": "Filename for 720p"
-        },
-        "1080p": {
-            "type": "string",
-            "description": "Filename for 1080p"
-        }
-    }
+    "additionalProperties": {"type": "string"},
+    "description": "Filenames keyed by resolution (e.g. '480p', '720p', ....). Only include resolutions that exist in download_links."
 }
 
 
@@ -147,5 +104,3 @@ Given the movie info JSON, generate clean, standardized filenames for each avail
 
 ## Output:
 Return only the JSON object. Nothing else."""
-
-

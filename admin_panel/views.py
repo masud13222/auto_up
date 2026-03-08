@@ -124,6 +124,9 @@ def settings_view(request):
             obj = UploadSettings()
         obj.upload_folder_id = folder_id
         obj.worker_count = max(1, worker_count)
+        obj.extra_res_below = request.POST.get('extra_res_below') == 'on'
+        obj.extra_res_above = request.POST.get('extra_res_above') == 'on'
+        obj.max_extra_resolutions = int(request.POST.get('max_extra_resolutions', 0))
         obj.save()
         return redirect('panel:settings')
     return render(request, 'panel/settings.html', {'obj': obj})
