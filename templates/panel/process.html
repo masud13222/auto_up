@@ -1,13 +1,13 @@
 {% extends 'panel/base.html' %}
 {% block title %}Process — FlixBD{% endblock %}
-{% block page_title %}Process Movie{% endblock %}
+{% block page_title %}Process Media{% endblock %}
 {% block nav_process %}active{% endblock %}
 
 {% block content %}
 <div class="max-w-lg mx-auto" x-data="movieForm">
     <div class="card p-5 space-y-4">
         <div>
-            <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Movie URL</label>
+            <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Media URL</label>
             <input type="text" x-model="url" @keydown.enter="submit()"
                    placeholder="https://cinefreak.net/movie-page/"
                    class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]"
