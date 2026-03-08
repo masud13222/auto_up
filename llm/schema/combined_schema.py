@@ -28,7 +28,7 @@ combined_schema = {
 
 def _build_resolution_note(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
     """Build the resolution constraint text for the LLM prompt."""
-    base = "- **Base resolutions**: Always include 480p, 720p, 1080p if available on the page.\n"
+    base = "- **Base resolutions**: Always include 480p, 720p, and 1080p if available on the page.\n"
 
     if not extra_below and not extra_above:
         return base + "- **ONLY** include 480p, 720p, 1080p. Do NOT include any other resolutions.\n"
@@ -36,9 +36,9 @@ def _build_resolution_note(extra_below: bool = False, extra_above: bool = False,
     parts = [base]
 
     if extra_below:
-        parts.append("- Also include resolutions BELOW 480p if available (e.g. 360p, 240p).\n")
+        parts.append("- Also include any NON-STANDARD resolutions below 720p if available (e.g. 520p, 360p, 240p). Note: 480p is already in the base.\n")
     else:
-        parts.append("- Do NOT include resolutions below 480p (no 360p, 240p, etc.).\n")
+        parts.append("- Do NOT include non-standard resolutions below 720p (no 520p, 360p, 240p, etc.). Only 480p from sub-720p range.\n")
 
     if extra_above:
         parts.append("- Also include resolutions ABOVE 1080p if available (e.g. 2160p, 4K).\n")

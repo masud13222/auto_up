@@ -4,7 +4,7 @@
 {% block nav_settings %}active{% endblock %}
 
 {% block content %}
-<div class="max-w-lg space-y-4">
+<div class="max-w-lg space-y-4" x-data="settingsForm()">
     <div class="card p-5">
         <form method="post" class="space-y-5">
             {% csrf_token %}
@@ -23,35 +23,46 @@
 
             <!-- Resolution Settings -->
             <div class="border-t border-[#1e1e1e] pt-4">
-                <p class="text-[10px] font-semibold text-[#444] uppercase tracking-wider mb-3">Extra Resolutions</p>
-                <p class="text-[11px] text-[#333] mb-3">Base: 480p, 720p, 1080p always included.</p>
+                <p class="text-[10px] font-semibold text-[#444] uppercase tracking-wider mb-1">Extra Resolutions</p>
+                <p class="text-[11px] text-[#333] mb-4">Base: 480p, 720p, 1080p always included.</p>
 
                 <div class="space-y-3">
-                    <label class="flex items-center gap-3 cursor-pointer group">
-                        <input type="checkbox" name="extra_res_below"
-                               {% if obj.extra_res_below %}checked{% endif %}
-                               class="w-4 h-4 bg-[#0e0e0e] border border-[#1e1e1e] rounded accent-[#f97316] cursor-pointer">
+                    <!-- Below 720p Toggle -->
+                    <input type="hidden" name="extra_res_below" :value="resBelow ? 'on' : ''">
+                    <div class="flex items-center justify-between bg-[#0e0e0e] border border-[#1e1e1e] rounded-lg px-4 py-3">
                         <div>
-                            <span class="text-xs font-medium text-[#ccc] group-hover:text-white transition-colors">Below 480p</span>
-                            <p class="text-[11px] text-[#444]">Allow 360p, 240p etc.</p>
+                            <span class="text-xs font-medium text-[#ccc]">Below 720p</span>
+                            <p class="text-[11px] text-[#444]">Allow 520p, 360p, 240p etc.</p>
                         </div>
-                    </label>
+                        <button type="button" @click="resBelow = !resBelow"
+                                :class="resBelow ? 'bg-[#f97316]' : 'bg-[#222]'"
+                                class="relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none">
+                            <span :class="resBelow ? 'translate-x-5' : 'translate-x-0.5'"
+                                  class="absolute top-0.5 left-0 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200"></span>
+                        </button>
+                    </div>
 
-                    <label class="flex items-center gap-3 cursor-pointer group">
-                        <input type="checkbox" name="extra_res_above"
-                               {% if obj.extra_res_above %}checked{% endif %}
-                               class="w-4 h-4 bg-[#0e0e0e] border border-[#1e1e1e] rounded accent-[#f97316] cursor-pointer">
+                    <!-- Above 1080p Toggle -->
+                    <input type="hidden" name="extra_res_above" :value="resAbove ? 'on' : ''">
+                    <div class="flex items-center justify-between bg-[#0e0e0e] border border-[#1e1e1e] rounded-lg px-4 py-3">
                         <div>
-                            <span class="text-xs font-medium text-[#ccc] group-hover:text-white transition-colors">Above 1080p</span>
-                            <p class="text-[11px] text-[#444]">Allow 2160p, 4K etc.</p>
+                            <span class="text-xs font-medium text-[#ccc]">Above 1080p</span>
+                            <p class="text-[11px] text-[#444]">Allow 2160p, 4K</p>
                         </div>
-                    </label>
+                        <button type="button" @click="resAbove = !resAbove"
+                                :class="resAbove ? 'bg-[#f97316]' : 'bg-[#222]'"
+                                class="relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none">
+                            <span :class="resAbove ? 'translate-x-5' : 'translate-x-0.5'"
+                                  class="absolute top-0.5 left-0 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200"></span>
+                        </button>
+                    </div>
 
+                    <!-- Max Extra -->
                     <div>
                         <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Max Extra Resolutions</label>
                         <input type="number" name="max_extra_resolutions" min="0" max="10" value="{{ obj.max_extra_resolutions|default:0 }}"
                                class="w-24 bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm">
-                        <p class="text-[11px] text-[#444] mt-1">0 = unlimited. Limits how many extra resolutions to include.</p>
+                        <p class="text-[11px] text-[#444] mt-1">0 = unlimited. Limits extra resolutions beyond 480p/720p/1080p.</p>
                     </div>
                 </div>
             </div>
@@ -60,4 +71,13 @@
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('settingsForm', () => ({
+        resBelow: {{ obj.extra_res_below|yesno:"true,false" }},
+        resAbove: {{ obj.extra_res_above|yesno:"true,false" }},
+    }));
+});
+</script>
 {% endblock %}

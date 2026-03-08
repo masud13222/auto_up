@@ -26,7 +26,7 @@ class UploadSettings(models.Model):
     worker_count = models.PositiveIntegerField(default=1, help_text="Number of queue workers (requires qcluster restart)")
     extra_res_below = models.BooleanField(
         default=False,
-        help_text="Allow resolutions below 480p (e.g. 360p, 240p)"
+        help_text="Allow non-standard resolutions below 720p (e.g. 520p, 360p, 240p). 480p is always included."
     )
     extra_res_above = models.BooleanField(
         default=False,
