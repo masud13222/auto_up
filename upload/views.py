@@ -1,9 +1,9 @@
 from django.http import JsonResponse
 from django_q.tasks import async_task
-from .models import MovieTask
+from .models import MediaTask
 
 
-def process_movie(request):
+def process_media(request):
     """
     AJAX endpoint: receives a URL, checks for duplicates, queues task.
     """
@@ -15,7 +15,7 @@ def process_movie(request):
         return JsonResponse({'error': 'URL is required.'}, status=400)
 
     # Check if this URL was already processed
-    existing = MovieTask.objects.filter(url=url).first()
+    existing = MediaTask.objects.filter(url=url).first()
 
     if existing:
         if existing.status == 'completed':
@@ -41,7 +41,7 @@ def process_movie(request):
             existing.save()
 
             q_task_id = async_task(
-                'upload.tasks.process_movie_task',
+                'upload.tasks.process_media_task',
                 existing.pk,
                 task_name=f'Process: {url[:50]}',
             )
@@ -56,19 +56,19 @@ def process_movie(request):
             })
 
     # Create new task
-    movie_task = MovieTask.objects.create(url=url)
+    media_task = MediaTask.objects.create(url=url)
 
     q_task_id = async_task(
-        'upload.tasks.process_movie_task',
-        movie_task.pk,
+        'upload.tasks.process_media_task',
+        media_task.pk,
         task_name=f'Process: {url[:50]}',
     )
-    movie_task.task_id = q_task_id or ''
-    movie_task.save(update_fields=['task_id'])
+    media_task.task_id = q_task_id or ''
+    media_task.save(update_fields=['task_id'])
 
     return JsonResponse({
         'success': True,
-        'task_id': movie_task.pk,
+        'task_id': media_task.pk,
         'message': 'Task queued!',
-        'redirect': f'/panel/task/{movie_task.pk}/'
+        'redirect': f'/panel/task/{media_task.pk}/'
     })

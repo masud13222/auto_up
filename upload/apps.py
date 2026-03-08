@@ -18,10 +18,10 @@ class UploadConfig(AppConfig):
             return
 
         try:
-            from .models import MovieTask
+            from .models import MediaTask
 
             # Reset stuck tasks
-            stuck = MovieTask.objects.filter(status__in=['processing', 'pending'])
+            stuck = MediaTask.objects.filter(status__in=['processing', 'pending'])
             count = stuck.update(status='failed', error_message='Reset on server restart')
             if count:
                 logger.warning(f"Reset {count} stuck task(s) to failed.")

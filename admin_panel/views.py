@@ -8,12 +8,12 @@ from django.utils.safestring import mark_safe
 from django_q.tasks import async_task
 import json
 
-from upload.models import MovieTask
+from upload.models import MediaTask
 from settings.models import GoogleConfig, UploadSettings
 
 
 def _get_stats():
-    qs = MovieTask.objects
+    qs = MediaTask.objects
     return {
         'total': qs.count(),
         'completed': qs.filter(status='completed').count(),
@@ -30,14 +30,14 @@ def dashboard(request):
 
 @login_required
 def recent_tasks_fragment(request):
-    tasks = MovieTask.objects.all()[:10]
+    tasks = MediaTask.objects.all()[:10]
     return render(request, 'panel/fragments/recent_tasks.html', {'tasks': tasks})
 
 
 @login_required
 def queue_status_api(request):
-    processing = MovieTask.objects.filter(status='processing').count()
-    pending = MovieTask.objects.filter(status='pending').count()
+    processing = MediaTask.objects.filter(status='processing').count()
+    pending = MediaTask.objects.filter(status='pending').count()
     return render(request, 'panel/fragments/queue_status.html', {
         'processing_count': processing,
         'pending_count': pending,
@@ -47,7 +47,7 @@ def queue_status_api(request):
 @login_required
 def queue(request):
     status_filter = request.GET.get('status', '')
-    qs = MovieTask.objects.all()
+    qs = MediaTask.objects.all()
     if status_filter:
         qs = qs.filter(status=status_filter)
 
@@ -71,7 +71,7 @@ def queue(request):
 
 @login_required
 def task_detail(request, pk):
-    task = get_object_or_404(MovieTask, pk=pk)
+    task = get_object_or_404(MediaTask, pk=pk)
     result_json = mark_safe(json.dumps(task.result)) if task.result else 'null'
     return render(request, 'panel/task_detail.html', {'task': task, 'result_json': result_json})
 
@@ -79,7 +79,7 @@ def task_detail(request, pk):
 
 @login_required
 def task_status_api(request, pk):
-    task = get_object_or_404(MovieTask, pk=pk)
+    task = get_object_or_404(MediaTask, pk=pk)
     return JsonResponse({
         'status': task.status,
         'title': task.title,
@@ -91,11 +91,11 @@ def task_status_api(request, pk):
 @login_required
 @require_POST
 def requeue_task(request, pk):
-    task = get_object_or_404(MovieTask, pk=pk)
+    task = get_object_or_404(MediaTask, pk=pk)
     task.status = 'pending'
     task.error_message = ''
     task.save()
-    q_id = async_task('upload.tasks.process_movie_task', task.pk, task_name=f'Process: {task.url[:50]}')
+    q_id = async_task('upload.tasks.process_media_task', task.pk, task_name=f'Process: {task.url[:50]}')
     task.task_id = q_id or ''
     task.save(update_fields=['task_id'])
     return redirect('panel:task_detail', pk=pk)
@@ -104,7 +104,7 @@ def requeue_task(request, pk):
 @login_required
 @require_POST
 def delete_task(request, pk):
-    task = get_object_or_404(MovieTask, pk=pk)
+    task = get_object_or_404(MediaTask, pk=pk)
     task.delete()
     return redirect('panel:queue')
 

@@ -4,5 +4,5 @@ from . import views
 app_name = 'upload'
 
 urlpatterns = [
-    path('process/', views.process_movie, name='process_movie'),
+    path('process/', views.process_media, name='process_media'),
 ]

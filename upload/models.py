@@ -1,9 +1,9 @@
 from django.db import models
 
 
-class MovieTask(models.Model):
+class MediaTask(models.Model):
     """
-    Tracks each movie processing task.
+    Tracks each media processing task (Movie or TV Show).
     Prevents duplicate processing and stores final results.
     """
     STATUS_CHOICES = [
@@ -23,9 +23,11 @@ class MovieTask(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Movie Task"
-        verbose_name_plural = "Movie Tasks"
+        verbose_name = "Media Task"
+        verbose_name_plural = "Media Tasks"
         ordering = ['-created_at']
+        # Keep old DB table name to avoid data loss
+        db_table = 'upload_movietask'
 
     def __str__(self):
         return f"[{self.status}] {self.title or self.url[:50]}"

@@ -40,7 +40,7 @@ document.addEventListener('alpine:init', () => {
             fd.append('url', this.url);
             fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
             try {
-                const r = await fetch("{% url 'upload:process_movie' %}", { method:'POST', body:fd });
+                const r = await fetch("{% url 'upload:process_media' %}", { method:'POST', body:fd });
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.error || 'Failed');
                 this.message = d.message || 'Queued!';
