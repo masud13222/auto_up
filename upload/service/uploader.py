@@ -228,7 +228,7 @@ class DriveUploader:
         parent_folder_id = upload_settings.upload_folder_id
         title = movie_data.get("title", "Unknown")
         year = movie_data.get("year", "")
-        folder_name = f"{title} ({year})" if year else title
+        folder_name = f"{title} {year}" if year else title
 
         service = DriveUploader._get_drive_service()
         movie_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
@@ -275,7 +275,7 @@ class DriveUploader:
         parent_folder_id = upload_settings.upload_folder_id
         title = tvshow_data.get("title", "Unknown")
         year = tvshow_data.get("year", "")
-        folder_name = f"{title} ({year})" if year else title
+        folder_name = f"{title} {year}" if year else title
 
         service = DriveUploader._get_drive_service()
         show_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
