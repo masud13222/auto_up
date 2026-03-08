@@ -32,7 +32,13 @@ class Downloader:
             cmd = build_aria2c_command(url, download_dir, filename)
 
             # Run aria2c
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+            result = subprocess.run(
+                cmd, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                timeout=DOWNLOAD_TIMEOUT
+            )
 
             if result.returncode != 0:
                 logger.error(f"aria2c error for {filename}: {result.stderr}")

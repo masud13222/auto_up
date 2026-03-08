@@ -12,18 +12,20 @@ from llm.services import LLMService
 from llm.tvshow_schema import TVSHOW_FILENAME_SYSTEM_PROMPT, tvshow_filename_schema
 from django.conf import settings
 
-from .helpers import save_task, is_drive_link
+from .helpers import save_task, is_drive_link, log_memory
 
 logger = logging.getLogger(__name__)
 
 
 def process_tvshow_pipeline(media_task, tvshow_data):
     """
-    TV Show pipeline: Generate filenames → Sequential items, Parallel resolutions → Cleanup
+    TV Show pipeline: Generate filenames → Download/Clean/Upload → Cleanup
 
     Parallelism strategy:
     - Items (combo/partial/single) processed SEQUENTIALLY
-    - Resolutions (480p/720p/1080p) within each item processed in PARALLEL
+    - Downloads:  PARALLEL (all resolutions download at once)
+    - FFmpeg:     SEQUENTIAL (one at a time, prevents OOM)
+    - Uploads:    PARALLEL (runs in background alongside next ffmpeg)
     - Supports resume — skips items/resolutions already uploaded to Drive
     """
     title = tvshow_data.get("title", "Unknown")
@@ -110,11 +112,13 @@ def process_tvshow_pipeline(media_task, tvshow_data):
                 "season_folder_id": season_folders.get(season_num),
             })
 
-    def _process_one_resolution(quality, urls, fname, season_folder_id, season_num, item_label):
-        """Download → Clean → Upload → Delete one resolution (runs in thread)."""
+    # ── Helper functions ──
+
+    def _download_one(quality, urls, fname, season_num, item_label):
+        """Download only — runs in PARALLEL thread."""
+        log_memory(f"Before download {quality}")
         url_list = urls if isinstance(urls, list) else [urls]
 
-        # Download
         file_path = None
         for url in url_list:
             file_path = Downloader.download(url, fname, sub_folder=safe_title)
@@ -123,13 +127,20 @@ def process_tvshow_pipeline(media_task, tvshow_data):
 
         if not file_path:
             logger.warning(f"Could not download {quality} for S{season_num} {item_label}")
-            return quality, None
+        log_memory(f"After download {quality}")
+        return quality, file_path
 
-        # Clean subtitles
+    def _clean_one(quality, file_path):
+        """FFmpeg subtitle clean — runs SEQUENTIALLY in main thread."""
+        log_memory(f"Before ffmpeg {quality}")
         cleaned = process_downloaded_files({quality: file_path})
         file_path = cleaned.get(quality, file_path)
+        log_memory(f"After ffmpeg {quality}")
+        return file_path
 
-        # Upload to Drive
+    def _upload_one(quality, file_path, season_folder_id, season_num, item_label):
+        """Upload to Drive + delete — runs in PARALLEL thread."""
+        log_memory(f"Before upload {quality}")
         try:
             link = DriveUploader._upload_file(service, file_path, season_folder_id)
             logger.info(f"Uploaded S{season_num} {item_label} {quality}")
@@ -137,18 +148,21 @@ def process_tvshow_pipeline(media_task, tvshow_data):
             logger.error(f"Upload failed for S{season_num} {item_label} {quality}: {e}")
             link = f"UPLOAD_FAILED: {e}"
 
-        # Delete local file
+        # Delete local file after upload
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
 
+        log_memory(f"After upload+delete {quality}")
         return quality, link
 
-    # Step 4: Process items SEQUENTIALLY, resolutions PARALLEL
+    # ── Step 4: Process items ──
+    # Items: SEQUENTIAL | Downloads: PARALLEL | FFmpeg: SEQUENTIAL | Uploads: PARALLEL
     uploaded_count = 0
     total_items = len(all_items)
 
-    logger.info(f"Processing {total_items} TV show item(s) sequentially (resolutions parallel)")
+    logger.info(f"Processing {total_items} TV show item(s)")
+    log_memory("Pipeline start")
 
     for idx, item_info in enumerate(all_items, 1):
         season_num = item_info["season_number"]
@@ -165,7 +179,6 @@ def process_tvshow_pipeline(media_task, tvshow_data):
             urls = resolutions.get(quality)
             fname = fname_resolutions.get(quality)
 
-            # Skip if already uploaded to Drive (resume support)
             if is_drive_link(urls):
                 logger.info(f"Skipping S{season_num} {item_label} {quality}: already uploaded")
                 already_uploaded[quality] = urls
@@ -175,13 +188,7 @@ def process_tvshow_pipeline(media_task, tvshow_data):
                 to_process.append((quality, urls, fname))
 
         if not to_process:
-            # Check if all resolutions are already uploaded (resume)
-            already_done = all(
-                is_drive_link(resolutions.get(q))
-                for q in ["480p", "720p", "1080p"]
-                if resolutions.get(q)
-            )
-            if already_done and resolutions:
+            if already_uploaded:
                 logger.info(f"Skipping S{season_num} {item_label}: already uploaded to Drive")
                 uploaded_count += 1
             else:
@@ -190,26 +197,49 @@ def process_tvshow_pipeline(media_task, tvshow_data):
 
         logger.info(f"[{idx}/{total_items}] Processing S{season_num} {item_label}: {[q for q, _, _ in to_process]}")
 
-        # Parallel download+upload for all resolutions of this item
-        uploaded_resolutions = dict(already_uploaded)  # Start with already-uploaded ones
-        with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
-            futures = {
-                executor.submit(
-                    _process_one_resolution, q, u, f,
-                    season_folder_id, season_num, item_label
+        # ── Phase 1: Download ALL resolutions PARALLEL ──
+        uploaded_resolutions = dict(already_uploaded)
+        upload_executor = ThreadPoolExecutor(max_workers=3)
+        upload_futures = []
+
+        with ThreadPoolExecutor(max_workers=len(to_process)) as dl_executor:
+            download_futures = {
+                dl_executor.submit(
+                    _download_one, q, u, f, season_num, item_label
                 ): q
                 for q, u, f in to_process
             }
 
-            for future in as_completed(futures):
-                quality, link = future.result()
-                if link:
-                    uploaded_resolutions[quality] = link
+            # ── Phase 2: As each download completes ──
+            #   FFmpeg: SEQUENTIAL (blocks in main thread)
+            #   Upload: PARALLEL (fire to background thread)
+            for future in as_completed(download_futures):
+                quality, file_path = future.result()
+                if not file_path:
+                    continue
+
+                # FFmpeg — SEQUENTIAL (one at a time)
+                file_path = _clean_one(quality, file_path)
+
+                # Upload — PARALLEL (background thread)
+                uf = upload_executor.submit(
+                    _upload_one, quality, file_path,
+                    season_folder_id, season_num, item_label
+                )
+                upload_futures.append(uf)
+
+        # Wait for all background uploads to finish
+        for uf in upload_futures:
+            quality, link = uf.result()
+            if link:
+                uploaded_resolutions[quality] = link
+
+        upload_executor.shutdown(wait=False)
 
         if uploaded_resolutions:
             uploaded_count += 1
 
-            # Update tvshow_data with drive links for this item
+            # Update tvshow_data with drive links
             for season in tvshow_data.get("seasons", []):
                 if season.get("season_number") == season_num:
                     for item in season.get("download_items", []):
@@ -217,9 +247,9 @@ def process_tvshow_pipeline(media_task, tvshow_data):
                             item["resolutions"] = uploaded_resolutions
                             break
 
-            # Save progress after each item
             save_task(media_task, result=tvshow_data)
             logger.info(f"[{idx}/{total_items}] Saved: S{season_num} {item_label}")
+            log_memory(f"After item {idx}/{total_items}")
 
     # Clean empty folder
     show_dir = os.path.join(settings.DOWNLOADS_DIR, safe_title)
@@ -233,5 +263,6 @@ def process_tvshow_pipeline(media_task, tvshow_data):
     # Final save
     save_task(media_task, status='completed', result=tvshow_data, error_message='')
 
+    log_memory("Pipeline complete")
     logger.info(f"TV Show pipeline complete for: {title}. Uploaded {uploaded_count}/{total_items} items.")
     return json.dumps({"status": "success", "type": "tvshow", "data": tvshow_data})

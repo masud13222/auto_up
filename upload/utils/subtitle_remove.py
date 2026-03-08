@@ -126,7 +126,13 @@ def remove_subtitles(input_path: str) -> Optional[str]:
         ])
 
         logger.info(f"Removing {len(streams_to_remove)} subtitle stream(s)...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(
+            cmd, 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.PIPE, 
+            text=True, 
+            timeout=600
+        )
 
         if result.returncode != 0:
             logger.error(f"FFmpeg remux failed: {result.stderr[:500]}")
