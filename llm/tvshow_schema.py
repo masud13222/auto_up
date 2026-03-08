@@ -164,12 +164,42 @@ For each season, there can be multiple types of download items:
 - Label example: "Season 1 Episode 05"
 - episode_range: "05"
 
-### Rules for download extraction:
+## ⚠️ CRITICAL: NO DUPLICATE EPISODES — PRIORITY RULES:
+Follow this strict priority hierarchy. NEVER include the same episodes twice:
+
+1. **combo_pack** covers ALL episodes of a season → if a combo pack exists for a season, do NOT add ANY partial combos or single episodes for that same season.
+
+2. **partial_combo** covers a RANGE of episodes → if a partial combo covers episodes 01-08, do NOT add single episodes for episodes 01 through 08. Only add single episodes for episodes NOT covered by any partial combo.
+
+3. **single_episode** is ONLY for episodes that are NOT already covered by a combo_pack or partial_combo.
+
+### Example of CORRECT behavior:
+If the page has:
+- Combo Pack for Season 1 (all episodes)
+- Episode 01-08 bundle for Season 2
+- Episode 09-16 bundle for Season 2
+- Individual episodes 17, 18, 19 for Season 2
+
+Then output should be:
+- Season 1: combo_pack ONLY (no singles)
+- Season 2: partial_combo "01-08", partial_combo "09-16", single ep 17, 18, 19 ONLY
+
+### Example of WRONG behavior (DO NOT DO THIS):
+- Season 2: partial_combo "01-08" AND ALSO single ep 01, 02, 03... ← WRONG! These are already in the partial combo!
+
+## Rules for download extraction:
 - Group ALL download items under their respective season
 - Each download item has its own resolution links (480p, 720p, 1080p)
 - Always prefer x264 encodes when available
-- A season can have mixed types (e.g., combo pack AND individual episodes)
+- A season can have mixed types (e.g., partial combo AND single episodes for different episode ranges)
 - If the same season appears multiple times with different episode ranges, they all go under the same season_number
+- Keep the output CONCISE — only include what's actually on the page, no duplicates
+
+## ⚠️ How to correctly classify download types:
+- **combo_pack**: ONLY when a SINGLE download link covers an ENTIRE season bundled together. The page will show ONE download section for the whole season with a SINGLE set of resolution links.
+- **partial_combo**: ONLY when a SINGLE download link covers a RANGE of episodes bundled together (e.g., one file for "Episode 01-08"). The page will show ONE download section with a SINGLE set of resolution links for that range.
+- **single_episode**: When an individual episode has its OWN separate download section with its OWN individual links.
+- **DO NOT** group consecutive single episodes into a combo or partial_combo. If each episode has its own separate download section on the page, they are always "single_episode".
 
 ## Example structure:
 ```json
@@ -199,23 +229,6 @@ For each season, there can be multiple types of download items:
           "label": "Season 2 Episode 09-12",
           "episode_range": "09-12",
           "resolutions": {{"720p": "url", "1080p": "url"}}
-        }}
-      ]
-    }},
-    {{
-      "season_number": 3,
-      "download_items": [
-        {{
-          "type": "single_episode",
-          "label": "Season 3 Episode 01",
-          "episode_range": "01",
-          "resolutions": {{"480p": "url", "720p": "url", "1080p": "url"}}
-        }},
-        {{
-          "type": "single_episode",
-          "label": "Season 3 Episode 02",
-          "episode_range": "02",
-          "resolutions": {{"480p": "url", "720p": "url", "1080p": "url"}}
         }}
       ]
     }}

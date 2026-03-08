@@ -3,6 +3,7 @@ import re
 import logging
 from upload.utils.web_scrape import WebScrapeService
 from llm.services import LLMService
+from llm.json_repair import repair_json
 from llm.schema import SYSTEM_PROMPT, movie_schema
 from llm.tvshow_schema import TVSHOW_SYSTEM_PROMPT, tvshow_schema
 from llm.content_type_detector import CONTENT_TYPE_DETECTION_PROMPT
@@ -13,16 +14,9 @@ logger = logging.getLogger(__name__)
 def get_structured_output(llm_response: str, schema: dict) -> dict:
     """
     Extracts and validates JSON from LLM response string.
-    Supports both JSON objects and JSON arrays.
+    Uses json_repair to handle truncated/malformed responses.
     """
-    json_obj_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-    json_array_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
-
-    if json_obj_match:
-        return json.loads(json_obj_match.group())
-    if json_array_match:
-        return json.loads(json_array_match.group())
-    raise ValueError("No JSON found in response")
+    return repair_json(llm_response)
 
 
 def detect_content_type(html_content: str) -> str:

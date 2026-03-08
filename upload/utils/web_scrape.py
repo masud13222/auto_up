@@ -1,11 +1,17 @@
 import httpx
 import re
+import io
 import time
 import logging
 from django.conf import settings
 from selectolax.lexbor import LexborHTMLParser
+from markitdown import MarkItDown
 
 logger = logging.getLogger(__name__)
+
+# Reuse a single MarkItDown instance
+_markitdown = MarkItDown()
+
 
 class WebScrapeService:
     DEFAULT_HEADERS = {
@@ -18,13 +24,6 @@ class WebScrapeService:
         **DEFAULT_HEADERS,
         "Referer": "https://cinefreak.net/",
     }
-
-    # Tags to remove entirely (including their content)
-    JUNK_TAGS = [
-        "script", "style", "nav", "footer", "header",
-        "noscript", "iframe", "svg", "form", "button",
-        "aside", "menu",
-    ]
 
     # Retry configuration
     MAX_RETRIES = 3
@@ -74,62 +73,26 @@ class WebScrapeService:
     @staticmethod
     def clean_html(html: str) -> str:
         """
-        Strips HTML tags to reduce token count while preserving essential info.
-        
-        - <a href="url">text</a>  →  text [url]
-        - <img src="url">         →  [IMG: url]
-        - <script>, <style>, etc  →  removed entirely
-        - All other tags           →  just text content
-        - Collapses extra whitespace
+        Converts HTML to LLM-friendly Markdown using MarkItDown.
+        Preserves links, images, and content structure while reducing tokens.
         """
-        parser = LexborHTMLParser(html)
+        # Convert HTML string to bytes for MarkItDown
+        html_bytes = html.encode("utf-8")
+        buf = io.BytesIO(html_bytes)
 
-        # Step 1: Remove junk tags entirely (content + tag)
-        for tag_name in WebScrapeService.JUNK_TAGS:
-            for node in parser.css(tag_name):
-                node.decompose()
+        result = _markitdown.convert_stream(buf, file_extension=".html")
+        markdown = result.text_content
 
-        # Step 2: Convert <img> to [IMG: url] before stripping
-        for img in parser.css("img"):
-            src = img.attributes.get("src") or img.attributes.get("data-src") or img.attributes.get("data-lazy-src") or ""
-            if src:
-                img.replace_with(f" [IMG: {src}] ")
-            else:
-                img.decompose()
+        # Collapse excessive blank lines (3+ → 2)
+        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
 
-        # Step 3: Convert <a href> to text [url] before stripping
-        for a_tag in parser.css("a"):
-            href = a_tag.attributes.get("href") or ""
-            text = a_tag.text(strip=True) or ""
-            if href and href.startswith(("http", "//")):
-                a_tag.replace_with(f" {text} [{href}] ")
-            elif text:
-                a_tag.replace_with(f" {text} ")
-            else:
-                a_tag.decompose()
-
-        # Step 4: Get just the text content (all remaining tags stripped)
-        body = parser.body
-        if body:
-            raw_text = body.text(separator="\n")
-        else:
-            raw_text = parser.html or ""
-
-        # Step 5: Collapse whitespace
-        lines = [line.strip() for line in raw_text.splitlines()]
-        lines = [line for line in lines if line]  # remove empty lines
-        cleaned = "\n".join(lines)
-
-        # Collapse multiple spaces within lines
-        cleaned = re.sub(r' {2,}', ' ', cleaned)
-
-        return cleaned
+        return markdown.strip()
 
     @staticmethod
     def get_page_content(url, selector="div.single-service-content"):
         """
         Fetches page content, extracts the target container,
-        and returns cleaned text (tags stripped) for reduced token usage.
+        and converts to Markdown (via MarkItDown) for reduced token usage.
         Retries automatically on connection/proxy failures.
         """
         proxy = getattr(settings, 'SCRAPE_PROXY', None) or None
@@ -152,7 +115,7 @@ class WebScrapeService:
                     cleaned = WebScrapeService.clean_html(raw_html)
                     logger.debug(
                         f"Extracted & cleaned content. "
-                        f"Raw HTML: {len(raw_html)} chars → Cleaned: {len(cleaned)} chars "
+                        f"Raw HTML: {len(raw_html)} chars → Markdown: {len(cleaned)} chars "
                         f"({100 - (len(cleaned) / len(raw_html) * 100):.0f}% reduction)"
                     )
                     return cleaned
@@ -195,7 +158,7 @@ class WebScrapeService:
                     r = WebScrapeService._request_with_retry(client, short_url)
                     
                     # 3. Regex for Cloudflare R2 storage links
-                    pattern_r2 = r'href=["\']((?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
+                    pattern_r2 = r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
                     matches = re.findall(pattern_r2, r.text)
                     
                     if matches:
