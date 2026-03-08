@@ -63,7 +63,7 @@ def process_tvshow_pipeline(media_task, tvshow_data):
     service = DriveUploader._get_drive_service()
 
     from settings.models import UploadSettings
-    upload_settings = UploadSettings.objects.filter(pk=1).first()
+    upload_settings = UploadSettings.objects.first()
     if not upload_settings:
         raise Exception("UploadSettings not configured.")
 
@@ -148,7 +148,7 @@ def process_tvshow_pipeline(media_task, tvshow_data):
             logger.info(f"Uploaded S{season_num} {item_label} {quality}")
         except Exception as e:
             logger.error(f"Upload failed for S{season_num} {item_label} {quality}: {e}")
-            link = f"UPLOAD_FAILED: {e}"
+            link = None
 
         # Delete local file after upload
         if os.path.exists(file_path):

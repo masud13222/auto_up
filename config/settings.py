@@ -159,7 +159,7 @@ DOWNLOADS_DIR = BASE_DIR / 'downloads'
 def _get_worker_count():
     try:
         from settings.models import UploadSettings
-        s = UploadSettings.objects.filter(pk=1).first()
+        s = UploadSettings.objects.first()
         return s.worker_count if s else 1
     except Exception:
         return 1

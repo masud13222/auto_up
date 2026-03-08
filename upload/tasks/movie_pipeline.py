@@ -48,7 +48,7 @@ def process_movie_pipeline(media_task, movie_data):
     service = DriveUploader._get_drive_service()
 
     from settings.models import UploadSettings
-    upload_settings = UploadSettings.objects.filter(pk=1).first()
+    upload_settings = UploadSettings.objects.first()
     if not upload_settings:
         raise Exception("UploadSettings not configured.")
 
@@ -88,7 +88,7 @@ def process_movie_pipeline(media_task, movie_data):
             link = DriveUploader._upload_file(thread_service, file_path, movie_folder_id)
         except Exception as e:
             logger.error(f"Upload failed for {quality}: {e}")
-            link = f"UPLOAD_FAILED: {e}"
+            link = None
 
         # Delete local file
         if os.path.exists(file_path):

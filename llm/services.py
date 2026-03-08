@@ -11,7 +11,7 @@ class LLMService:
         Initializes the OpenAI client with stored settings.
         If no settings found, returns None or raises exception.
         """
-        config = LLMSettings.objects.filter(pk=1).first()
+        config = LLMSettings.objects.first()
         if not config or not config.api_key:
             logger.error("LLM Settings (API Key) not found in database.")
             return None
@@ -33,7 +33,7 @@ class LLMService:
         if not client:
             raise Exception("LLM Settings not configured correctly in the admin.")
 
-        config = LLMSettings.objects.filter(pk=1).first()
+        config = LLMSettings.objects.first()
         
         logger.info(f"Generating LLM completion using model: {config.model_name}")
         try:

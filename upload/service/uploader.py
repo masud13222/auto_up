@@ -2,6 +2,7 @@ import os
 import json
 import random
 import logging
+import threading
 from datetime import datetime, timezone
 from django.core.files.base import ContentFile
 from googleapiclient.discovery import build
@@ -14,28 +15,42 @@ from credentials.services import GoogleAuthService
 
 logger = logging.getLogger(__name__)
 
-# Retry শুধু এই HTTP status codes এ হবে
+# Retry on these HTTP status codes during resumable upload
 RETRYABLE_STATUS_CODES = {308, 429, 500, 502, 503, 504}
+
+# Thread-safe token refresh locks (per config ID)
+_refresh_locks = {}
+_refresh_locks_lock = threading.Lock()
+
+
+def _get_refresh_lock(config_id):
+    """Get or create a per-config threading lock for token refresh."""
+    with _refresh_locks_lock:
+        if config_id not in _refresh_locks:
+            _refresh_locks[config_id] = threading.Lock()
+        return _refresh_locks[config_id]
 
 
 class DriveUploader:
 
     @staticmethod
     def _get_random_config_id():
-        pk_list = GoogleConfig.objects.values_list('pk', flat=True)
+        pk_list = list(GoogleConfig.objects.values_list('pk', flat=True))
         if not pk_list:
             raise Exception("No GoogleConfig found. Please add a token.json in admin.")
         return random.choice(pk_list)
 
     @staticmethod
     def _load_token_data(config):
+        """Load token JSON from config file (with seek to start)."""
+        config.config_file.seek(0)  # Always read from beginning
         raw = config.config_file.read()
         config.config_file.close()
         return json.loads(raw.decode('utf-8'))
 
     @staticmethod
     def _is_token_expired(token_data: dict) -> bool:
-        """Token expired কিনা check করো।"""
+        """Check if token has expired."""
         expiry_str = token_data.get('expiry')
         if not expiry_str:
             return True
@@ -49,6 +64,7 @@ class DriveUploader:
 
     @staticmethod
     def _refresh_and_save(config, token_data: dict) -> dict:
+        """Refresh OAuth token and save back to DB."""
         try:
             refreshed = GoogleAuthService.refresh_access_token(
                 refresh_token=token_data['refresh_token'],
@@ -85,29 +101,38 @@ class DriveUploader:
     @staticmethod
     def _get_credentials() -> Credentials:
         """
-        Random config pick → token load → refresh if needed → Credentials return।
+        Random config pick → token load → thread-safe refresh if needed → Credentials.
+        Uses per-config locks to prevent concurrent refresh of the same token.
         """
         config_id = DriveUploader._get_random_config_id()
-        # Single object fetch — পুরো queryset RAM এ না
         config = GoogleConfig.objects.get(pk=config_id)
         logger.info(f"Using Google Config: {config.name} (ID: {config.pk})")
 
-        token_data = DriveUploader._load_token_data(config)
+        # Thread-safe token refresh with per-config lock
+        with _get_refresh_lock(config_id):
+            token_data = DriveUploader._load_token_data(config)
 
-        if DriveUploader._is_token_expired(token_data) or not token_data.get('token'):
-            logger.info("Token expired or missing. Refreshing...")
-            token_data = DriveUploader._refresh_and_save(config, token_data)
+            if DriveUploader._is_token_expired(token_data) or not token_data.get('token'):
+                logger.info("Token expired or missing. Refreshing...")
+                token_data = DriveUploader._refresh_and_save(config, token_data)
 
         return DriveUploader._build_credentials(token_data)
 
     @staticmethod
     def _get_drive_service():
+        """Build a NEW Drive service (call per-thread for thread safety)."""
         creds = DriveUploader._get_credentials()
         return build('drive', 'v3', credentials=creds)
 
     @staticmethod
     def _get_or_create_folder(service, folder_name: str, parent_id: str) -> str:
-        safe_name = folder_name.replace("'", "\\'")
+        """
+        Get existing folder or create new one.
+        Handles race condition: if two threads try to create the same folder,
+        the second one catches the conflict and returns the existing folder.
+        """
+        # Escape special chars for Drive query
+        safe_name = folder_name.replace("\\", "\\\\").replace("'", "\\'")
         query = (
             f"name='{safe_name}' and '{parent_id}' in parents "
             f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -126,19 +151,36 @@ class DriveUploader:
             logger.info(f"Folder exists: '{folder_name}' ({folder_id})")
             return folder_id
 
-        folder = service.files().create(
-            body={
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [parent_id]
-            },
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
+        try:
+            folder = service.files().create(
+                body={
+                    'name': folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder',
+                    'parents': [parent_id]
+                },
+                fields='id',
+                supportsAllDrives=True
+            ).execute()
 
-        folder_id = folder['id']
-        logger.info(f"Created folder: '{folder_name}' ({folder_id})")
-        return folder_id
+            folder_id = folder['id']
+            logger.info(f"Created folder: '{folder_name}' ({folder_id})")
+            return folder_id
+
+        except HttpError as e:
+            # Race condition: another thread already created this folder
+            if e.resp.status in (409, 400):
+                logger.warning(f"Folder creation conflict for '{folder_name}', re-querying...")
+                results = service.files().list(
+                    q=query,
+                    fields="files(id)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageSize=1
+                ).execute()
+                existing = results.get('files', [])
+                if existing:
+                    return existing[0]['id']
+            raise
 
     @staticmethod
     def _upload_file(service, file_path: str, folder_id: str, max_retries: int = 5) -> str:
@@ -179,7 +221,7 @@ class DriveUploader:
             except HttpError as e:
                 if e.resp.status in (401, 403):
                     logger.error(f"Auth/permission error uploading '{filename}': {e}")
-                    raise
+                    raise  # Caller retries with fresh service
                 if e.resp.status not in RETRYABLE_STATUS_CODES:
                     raise
 
@@ -221,7 +263,7 @@ class DriveUploader:
             movie_data: Movie info dict
             downloaded_files: {quality: file_path, ...}
         """
-        upload_settings = UploadSettings.objects.filter(pk=1).first()
+        upload_settings = UploadSettings.objects.first()
         if not upload_settings:
             raise Exception("UploadSettings not configured. Please set upload_folder_id in admin.")
 
@@ -242,7 +284,7 @@ class DriveUploader:
                 drive_links[quality] = DriveUploader._upload_file(service, file_path, movie_folder_id)
             except Exception as e:
                 logger.error(f"Upload failed for quality '{quality}': {e}", exc_info=True)
-                drive_links[quality] = f"UPLOAD_FAILED: {e}"
+                drive_links[quality] = None  # Failed — caller decides retry
 
         if drive_links:
             movie_data["download_links"] = drive_links
@@ -268,7 +310,7 @@ class DriveUploader:
                     ...
                 ]
         """
-        upload_settings = UploadSettings.objects.filter(pk=1).first()
+        upload_settings = UploadSettings.objects.first()
         if not upload_settings:
             raise Exception("UploadSettings not configured. Please set upload_folder_id in admin.")
 
@@ -310,7 +352,7 @@ class DriveUploader:
                     )
                 except Exception as e:
                     logger.error(f"Upload failed for '{item_label}' quality '{quality}': {e}", exc_info=True)
-                    uploaded_resolutions[quality] = f"UPLOAD_FAILED: {e}"
+                    uploaded_resolutions[quality] = None  # Failed — caller decides retry
 
             if uploaded_resolutions:
                 uploaded_items.append({

@@ -116,7 +116,7 @@ def process(request):
 
 @login_required
 def settings_view(request):
-    obj = UploadSettings.objects.filter(pk=1).first()
+    obj = UploadSettings.objects.first()
     if request.method == 'POST':
         folder_id = request.POST.get('upload_folder_id', '').strip()
         worker_count = int(request.POST.get('worker_count', 1))
@@ -156,7 +156,7 @@ def delete_google_account(request, pk):
 @login_required
 def llm_settings(request):
     from llm.models import LLMSettings
-    obj = LLMSettings.objects.filter(pk=1).first()
+    obj = LLMSettings.objects.first()
     if request.method == 'POST':
         if not obj:
             obj = LLMSettings()
