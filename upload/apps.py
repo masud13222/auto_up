@@ -25,11 +25,11 @@ class UploadConfig(AppConfig):
             from .models import MediaTask
             from django_q.tasks import async_task
 
-            # Re-queue processing tasks (they were interrupted by restart)
-            processing = MediaTask.objects.filter(status='processing')
-            count = processing.count()
-            for task in processing:
-                logger.info(f"Auto-resuming interrupted task: {task.title or task.url[:50]} (pk={task.pk})")
+            # Re-queue pending/processing tasks (they lost their Django-Q entries on restart)
+            stuck = MediaTask.objects.filter(status__in=['processing', 'pending'])
+            count = stuck.count()
+            for task in stuck:
+                logger.info(f"Auto-resuming {task.status} task: {task.title or task.url[:50]} (pk={task.pk})")
                 task.status = 'pending'
                 task.save(update_fields=['status', 'updated_at'])
 
@@ -42,7 +42,7 @@ class UploadConfig(AppConfig):
                 task.save(update_fields=['task_id'])
 
             if count:
-                logger.warning(f"Auto-resumed {count} interrupted task(s).")
+                logger.warning(f"Auto-resumed {count} task(s) (pending+processing).")
 
             # Clean downloads folder (leftover partial files)
             downloads_dir = str(settings.DOWNLOADS_DIR)
