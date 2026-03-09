@@ -14,9 +14,9 @@ class ScrapeItemInline(admin.TabularInline):
 
 @admin.register(ScrapeRun)
 class ScrapeRunAdmin(admin.ModelAdmin):
-    list_display = ('id', 'status', 'total_scraped', 'url_skipped', 'daily_limit_skipped', 'llm_approved', 'llm_skipped', 'queued', 'duration_seconds', 'started_at')
+    list_display = ('id', 'status', 'total_scraped', 'daily_limit_skipped', 'llm_approved', 'llm_skipped', 'queued', 'duration_seconds', 'started_at')
     list_filter = ('status',)
-    readonly_fields = ('status', 'total_scraped', 'url_skipped', 'daily_limit_skipped', 'llm_approved', 'llm_skipped', 'queued', 'error_message', 'duration_seconds', 'started_at', 'finished_at')
+    readonly_fields = ('status', 'total_scraped', 'daily_limit_skipped', 'llm_approved', 'llm_skipped', 'queued', 'error_message', 'duration_seconds', 'started_at', 'finished_at')
     inlines = [ScrapeItemInline]
     ordering = ('-started_at',)
 

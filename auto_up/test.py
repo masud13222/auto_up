@@ -49,34 +49,12 @@ def main():
         print(f"    {i}. {e['raw_title'][:70]}")
         print(f"       {e['url']}")
 
-    # ── Step 2: URL pre-filter ──
+    # ── Step 2: Extract names + search DB ──
     print(f"\n{THIN_DIVIDER}")
-    print("[2] Checking URLs against DB...")
-
-    all_urls = [e["url"] for e in entries]
-    existing_urls = set(
-        MediaTask.objects.filter(url__in=all_urls).values_list("url", flat=True)
-    )
-
-    new_entries = []
-    for e in entries:
-        if e["url"] in existing_urls:
-            print(f"    SKIP (URL exists): {e['raw_title'][:50]}")
-        else:
-            new_entries.append(e)
-
-    print(f"    After URL filter: {len(new_entries)} remaining")
-
-    if not new_entries:
-        print("All URLs already in DB. Nothing to send to LLM.")
-        return
-
-    # ── Step 3: Extract names + search DB ──
-    print(f"\n{THIN_DIVIDER}")
-    print("[3] Extracting names + searching DB...\n")
+    print("[2] Extracting names + searching DB...\n")
 
     enriched_items = []
-    for e in new_entries:
+    for e in entries:
         info = extract_title_info(e["raw_title"])
         db_results = search_existing(info.title, info.year) if info.title else {"results": [], "has_matches": False}
 

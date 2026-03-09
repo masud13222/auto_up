@@ -5,7 +5,7 @@ Main entry point: auto_scrape_and_queue()
 - Scrapes CineFreak homepage
 - Extracts clean names from titles
 - Enforces daily limit (max 2 process per URL per day)
-- Searches DB for existing entries
+- Searches DB for existing entries (fuzzy matching)
 - Sends everything to LLM for filtering
 - Queues approved items via process_media_task
 - Logs everything to ScrapeRun + ScrapeItem models
@@ -60,13 +60,12 @@ def auto_scrape_and_queue() -> str:
     Full auto-scrape pipeline:
     1. Cleanup old logs (>7 days)
     2. Scrape CineFreak homepage
-    3. Pre-filter: skip URLs already in MediaTask DB
-    4. Daily limit check: max 2 process per URL per day
-    5. For each remaining entry: extract clean name + year
-    6. Search DB for existing matches (name-only + name+year)
-    7. Send all items + DB results to LLM for filtering
-    8. Queue approved items for processing
-    9. Log everything to ScrapeRun + ScrapeItem
+    3. Daily limit check: max 2 process per URL per day
+    4. For each remaining entry: extract clean name + year
+    5. Search DB for existing matches (fuzzy matching)
+    6. Send all items + DB results to LLM for filtering
+    7. Queue approved items for processing
+    8. Log everything to ScrapeRun + ScrapeItem
 
     Returns:
         Summary string of what happened.
@@ -94,42 +93,11 @@ def auto_scrape_and_queue() -> str:
 
         logger.info(f"Found {len(entries)} entries on homepage")
 
-        # ── Step 2: Pre-filter — skip URLs already in MediaTask DB ──
-        all_urls = [e["url"] for e in entries]
-        existing_urls = set(
-            MediaTask.objects.filter(url__in=all_urls).values_list("url", flat=True)
-        )
-
-        new_entries = []
-        url_skipped = 0
-
-        for entry in entries:
-            if entry["url"] in existing_urls:
-                url_skipped += 1
-                ScrapeItem.objects.create(
-                    run=scrape_run,
-                    raw_title=entry["raw_title"],
-                    url=entry["url"],
-                    action='skip_url_exists',
-                    reason='URL already exists in MediaTask DB',
-                )
-            else:
-                new_entries.append(entry)
-
-        scrape_run.url_skipped = url_skipped
-
-        if url_skipped:
-            logger.info(f"Skipped {url_skipped} entries (URLs already in DB)")
-
-        if not new_entries:
-            _finish_run(scrape_run, run_start, f"All {len(entries)} entries already exist in DB")
-            return "All entries already exist in DB. Nothing new."
-
-        # ── Step 3: Daily limit check ──
+        # ── Step 2: Daily limit check ──
         daily_filtered = []
         daily_limit_skipped = 0
 
-        for entry in new_entries:
+        for entry in entries:
             count = _get_daily_process_count(entry["url"])
             if count >= DAILY_PROCESS_LIMIT:
                 daily_limit_skipped += 1
@@ -150,10 +118,10 @@ def auto_scrape_and_queue() -> str:
             logger.info(f"Skipped {daily_limit_skipped} entries (daily limit of {DAILY_PROCESS_LIMIT} reached)")
 
         if not daily_filtered:
-            _finish_run(scrape_run, run_start, "All remaining entries hit daily limit")
+            _finish_run(scrape_run, run_start, "All entries hit daily limit")
             return "All entries hit daily process limit."
 
-        # ── Step 4: Extract names + search DB ──
+        # ── Step 3: Extract names + search DB ──
         enriched_items = []
 
         for entry in daily_filtered:
@@ -192,7 +160,7 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "No valid items after name extraction")
             return "No valid items to filter."
 
-        # ── Step 5: LLM filtering ──
+        # ── Step 4: LLM filtering ──
         to_process = filter_items_with_llm(enriched_items)
 
         # Log LLM skipped items
@@ -219,7 +187,7 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "LLM decided all items should be skipped")
             return "LLM skipped everything."
 
-        # ── Step 6: Queue approved items ──
+        # ── Step 5: Queue approved items ──
         queued_count = 0
 
         for item in to_process:
@@ -307,7 +275,6 @@ def _finish_run(scrape_run: ScrapeRun, run_start, message: str = None) -> str:
     summary = (
         f"Auto-scrape #{scrape_run.pk} done in {scrape_run.duration_seconds:.1f}s: "
         f"scraped={scrape_run.total_scraped}, "
-        f"url_skip={scrape_run.url_skipped}, "
         f"daily_limit_skip={scrape_run.daily_limit_skipped}, "
         f"llm_approved={scrape_run.llm_approved}, "
         f"llm_skip={scrape_run.llm_skipped}, "
