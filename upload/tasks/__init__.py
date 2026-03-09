@@ -130,6 +130,8 @@ def process_media_task(task_pk: int) -> str:
                 else:
                     logger.info(f"No existing match for '{name}'. New content.")
 
+        resume_result = media_task.result or {}
+
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
             title = data.get("title", "")
@@ -143,6 +145,12 @@ def process_media_task(task_pk: int) -> str:
             url, on_progress=_on_progress, db_match_info=db_match_info
         )
         title = data.get("title", "Unknown")
+
+        # ── Merge resume drive links (restart recovery) ──
+        # If this task had partial uploads before restart, preserve those drive links
+        if resume_result and not existing_task:
+            data = _merge_drive_links(resume_result, data)
+            logger.info("Checked for drive links from previous partial upload (resume)")
 
         # ── Handle duplicate result ──
         action = "process"
