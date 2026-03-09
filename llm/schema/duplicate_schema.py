@@ -83,13 +83,15 @@ First, from `new_website_title`, detect if the new content is a **movie** or **t
   - Existing is low quality (CAM, HDCAM, HDTS, DVDRip, DVDScr, HC-HDRip) and new is better (WEB-DL, BluRay, WEBRip)
   - Complete re-download is needed because old quality is unacceptable
 - This replaces the ENTIRE existing entry
+- ALSO use "replace" when existing_type ≠ detected_new_type BUT same title/year
+  - This means the existing entry was MISCLASSIFIED (e.g. a TV show was saved as movie)
+  - Same name + same year + different type = misclassification → "replace"
 
 ### → "process" (is_duplicate=false)
 - DIFFERENT media entirely
 - Different movie/show name
 - Different season of the same show
 - Year mismatch → usually different content
-- Type mismatch (movie vs tvshow) → ALWAYS process
 
 ## Quality Hierarchy (lowest to highest):
 CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX

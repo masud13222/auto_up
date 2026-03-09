@@ -55,7 +55,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         prompt=json.dumps(tvshow_data, indent=2),
         system_prompt=TVSHOW_FILENAME_SYSTEM_PROMPT
     )
-    filenames = get_structured_output(filename_response, tvshow_filename_schema)
+    filenames = get_structured_output(filename_response)
     if not isinstance(filenames, list):
         filenames = [filenames]
 
