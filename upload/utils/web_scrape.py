@@ -178,51 +178,58 @@ class WebScrapeService:
                 timeout=WebScrapeService.REQUEST_TIMEOUT,
                 follow_redirects=True
             ) as client:
-                # 1. Initial request to find window.location.href
+                # Reusable patterns
+                pattern_r2 = r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
+                pattern_video = r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
+
+                # 1. Initial request
                 r = WebScrapeService._request_with_retry(client, url)
                 
                 # Regex for window.location.href
                 pattern_loc = r'window\.location\.href\s*=\s*["\'](.+?)["\']'
                 match_loc = re.search(pattern_loc, r.text)
                 
+                # Determine the page to extract links from
+                target_url = url  # default: current page
                 if match_loc:
-                    short_url = match_loc.group(1)
-                    logger.debug(f"Found redirect URL: {short_url}")
-                    
-                    # 2. Request the redirected short URL
-                    r = WebScrapeService._request_with_retry(client, short_url)
-                    
-                    # 3. Regex for Cloudflare R2 storage links
-                    pattern_r2 = r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
-                    matches = re.findall(pattern_r2, r.text)
-                    
-                    if matches:
-                        logger.info(f"Successfully found {len(matches)} R2 links")
-                        return matches
-                    
-                    # --- Fallback Logic ---
-                    logger.info(f"No R2 links found. Trying fallback for: {short_url}")
-                    
-                    # Pattern for direct Google video downloads
-                    pattern_video = r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
-                    
-                    # Try modifying /f/ to /w/ or /gp/
-                    fallbacks = []
-                    if "/f/" in short_url:
-                        fallbacks.append(short_url.replace("/f/", "/w/"))
-                        fallbacks.append(short_url.replace("/f/", "/gp/"))
-                    
-                    for fb_url in fallbacks:
-                        try:
-                            logger.debug(f"Checking fallback: {fb_url}")
-                            r_fb = WebScrapeService._request_with_retry(client, fb_url)
-                            fb_matches = re.findall(pattern_video, r_fb.text)
-                            if fb_matches:
-                                logger.info(f"Found {len(fb_matches)} video links in {fb_url}")
-                                return fb_matches
-                        except Exception as e:
-                            logger.warning(f"Fallback failed for {fb_url}: {e}")
+                    target_url = match_loc.group(1)
+                    logger.debug(f"Found redirect URL: {target_url}")
+                    # Follow the redirect
+                    r = WebScrapeService._request_with_retry(client, target_url)
+                else:
+                    logger.debug(f"No redirect found, checking current page for links: {url}")
+
+                # 2. Check for R2 links on page
+                matches = re.findall(pattern_r2, r.text)
+                if matches:
+                    logger.info(f"Successfully found {len(matches)} R2 links")
+                    return matches
+
+                # 3. Check for video links on page
+                video_matches = re.findall(pattern_video, r.text)
+                if video_matches:
+                    logger.info(f"Found {len(video_matches)} video links")
+                    return video_matches
+
+                # 4. Fallback: try /w/ and /gp/ variants
+                logger.info(f"No R2/video links found. Trying fallback for: {target_url}")
+                fallbacks = []
+                if "/f/" in target_url:
+                    fallbacks.append(target_url.replace("/f/", "/w/"))
+                    fallbacks.append(target_url.replace("/f/", "/gp/"))
                 
+                for fb_url in fallbacks:
+                    try:
+                        logger.debug(f"Checking fallback: {fb_url}")
+                        r_fb = WebScrapeService._request_with_retry(client, fb_url)
+                        fb_matches = re.findall(pattern_video, r_fb.text)
+                        if fb_matches:
+                            logger.info(f"Found {len(fb_matches)} video links in {fb_url}")
+                            return fb_matches
+                    except Exception as e:
+                        logger.warning(f"Fallback failed for {fb_url}: {e}")
+
+                # 5. Nothing found
                 logger.warning(f"No links found for URL: {url}")
                 return None
         except Exception as e:
