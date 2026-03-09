@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Default interval in minutes
-DEFAULT_INTERVAL_MINUTES = 30
+DEFAULT_INTERVAL_MINUTES = 45
 
 
 def ensure_scheduled():

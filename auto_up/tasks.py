@@ -121,10 +121,35 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "All entries hit daily limit")
             return "All entries hit daily process limit."
 
+        # ── Step 2b: Skip URLs already in MediaTask DB ──
+        # This prevents wasting LLM tokens on URLs already queued/processing/completed
+        url_filtered = []
+        url_exists_skipped = 0
+
+        for entry in daily_filtered:
+            if MediaTask.objects.filter(url=entry["url"], status__in=['pending', 'processing']).exists():
+                url_exists_skipped += 1
+                ScrapeItem.objects.create(
+                    run=scrape_run,
+                    raw_title=entry["raw_title"],
+                    url=entry["url"],
+                    action='skip_url_exists',
+                    reason='URL already queued or processing',
+                )
+                continue
+            url_filtered.append(entry)
+
+        if url_exists_skipped:
+            logger.info(f"Skipped {url_exists_skipped} entries (URL already in DB)")
+
+        if not url_filtered:
+            _finish_run(scrape_run, run_start, "All entries already in DB")
+            return "All entries already in DB."
+
         # ── Step 3: Extract names + search DB ──
         enriched_items = []
 
-        for entry in daily_filtered:
+        for entry in url_filtered:
             raw_title = entry["raw_title"]
             url = entry["url"]
 
