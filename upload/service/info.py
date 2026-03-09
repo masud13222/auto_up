@@ -16,11 +16,12 @@ def get_structured_output(llm_response: str) -> dict:
     return repair_json(llm_response)
 
 
-def detect_and_extract(html_content: str) -> tuple:
+def detect_and_extract(html_content: str, db_match_info: dict = None) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
+    If db_match_info provided, also performs duplicate check in same call.
     Reads resolution settings from UploadSettings.
-    Returns: (content_type, data)
+    Returns: (content_type, data, duplicate_check_or_None)
     """
     from settings.models import UploadSettings
     settings = UploadSettings.objects.first()
@@ -32,21 +33,27 @@ def detect_and_extract(html_content: str) -> tuple:
         extra_below=extra_below,
         extra_above=extra_above,
         max_extra=max_extra,
+        db_match_info=db_match_info,
     )
-    logger.info(f"Detecting + extracting (res: below={extra_below}, above={extra_above}, max={max_extra})...")
+    dup_tag = " + duplicate check" if db_match_info else ""
+    logger.info(f"Detecting + extracting{dup_tag} (res: below={extra_below}, above={extra_above}, max={max_extra})...")
 
     llm_response = LLMService.generate_completion(
         prompt=html_content,
-        system_prompt=system_prompt
+        system_prompt=system_prompt,
+        purpose='extract+dup_check' if db_match_info else 'extract',
     )
 
     result = get_structured_output(llm_response)
     content_type = result.get("content_type", "movie")
     data = result.get("data", {})
+    dup_result = result.get("duplicate_check", None)
 
     title = data.get("title", "Unknown")
     logger.info(f"Detected: {content_type} — Title: {title}")
-    return content_type, data
+    if dup_result:
+        logger.info(f"Duplicate check: action={dup_result.get('action')}, reason={dup_result.get('reason', '')[:80]}")
+    return content_type, data, dup_result
 
 
 def resolve_movie_links(movie_data: dict) -> dict:
@@ -100,17 +107,18 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None) -> dict:
     return tvshow_data
 
 
-def get_content_info(url, on_progress=None):
+def get_content_info(url, on_progress=None, db_match_info=None):
     """
-    Main entry point: Single LLM call detects type + extracts info, then resolves URLs.
-    Scrapes only ONCE, then reuses the HTML.
+    Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
+    then resolves URLs. Scrapes only ONCE, then reuses the HTML.
     
     Args:
         url: Page URL to scrape
         on_progress: Optional callback(data) for incremental DB saves during 
                      URL resolution. Called after each download item is resolved.
+        db_match_info: Optional dict with existing DB match info for duplicate check.
     
-    Returns: (content_type, data)
+    Returns: (content_type, data, dup_result_or_None)
     """
     # Step 1: Scrape page content (only once)
     logger.info(f"Starting content info extraction for: {url}")
@@ -119,12 +127,17 @@ def get_content_info(url, on_progress=None):
         logger.error(f"Failed to scrape content from {url}")
         raise Exception("Failed to scrape page content from the given URL.")
 
-    # Step 2: Single LLM call — detect type + extract data
-    content_type, data = detect_and_extract(html_content)
+    # Step 2: Single LLM call — detect type + extract data + optional duplicate check
+    content_type, data, dup_result = detect_and_extract(html_content, db_match_info=db_match_info)
 
     # Save immediately after LLM extraction (before URL resolution)
     if on_progress:
         on_progress(data)
+
+    # If duplicate check says skip, return early (no need to resolve URLs)
+    if dup_result and dup_result.get("action") == "skip":
+        logger.info(f"Duplicate skip detected during extraction. Skipping URL resolution.")
+        return content_type, data, dup_result
 
     # Step 3: Resolve URLs based on content type
     if content_type == "tvshow":
@@ -134,4 +147,4 @@ def get_content_info(url, on_progress=None):
         data = resolve_movie_links(data)
         logger.info("Movie info extraction complete.")
 
-    return content_type, data
+    return content_type, data, dup_result

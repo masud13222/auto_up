@@ -40,7 +40,8 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     logger.info(f"Generating filenames for movie: {title}")
     filename_response = LLMService.generate_completion(
         prompt=json.dumps(movie_data, indent=2),
-        system_prompt=FILENAME_SYSTEM_PROMPT
+        system_prompt=FILENAME_SYSTEM_PROMPT,
+        purpose='movie_filename',
     )
     filenames = get_structured_output(filename_response)
 

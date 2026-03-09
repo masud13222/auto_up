@@ -38,3 +38,30 @@ class LLMConfig(models.Model):
         primary = " ★" if self.is_primary else ""
         active = "" if self.is_active else " (disabled)"
         return f"{self.name} [{self.sdk}:{self.model_name}]{primary}{active}"
+
+
+class LLMUsage(models.Model):
+    """Track token usage for each LLM API call."""
+    config = models.ForeignKey(LLMConfig, on_delete=models.SET_NULL, null=True, blank=True, related_name='usage_logs')
+    config_name = models.CharField(max_length=100, help_text="Snapshot of config name at call time")
+    model_name = models.CharField(max_length=200, help_text="Model used for this call")
+    sdk = models.CharField(max_length=20, help_text="SDK used (openai/google/mistral)")
+
+    prompt_tokens = models.IntegerField(default=0)
+    completion_tokens = models.IntegerField(default=0)
+    total_tokens = models.IntegerField(default=0)
+
+    purpose = models.CharField(max_length=100, blank=True, default='', help_text="What this call was for (extract, duplicate, filename, etc.)")
+    success = models.BooleanField(default=True)
+    duration_ms = models.IntegerField(default=0, help_text="Call duration in milliseconds")
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "LLM Usage"
+        verbose_name_plural = "LLM Usage"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.config_name} | {self.total_tokens} tokens | {self.created_at:%Y-%m-%d %H:%M}"
+

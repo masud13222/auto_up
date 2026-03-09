@@ -1,6 +1,6 @@
 import time
 import logging
-from .models import LLMConfig
+from .models import LLMConfig, LLMUsage
 
 logger = logging.getLogger(__name__)
 
@@ -9,8 +9,51 @@ MAX_RETRIES = 3
 RETRY_DELAYS = [3, 8, 15]
 
 
-def _call_openai(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1) -> str:
-    """Call OpenAI-compatible API (OpenAI, OpenRouter, local models, etc.)."""
+def _extract_usage_openai(response) -> dict:
+    """Extract token usage from OpenAI-compatible response."""
+    usage = getattr(response, 'usage', None)
+    if not usage:
+        return {}
+    return {
+        'prompt_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
+        'completion_tokens': getattr(usage, 'completion_tokens', 0) or 0,
+        'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+    }
+
+
+def _extract_usage_google(response) -> dict:
+    """Extract token usage from Google Gemini response."""
+    meta = getattr(response, 'usage_metadata', None)
+    if not meta:
+        return {}
+    return {
+        'prompt_tokens': getattr(meta, 'prompt_token_count', 0) or 0,
+        'completion_tokens': getattr(meta, 'candidates_token_count', 0) or 0,
+        'total_tokens': getattr(meta, 'total_token_count', 0) or 0,
+    }
+
+
+def _extract_usage_mistral(response) -> dict:
+    """Extract token usage from Mistral response."""
+    usage = getattr(response, 'usage', None)
+    if not usage:
+        return {}
+    return {
+        'prompt_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
+        'completion_tokens': getattr(usage, 'completion_tokens', 0) or 0,
+        'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+    }
+
+
+USAGE_EXTRACTORS = {
+    'openai': _extract_usage_openai,
+    'google': _extract_usage_google,
+    'mistral': _extract_usage_mistral,
+}
+
+
+def _call_openai(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+    """Call OpenAI-compatible API. Returns (content, response)."""
     from openai import OpenAI
 
     client = OpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com/v1")
@@ -22,11 +65,11 @@ def _call_openai(config: LLMConfig, prompt: str, system_prompt: str, temperature
         ],
         temperature=temperature,
     )
-    return response.choices[0].message.content or ""
+    return response.choices[0].message.content or "", response
 
 
-def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1) -> str:
-    """Call Google Gemini API via google-genai SDK."""
+def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+    """Call Google Gemini API. Returns (content, response)."""
     from google import genai
     from google.genai import types
 
@@ -39,11 +82,11 @@ def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature
             temperature=temperature,
         ),
     )
-    return response.text or ""
+    return response.text or "", response
 
 
-def _call_mistral(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1) -> str:
-    """Call Mistral AI API via mistralai SDK."""
+def _call_mistral(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+    """Call Mistral AI API. Returns (content, response)."""
     from mistralai import Mistral
 
     client = Mistral(api_key=config.api_key)
@@ -55,7 +98,7 @@ def _call_mistral(config: LLMConfig, prompt: str, system_prompt: str, temperatur
         ],
         temperature=temperature,
     )
-    return response.choices[0].message.content or ""
+    return response.choices[0].message.content or "", response
 
 
 # SDK dispatcher
@@ -64,6 +107,35 @@ SDK_CALLERS = {
     'google': _call_google,
     'mistral': _call_mistral,
 }
+
+
+def _save_usage(config: LLMConfig, response, duration_ms: int, success: bool = True, purpose: str = ''):
+    """Save token usage from LLM response to database."""
+    try:
+        extractor = USAGE_EXTRACTORS.get(config.sdk)
+        usage = extractor(response) if extractor else {}
+
+        if not usage:
+            return
+
+        LLMUsage.objects.create(
+            config=config,
+            config_name=config.name,
+            model_name=config.model_name,
+            sdk=config.sdk,
+            prompt_tokens=usage.get('prompt_tokens', 0),
+            completion_tokens=usage.get('completion_tokens', 0),
+            total_tokens=usage.get('total_tokens', 0),
+            purpose=purpose,
+            success=success,
+            duration_ms=duration_ms,
+        )
+        logger.debug(
+            f"[{config.name}] Usage: {usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)}"
+            f"={usage.get('total_tokens', 0)} tokens ({duration_ms}ms)"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save LLM usage: {e}")
 
 
 def _get_ordered_configs():
@@ -80,7 +152,7 @@ def _get_ordered_configs():
     return configs
 
 
-def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1) -> str:
+def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1, purpose: str = '') -> str:
     """
     Try a single config with retries.
     Returns content string on success, raises on final failure.
@@ -92,7 +164,9 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            content = caller(config, prompt, system_prompt, temperature)
+            start = time.time()
+            content, response = caller(config, prompt, system_prompt, temperature)
+            duration_ms = int((time.time() - start) * 1000)
 
             # Check for empty response
             if not content or not content.strip():
@@ -103,6 +177,9 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                     time.sleep(RETRY_DELAYS[attempt])
                     continue
                 raise Exception("LLM returned empty response after all retries")
+
+            # Save usage on success
+            _save_usage(config, response, duration_ms, success=True, purpose=purpose)
 
             logger.debug(f"[{config.name}] Response received: {len(content)} chars")
             return content
@@ -140,7 +217,7 @@ class LLMService:
     """
 
     @staticmethod
-    def generate_completion(prompt: str, system_prompt: str = "You are a helpful assistant.", temperature: float = 0.1) -> str:
+    def generate_completion(prompt: str, system_prompt: str = "You are a helpful assistant.", temperature: float = 0.1, purpose: str = '') -> str:
         """
         Generate text completion with automatic provider fallback.
         
@@ -160,7 +237,7 @@ class LLMService:
         for i, config in enumerate(configs):
             try:
                 logger.info(f"Trying [{config.name}] model={config.model_name} sdk={config.sdk}")
-                content = _try_one_config(config, prompt, system_prompt, temperature)
+                content = _try_one_config(config, prompt, system_prompt, temperature, purpose=purpose)
                 
                 if i > 0:
                     logger.info(f"Fallback succeeded with [{config.name}] after {i} failure(s)")

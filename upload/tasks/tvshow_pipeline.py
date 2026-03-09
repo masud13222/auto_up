@@ -53,7 +53,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     logger.info(f"Generating filenames for TV show: {title}")
     filename_response = LLMService.generate_completion(
         prompt=json.dumps(tvshow_data, indent=2),
-        system_prompt=TVSHOW_FILENAME_SYSTEM_PROMPT
+        system_prompt=TVSHOW_FILENAME_SYSTEM_PROMPT,
+        purpose='tvshow_filename',
     )
     filenames = get_structured_output(filename_response)
     if not isinstance(filenames, list):

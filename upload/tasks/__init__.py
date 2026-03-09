@@ -3,7 +3,9 @@ import logging
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
-from upload.service.duplicate_checker import check_duplicate
+from upload.service.duplicate_checker import _search_db, _get_existing_resolutions
+from upload.utils.web_scrape import WebScrapeService
+from llm.utils.name_extractor import extract_title_info
 
 from .helpers import save_task, is_drive_link
 from .movie_pipeline import process_movie_pipeline
@@ -58,11 +60,39 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
     return new_data
 
 
+def _build_db_match_info(existing_task: MediaTask) -> dict:
+    """Build the DB match info dict to inject into the combined LLM prompt."""
+    result_data = existing_task.result or {}
+    existing_resolutions = _get_existing_resolutions(existing_task)
+
+    is_tvshow = existing_task.content_type == 'tvshow' if existing_task.content_type else bool(result_data.get("seasons"))
+
+    info = {
+        "existing_title": existing_task.title,
+        "existing_resolutions": existing_resolutions,
+        "existing_type": "tvshow" if is_tvshow else "movie",
+    }
+
+    if is_tvshow:
+        episodes = []
+        for season in result_data.get("seasons", []):
+            for item in season.get("download_items", []):
+                label = item.get("label", "")
+                res = item.get("resolutions", {})
+                ep_res = sorted(k for k, v in res.items() if v)
+                episodes.append(f"{label}: {','.join(ep_res)}")
+        info["existing_episode_count"] = len(episodes)
+        info["existing_episodes"] = episodes
+
+    return info
+
+
 def process_media_task(task_pk: int) -> str:
     """
     Background task: Full pipeline from URL to Google Drive upload.
-    1. Duplicate check (title fetch + DB search + LLM compare)
-    2. Auto-detect content type and extract data (single LLM call)
+    Combined flow (1 LLM call):
+    1. Title fetch + DB search (no LLM)
+    2. Full page scrape + LLM (extract + duplicate check in one call)
     3. Route to movie or tvshow pipeline
     """
     media_task = MediaTask.objects.get(pk=task_pk)
@@ -78,31 +108,28 @@ def process_media_task(task_pk: int) -> str:
         url = media_task.url
         logger.info(f"Task started for URL: {url}")
 
-        # ── Step 0: Duplicate Check ──
-        dup = check_duplicate(url, current_task_pk=media_task.pk)
-        action = dup["action"]
-        reason = dup["reason"]
+        # ── Step 0: Title fetch + DB search (no LLM call) ──
+        website_title = WebScrapeService.cinefreak_title(url)
+        db_match_info = None
+        existing_task = None
+        existing_result = {}
 
-        if action == "skip":
-            logger.info(f"DUPLICATE SKIP: {reason} — deleting new entry (pk={media_task.pk})")
-            media_task.delete()
-            return json.dumps({"status": "skipped", "message": reason})
+        if website_title:
+            logger.info(f"Website title: {website_title}")
+            info = extract_title_info(website_title)
+            name, year = info.title, info.year
+            logger.info(f"Extracted: name='{name}', year='{year}'")
 
-        existing_result = {}  # Will be populated if action=update
-        if action in ("update", "replace"):
-            existing_task = dup.get("existing_task")
-            if existing_task:
-                logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
-                # Save existing result BEFORE overwriting (has drive links)
-                existing_result = existing_task.result or {}
-                media_task.delete()
-                # Continue pipeline with existing task
-                media_task = existing_task
-                media_task.status = 'processing'
-                media_task.error_message = ''
-                media_task.save(update_fields=['status', 'error_message', 'updated_at'])
+            if name:
+                matches = _search_db(name, year, exclude_pk=media_task.pk)
+                if matches:
+                    existing_task = matches[0]
+                    logger.info(f"Found existing match: [{existing_task.pk}] {existing_task.title}")
+                    db_match_info = _build_db_match_info(existing_task)
+                else:
+                    logger.info(f"No existing match for '{name}'. New content.")
 
-        # ── Step 1: Extract content info ──
+        # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
             title = data.get("title", "")
             if title and not media_task.title:
@@ -111,30 +138,54 @@ def process_media_task(task_pk: int) -> str:
             else:
                 save_task(media_task, result=data)
 
-        content_type, data = get_content_info(url, on_progress=_on_progress)
+        content_type, data, dup_result = get_content_info(
+            url, on_progress=_on_progress, db_match_info=db_match_info
+        )
         title = data.get("title", "Unknown")
 
+        # ── Handle duplicate result ──
+        action = "process"
+        if dup_result:
+            action = dup_result.get("action", "process")
+            reason = dup_result.get("reason", "LLM decision")
+
+            # Validate action
+            if action not in ("skip", "update", "replace", "process"):
+                action = "process"
+                reason = f"Invalid LLM action, defaulting to process: {dup_result}"
+
+            logger.info(f"Duplicate check result: action={action}, reason={reason}")
+
+            if action == "skip":
+                logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
+                media_task.delete()
+                return json.dumps({"status": "skipped", "message": reason})
+
+            if action in ("update", "replace") and existing_task:
+                logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
+                existing_result = existing_task.result or {}
+                media_task.delete()
+                media_task = existing_task
+                media_task.status = 'processing'
+                media_task.error_message = ''
+                media_task.save(update_fields=['status', 'error_message', 'updated_at'])
+
         # ── Merge existing drive links for update action ──
-        # When action=update, the old result has drive.google.com links for
-        # already-uploaded resolutions. The new extraction has fresh download
-        # URLs for ALL resolutions. We merge old drive links into the new data
-        # so the pipeline skips already-uploaded files.
         if action == "update" and existing_result:
             data = _merge_drive_links(existing_result, data)
             logger.info(f"Merged existing drive links into new extraction data")
 
         media_task.content_type = content_type
-        # Extract website_title from result data
         web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
         save_task(media_task, title=title, website_title=web_title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
-        # Step 2: Route to appropriate pipeline
-        # Pass dup context so pipeline can handle partial downloads
+        # ── Step 2: Route to appropriate pipeline ──
+        dup_info = {"action": action, "existing_task": existing_task if action != "process" else None}
         if content_type == "tvshow":
-            return process_tvshow_pipeline(media_task, data, dup_info=dup)
+            return process_tvshow_pipeline(media_task, data, dup_info=dup_info)
         else:
-            return process_movie_pipeline(media_task, data, dup_info=dup)
+            return process_movie_pipeline(media_task, data, dup_info=dup_info)
 
     except Exception as e:
         logger.error(f"Task failed: {e}", exc_info=True)

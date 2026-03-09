@@ -2,6 +2,7 @@ import json
 from .blocked_names import BLOCKED_SITE_NAMES
 from .movie_schema import movie_schema
 from .tvshow_schema import tvshow_schema
+from .duplicate_schema import duplicate_schema
 
 _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 
@@ -51,11 +52,52 @@ def _build_resolution_note(extra_below: bool = False, extra_above: bool = False,
     return "".join(parts)
 
 
-def get_combined_system_prompt(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
+def _build_duplicate_section(db_match_info: dict) -> str:
+    """Build the duplicate check section for combined prompt."""
+    if not db_match_info:
+        return ""
+
+    return f"""## ADDITIONAL TASK: Duplicate Check
+You ALSO need to decide if this content is a duplicate of an existing database entry.
+
+### Existing DB Match:
+```json
+{json.dumps(db_match_info, indent=2, ensure_ascii=False)}
+```
+
+### Duplicate Check Rules:
+Compare the EXTRACTED data (not just the title) against the existing DB entry.
+
+**"skip"** — SAME content, SAME or fewer resolutions/episodes. Nothing new to add.
+  - For movies: same title+year AND extracted download_links has NO resolutions missing from existing
+  - For TV shows: same title+year AND no new episodes AND no missing per-episode resolutions
+
+**"update"** — SAME content BUT has NEW data to add:
+  - Missing resolutions: your extracted data has resolutions the existing entry lacks
+  - New episodes: your extracted data has episodes not in existing
+  - IMPORTANT: Only report resolutions that ACTUALLY have download links in your extraction, NOT just mentioned in the title
+
+**"replace"** — SAME content BUT quality upgrade needed:
+  - Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay)
+
+**"process"** — DIFFERENT content entirely (different title, year, or season)
+
+### Duplicate Check Output:
+Add a `duplicate_check` field to your response:
+```json
+{json.dumps(duplicate_schema, indent=2)}
+```
+
+"""
+
+
+def get_combined_system_prompt(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0, db_match_info: dict = None) -> str:
     """
     Generate the combined system prompt based on resolution settings.
+    If db_match_info is provided, adds duplicate check section.
     """
     res_note = _build_resolution_note(extra_below, extra_above, max_extra)
+    dup_section = _build_duplicate_section(db_match_info) if db_match_info else ""
 
     return f"""You are an expert web scraping assistant that can detect content type AND extract structured data in a single step.
 
@@ -130,10 +172,11 @@ Each season can have these download item types:
 - VIOLATION OF THIS RULE = ALL DOWNLOADS FAIL. This is the single most important rule.
 
 
+{dup_section}
 ## Response Format:
 {{
   "content_type": "movie" or "tvshow",
-  "data": {{ ... extracted data ... }}
+  "data": {{ ... extracted data ... }}{',"duplicate_check": {{ ... }}' if db_match_info else ''}
 }}
 
 

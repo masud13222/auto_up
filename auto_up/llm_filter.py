@@ -105,6 +105,7 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
         raw_response = LLMService.generate_completion(
             prompt=prompt,
             system_prompt=AUTO_FILTER_SYSTEM_PROMPT,
+            purpose='auto_filter',
         )
 
         result = repair_json(raw_response)

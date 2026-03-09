@@ -227,6 +227,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         raw = LLMService.generate_completion(
             prompt=comparison_data,
             system_prompt=DUPLICATE_CHECK_PROMPT,
+            purpose='duplicate_check',
         )
         result = repair_json(raw)
 
