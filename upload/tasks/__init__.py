@@ -5,6 +5,7 @@ from upload.models import MediaTask
 from upload.service.info import get_content_info
 from upload.service.duplicate_checker import _search_db, _get_existing_resolutions
 from upload.utils.web_scrape import WebScrapeService
+from upload.utils.drive_file_delete import cleanup_old_drive_files
 from llm.utils.name_extractor import extract_title_info
 
 from .helpers import save_task, is_drive_link
@@ -164,6 +165,12 @@ def process_media_task(task_pk: int) -> str:
             if action in ("update", "replace") and existing_task:
                 logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
                 existing_result = existing_task.result or {}
+
+                # Replace: clean up old Drive files before re-downloading
+                if action == "replace" and existing_result:
+                    logger.info(f"Cleaning up old Drive files for replace action...")
+                    cleanup_old_drive_files(existing_result)
+
                 media_task.delete()
                 media_task = existing_task
                 media_task.status = 'processing'
