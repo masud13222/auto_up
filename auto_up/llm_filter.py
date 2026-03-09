@@ -1,0 +1,140 @@
+"""
+LLM-based filtering for auto-upload.
+
+Sends scraped items + DB search results to the LLM,
+which decides what should be processed and what should be skipped.
+"""
+
+import json
+import logging
+
+from llm.services import LLMService
+from llm.json_repair import repair_json
+from auto_up.schema import AUTO_FILTER_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
+
+
+def filter_items_with_llm(items: list[dict]) -> list[dict]:
+    """
+    Send all scraped items (with their DB search results) to the LLM
+    for filtering decisions.
+
+    Args:
+        items: List of dicts, each containing:
+            - raw_title: str
+            - clean_name: str
+            - year: str or None
+            - season_tag: str or None
+            - url: str
+            - db_results: dict from db_search.search_existing()
+
+    Returns:
+        List of items that should be processed, each with:
+            - url: str
+            - raw_title: str
+            - action: "process"
+            - reason: str
+            - priority: str
+    """
+    if not items:
+        logger.info("No items to filter")
+        return []
+
+    # Build the prompt payload
+    payload = []
+    for item in items:
+        db_results = item.get("db_results", {})
+        payload.append({
+            "raw_title": item["raw_title"],
+            "clean_name": item["clean_name"],
+            "year": item.get("year"),
+            "season_tag": item.get("season_tag"),
+            "url": item["url"],
+            "db_results": {
+                "name_only_results": [
+                    {
+                        "task_pk": r["task_pk"],
+                        "title": r["title"],
+                        "status": r["status"],
+                        "content_type": r["content_type"],
+                        "url": r["url"],
+                    }
+                    for r in db_results.get("name_only_results", [])
+                ],
+                "name_year_results": [
+                    {
+                        "task_pk": r["task_pk"],
+                        "title": r["title"],
+                        "status": r["status"],
+                        "content_type": r["content_type"],
+                        "url": r["url"],
+                    }
+                    for r in db_results.get("name_year_results", [])
+                ],
+                "has_matches": db_results.get("has_matches", False),
+            },
+        })
+
+    prompt = json.dumps(payload, ensure_ascii=False)
+
+    logger.info(f"Sending {len(payload)} items to LLM for filtering...")
+
+    try:
+        raw_response = LLMService.generate_completion(
+            prompt=prompt,
+            system_prompt=AUTO_FILTER_SYSTEM_PROMPT,
+        )
+
+        result = repair_json(raw_response)
+        decisions = result.get("decisions", [])
+
+        logger.info(f"LLM returned {len(decisions)} decisions")
+
+        # Build a URL→item lookup for enriching results
+        url_to_item = {item["url"]: item for item in items}
+
+        # Collect items that should be processed
+        to_process = []
+        skipped = 0
+
+        for decision in decisions:
+            action = decision.get("action", "process")
+            url = decision.get("url", "")
+            reason = decision.get("reason", "")
+            priority = decision.get("priority", "normal")
+
+            if action == "process":
+                original_item = url_to_item.get(url, {})
+                to_process.append({
+                    "url": url,
+                    "raw_title": original_item.get("raw_title", ""),
+                    "action": "process",
+                    "reason": reason,
+                    "priority": priority,
+                })
+                logger.info(f"  → PROCESS [{priority}]: {original_item.get('raw_title', url)[:60]} — {reason}")
+            else:
+                skipped += 1
+                logger.info(f"  → SKIP: {url_to_item.get(url, {}).get('raw_title', url)[:60]} — {reason}")
+
+        logger.info(
+            f"Filter results: {len(to_process)} to process, {skipped} skipped"
+        )
+        return to_process
+
+    except Exception as e:
+        logger.error(f"LLM filtering failed: {e}", exc_info=True)
+
+        # Fallback: process everything (better safe than sorry)
+        logger.warning("Falling back to processing ALL items due to LLM failure")
+        return [
+            {
+                "url": item["url"],
+                "raw_title": item["raw_title"],
+                "action": "process",
+                "reason": "LLM filter failed, defaulting to process",
+                "priority": "normal",
+            }
+            for item in items
+        ]

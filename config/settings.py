@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     # Local Apps
     'llm',
     'upload',
+    'auto_up',
     'settings',
     'admin_panel',
     'credentials',
@@ -212,6 +213,7 @@ LOGGING = {
         'llm': {'level': 'DEBUG', 'propagate': True},
         'credentials': {'level': 'DEBUG', 'propagate': True},
         'settings': {'level': 'DEBUG', 'propagate': True},
+        'auto_up': {'level': 'DEBUG', 'propagate': True},
         'django.tasks': {'level': 'DEBUG', 'propagate': True},
     },
 }
