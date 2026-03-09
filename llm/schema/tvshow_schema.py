@@ -12,7 +12,7 @@ tvshow_schema = {
     "properties": {
         "website_tvshow_title": {
             "type": "string",
-            "description": "Full raw title as shown on site. E.g., 'Money Heist (Season 1-5) [Hindi] 1080p 720p 480p Netflix WEBRip'"
+            "description": "Full title from site with blocked site names removed. E.g., 'Money Heist (Season 1-5) [Hindi] 1080p 720p 480p Netflix WEBRip'"
         },
         "title": {
             "type": "string",
@@ -73,7 +73,7 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 ## GENERAL RULES:
 - Omit missing fields entirely (no null, no empty strings)
 - Extract ALL screenshot image URLs from the page
-- Strip these site names from all titles: {_blocked_names_str}
+- Strip these site names from ALL fields (including website_tvshow_title): {_blocked_names_str}
 - Prefer x264 encodes when multiple encode options exist
 - rating: numeric only (e.g. 7.5) | year: integer only (e.g. 2024)
 

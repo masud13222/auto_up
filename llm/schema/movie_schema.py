@@ -11,7 +11,7 @@ _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 movie_schema = {
     "type": "object",
     "properties": {
-        "website_movie_title": {"type": "string", "description": "The title example: 'With Love (2026) [Hindi-Tamil] 1080p 720p 480p Netflix WEBRip ESub'"},
+        "website_movie_title": {"type": "string", "description": "Full title from site with blocked site names removed. E.g., 'With Love (2026) [Hindi-Tamil] 1080p 720p 480p Netflix WEBRip ESub'"},
         "title": {"type": "string", "description": "The title of the movie"},
         "year": {"type": "integer", "description": "The year of the movie"},
         "genre": {"type": "string", "description": "The genre of the movie"},
@@ -43,11 +43,11 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - For poster_url: find the main/primary movie poster image
 - For rating: extract numeric value only (e.g. 7.5, not "7.5/10")
 - For year: integer only (e.g. 2026, not "2026")
-- website_movie_title: extract the FULL raw title as shown on the site (with quality, language tags etc.)
+- website_movie_title: extract the full title from the site, with blocked site names removed (keep quality, language tags etc.)
 - title: extract the CLEAN movie name only (without year, quality, language info)
 
 ## IMPORTANT - Clean Site Names:
-- Remove ALL references to these site names from the title and website_movie_title: {_blocked_names_str}
+- Remove ALL references to these site names from ALL fields (title, website_movie_title, etc.): {_blocked_names_str}
 - For example: "CINEFREAK.TOP - War Machine (2026)" should become title: "War Machine"
 - Never include any site watermark names in the extracted data
 

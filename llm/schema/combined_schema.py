@@ -117,7 +117,7 @@ Based on your detection, extract the full structured data.
 {json.dumps(movie_schema, indent=2)}
 
 ### Movie Rules:
-- website_movie_title: FULL raw title as shown on site
+- website_movie_title: Full title from site, with blocked site names removed
 - title: CLEAN movie name only (no year, quality, language)
 - rating: numeric only (e.g. 7.5)
 - year: integer only
@@ -156,7 +156,7 @@ Each season can have these download item types:
 - Return ONLY a valid JSON object — NO markdown, NO backticks, NO extra text
 - For missing fields, omit them entirely (do not return null or empty strings)
 - Extract ALL image URLs for screenshots
-- Remove ALL references to these site names: {_blocked_names_str}
+- Remove ALL references to these site names from ALL fields (including website_movie_title and website_tvshow_title): {_blocked_names_str}
 - Always prefer x264 encodes when available
 
 - ALL download URLs MUST be ABSOLUTE (start with https://).
