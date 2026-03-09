@@ -131,12 +131,11 @@ Each season can have these download item types:
 
 
 ## Response Format:
-```
 {{
   "content_type": "movie" or "tvshow",
   "data": {{ ... extracted data ... }}
 }}
-```
+
 
 ## Output:
 Return ONLY the JSON object. Nothing else."""
