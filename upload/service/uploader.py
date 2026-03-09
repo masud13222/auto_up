@@ -244,12 +244,27 @@ class DriveUploader:
         file_id = response.get('id')
         web_link = response.get('webViewLink') or f"https://drive.google.com/file/d/{file_id}/view"
 
-        # Public read permission
-        service.permissions().create(
-            fileId=file_id,
-            body={'type': 'anyone', 'role': 'reader'},
-            supportsAllDrives=True
-        ).execute()
+        # Public read permission (with retry — 503 transient failures are common)
+        perm_retries = 3
+        for perm_attempt in range(perm_retries + 1):
+            try:
+                service.permissions().create(
+                    fileId=file_id,
+                    body={'type': 'anyone', 'role': 'reader'},
+                    supportsAllDrives=True
+                ).execute()
+                break
+            except HttpError as e:
+                if e.resp.status in RETRYABLE_STATUS_CODES and perm_attempt < perm_retries:
+                    wait = min(2 ** (perm_attempt + 1), 30)
+                    logger.warning(
+                        f"Permission set failed (HTTP {e.resp.status}), "
+                        f"retry {perm_attempt + 1}/{perm_retries} in {wait}s: {filename}"
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Permission set failed for {filename} (file_id={file_id}): {e}")
+                    raise
 
         logger.info(f"Done: {filename} → {web_link}")
         return web_link
