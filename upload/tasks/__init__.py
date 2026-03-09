@@ -74,6 +74,7 @@ def process_media_task(task_pk: int) -> str:
         content_type, data = get_content_info(url, on_progress=_on_progress)
         title = data.get("title", "Unknown")
 
+        media_task.content_type = content_type
         save_task(media_task, title=title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 

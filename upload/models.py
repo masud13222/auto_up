@@ -13,8 +13,14 @@ class MediaTask(models.Model):
         ('failed', 'Failed'),
     ]
 
+    CONTENT_TYPE_CHOICES = [
+        ('movie', 'Movie'),
+        ('tvshow', 'TV Show'),
+    ]
+
     url = models.URLField(max_length=500, db_index=True)
     title = models.CharField(max_length=500, blank=True, default='')
+    content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     result = models.JSONField(null=True, blank=True)
     task_id = models.CharField(max_length=100, blank=True, default='')

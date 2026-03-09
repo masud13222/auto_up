@@ -133,8 +133,12 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
     result_data = existing_task.result or {}
     existing_resolutions = _get_existing_resolutions(existing_task)
 
-    # Determine existing content type and episode info
-    is_tvshow = bool(result_data.get("seasons"))
+    # Determine existing content type: DB field first, then fallback to data check
+    if existing_task.content_type:
+        is_tvshow = existing_task.content_type == 'tvshow'
+    else:
+        is_tvshow = bool(result_data.get("seasons"))
+
     episode_count = 0
     episode_labels = []
     if is_tvshow:
@@ -166,6 +170,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
 
         action = result.get("action", "process")
         reason = result.get("reason", "LLM decision")
+        detected_new_type = result.get("detected_new_type", "movie")
         missing_resolutions = result.get("missing_resolutions", [])
         has_new_episodes = result.get("has_new_episodes", False)
 
@@ -177,6 +182,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         return {
             "action": action,
             "reason": reason,
+            "detected_new_type": detected_new_type,
             "missing_resolutions": missing_resolutions,
             "has_new_episodes": has_new_episodes,
         }
@@ -186,6 +192,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         return {
             "action": "process",
             "reason": f"LLM comparison error: {e}",
+            "detected_new_type": "movie",
             "missing_resolutions": [],
             "has_new_episodes": False,
         }

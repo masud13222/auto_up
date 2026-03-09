@@ -21,6 +21,11 @@ duplicate_schema = {
             "type": "string",
             "description": "Short explanation for the decision"
         },
+        "detected_new_type": {
+            "type": "string",
+            "enum": ["movie", "tvshow"],
+            "description": "What you detect the NEW content to be (movie or tvshow) from the website title"
+        },
         "missing_resolutions": {
             "type": "array",
             "items": {"type": "string"},
@@ -31,7 +36,7 @@ duplicate_schema = {
             "description": "True if the new version likely has episodes not in existing. Only for TV shows."
         }
     },
-    "required": ["is_duplicate", "action", "reason"]
+    "required": ["is_duplicate", "action", "reason", "detected_new_type"]
 }
 
 
@@ -48,7 +53,18 @@ You will receive JSON with:
 - `existing_episode_count`: Number of download items in existing (TV shows only)
 - `existing_episode_labels`: Labels like "Episode 01-08", "Episode 09-16" (TV shows only)
 
-## Decision Rules:
+## STEP 1: Detect New Content Type
+First, from `new_website_title`, detect if the new content is a **movie** or **tvshow**.
+- TV show signs: "Season", "Episode", "S01", "E01", "Complete Season", "Web Series", "Series"
+- Movie signs: "Full Movie", "Movie", "Film", no season/episode references
+- Set `detected_new_type` accordingly
+
+## STEP 2: Type Mismatch Check
+⚠️ If `detected_new_type` ≠ `existing_type` → they are DIFFERENT content → action="process"
+- A movie and a TV show can have the SAME name (e.g. "Sa Re Ga Ma Pa" movie vs "Sa Re Ga Ma Pa Season 22" series)
+- NEVER skip/update/replace if types don't match — they are different content entirely
+
+## STEP 3: Same-Type Comparison (only if types match)
 
 ### → "skip" (is_duplicate=true)
 - SAME media, SAME quality, and NO missing resolutions
@@ -73,6 +89,7 @@ You will receive JSON with:
 - Different movie/show name
 - Different season of the same show
 - Year mismatch → usually different content
+- Type mismatch (movie vs tvshow) → ALWAYS process
 
 ## Quality Hierarchy (lowest to highest):
 CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX
@@ -91,6 +108,7 @@ CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluR
 ## Important:
 - Be STRICT about name matching
 - Year mismatch = different content → "process"
+- Type mismatch = different content → "process"
 - Return ONLY valid JSON — no markdown, no backticks
 
 ## JSON Schema:
