@@ -52,9 +52,7 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - Never include any site watermark names in the extracted data
 
 ## IMPORTANT - Download URLs:
-- ALL download URLs must be ABSOLUTE (start with https://). NEVER use relative URLs like /generate.php
-- Always include the full domain, e.g. https://www.example.net/generate.php?id=...
-- **NEVER decode base64 parameters in URLs.** If a URL is `generate.php?id=aHR0cHM...`, keep it EXACTLY as-is. Do NOT decode the base64 and replace the URL with the decoded value. The generate.php wrapper is required for downloads to work.
+- ALL download URLs must be ABSOLUTE (start with https://). NEVER use relative URLs. Always include the full domain.
 
 ## JSON Schema you must follow:
 {json.dumps(movie_schema, indent=2)}

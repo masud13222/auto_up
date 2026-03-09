@@ -114,9 +114,21 @@ Each season can have these download item types:
 - Return ONLY a valid JSON object — NO markdown, NO backticks, NO extra text
 - For missing fields, omit them entirely (do not return null or empty strings)
 - Extract ALL image URLs for screenshots
-- ALL download URLs MUST be ABSOLUTE (start with https://). NEVER use relative URLs
 - Remove ALL references to these site names: {_blocked_names_str}
 - Always prefer x264 encodes when available
+
+- ALL download URLs MUST be ABSOLUTE (start with https://).
+- **HOW to make a relative URL absolute**: ONLY prepend the site domain. NOTHING else changes.
+- NEVER decode, transform, resolve, shorten, or alter any URL in any way
+- NEVER decode base64, URL-encoding, or any encoded parameters — even if `?id=` value looks like base64, leave it **exactly as-is**
+- NEVER replace a URL with its decoded/resolved/redirected destination
+- ⚠️ ENCODED RELATIVE URL — follow this exactly:
+  - HTML has: `/generate.php?id=aHR0cHM6Ly9uZXc1...`
+  - ✅ CORRECT: `https://siteurl.com/generate.php?id=aHR0cHM6Ly9uZXc1...`
+  - ❌ WRONG: `https://new5.cinecloud.site/f/abc123` ← decoded destination, NEVER do this
+- The ONLY allowed modification: prepend site domain to relative URLs. Everything else stays byte-for-byte identical.
+- VIOLATION OF THIS RULE = ALL DOWNLOADS FAIL. This is the single most important rule.
+
 
 ## Response Format:
 ```

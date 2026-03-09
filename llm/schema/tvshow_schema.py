@@ -180,8 +180,7 @@ Then output should be:
 - A season can have mixed types (e.g., partial combo AND single episodes for different episode ranges)
 - If the same season appears multiple times with different episode ranges, they all go under the same season_number
 - Keep the output CONCISE — only include what's actually on the page, no duplicates
-- **ALL URLs must be ABSOLUTE** (start with https://). NEVER use relative URLs like /generate.php. Always include the full domain, e.g. https://www.example.net/generate.php?id=...
-- **NEVER decode base64 parameters in URLs.** If a URL is `generate.php?id=aHR0cHM...`, keep it EXACTLY as-is. Do NOT decode the base64 and replace the URL with the decoded value. The generate.php wrapper is required for downloads to work.
+- **ALL URLs must be ABSOLUTE** (start with https://). NEVER use relative URLs. Always include the full domain.
 
 ## ⚠️ How to correctly classify download types:
 - **combo_pack**: ONLY when a SINGLE download link covers an ENTIRE season bundled together. The page will show ONE download section for the whole season with a SINGLE set of resolution links.

@@ -165,11 +165,6 @@ class WebScrapeService:
         headers = WebScrapeService.R2_HEADERS
         proxy = getattr(settings, 'SCRAPE_PROXY', None) or None
 
-        # Safety net: fix relative URLs from LLM
-        if url and url.startswith('/'):
-            url = f"https://www.cinefreak.net{url}"
-            logger.debug(f"Fixed relative URL → {url}")
-
         try:
             logger.debug(f"Extracting R2 links from: {url} (Proxy: {bool(proxy)})")
             with httpx.Client(

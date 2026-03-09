@@ -75,7 +75,7 @@ def call_llm(prompt, system_prompt, config_id=None):
 def main():
     parser = argparse.ArgumentParser(description="Test LLM Multi-Provider Pipeline")
     parser.add_argument('--url', type=str,
-        default='https://www.cinefreak.net/bachelor-point-5-2025-season-5-bengali-web-series-download-watch-online-480p-720p-1080p-bongo-gdrive-esub-cinefreak-copy/')
+        default='https://www.cinefreak.net/sa-re-ga-ma-pa-legends-2025-season-22-zee5-bengali-reality-show-download-watch-online-480p-720p-1080p-gdrive-esub-cinefreak/')
     parser.add_argument('--config', type=int, default=None, help='Force specific config ID')
     parser.add_argument('--list', action='store_true', help='List all configs')
     parser.add_argument('--save', type=str, default=None, help='Save result to JSON file')
