@@ -5,11 +5,57 @@ from upload.models import MediaTask
 from upload.service.info import get_content_info
 from upload.service.duplicate_checker import check_duplicate
 
-from .helpers import save_task
+from .helpers import save_task, is_drive_link
 from .movie_pipeline import process_movie_pipeline
 from .tvshow_pipeline import process_tvshow_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
+    """
+    Merge existing Drive links from old_result into new_data.
+    When action=update, old_result has drive.google.com links for
+    already-uploaded resolutions. new_data has fresh download URLs.
+    We replace download URLs with drive links where they exist,
+    so the pipeline's is_drive_link() check skips them.
+    """
+    # ── Movie: download_links ──
+    old_dl = old_result.get("download_links", {})
+    new_dl = new_data.get("download_links", {})
+    if old_dl and new_dl:
+        for res, link in old_dl.items():
+            if is_drive_link(link) and res in new_dl:
+                new_dl[res] = link
+                logger.debug(f"Preserved existing drive link for {res}")
+        new_data["download_links"] = new_dl
+
+    # ── TV Show: seasons → download_items → resolutions ──
+    old_seasons = {s.get("season_number"): s for s in old_result.get("seasons", [])}
+    for new_season in new_data.get("seasons", []):
+        snum = new_season.get("season_number")
+        old_season = old_seasons.get(snum)
+        if not old_season:
+            continue
+
+        # Build lookup: label → {resolution: link}
+        old_items = {}
+        for item in old_season.get("download_items", []):
+            old_items[item.get("label", "")] = item.get("resolutions", {})
+
+        for new_item in new_season.get("download_items", []):
+            label = new_item.get("label", "")
+            old_res = old_items.get(label, {})
+            new_res = new_item.get("resolutions", {})
+
+            for res, link in old_res.items():
+                if is_drive_link(link) and res in new_res:
+                    new_res[res] = link
+                    logger.debug(f"Preserved existing drive link for S{snum} {label} {res}")
+
+            new_item["resolutions"] = new_res
+
+    return new_data
 
 
 def process_media_task(task_pk: int) -> str:
@@ -42,10 +88,13 @@ def process_media_task(task_pk: int) -> str:
             media_task.delete()
             return json.dumps({"status": "skipped", "message": reason})
 
+        existing_result = {}  # Will be populated if action=update
         if action in ("update", "replace"):
             existing_task = dup.get("existing_task")
             if existing_task:
                 logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
+                # Save existing result BEFORE overwriting (has drive links)
+                existing_result = existing_task.result or {}
                 media_task.delete()
                 # Continue pipeline with existing task
                 media_task = existing_task
@@ -64,6 +113,15 @@ def process_media_task(task_pk: int) -> str:
 
         content_type, data = get_content_info(url, on_progress=_on_progress)
         title = data.get("title", "Unknown")
+
+        # ── Merge existing drive links for update action ──
+        # When action=update, the old result has drive.google.com links for
+        # already-uploaded resolutions. The new extraction has fresh download
+        # URLs for ALL resolutions. We merge old drive links into the new data
+        # so the pipeline skips already-uploaded files.
+        if action == "update" and existing_result:
+            data = _merge_drive_links(existing_result, data)
+            logger.info(f"Merged existing drive links into new extraction data")
 
         media_task.content_type = content_type
         # Extract website_title from result data
