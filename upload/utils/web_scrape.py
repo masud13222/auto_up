@@ -170,13 +170,6 @@ class WebScrapeService:
             url = f"https://www.cinefreak.net{url}"
             logger.debug(f"Fixed relative URL → {url}")
 
-        # Strip anti-scraping suffix from cinecloud URLs
-        # generate.php base64 encodes URLs with "newgoru" appended,
-        # but the actual file ID doesn't include it
-        if url and 'cinecloud.site/f/' in url and url.endswith('newgoru'):
-            url = url[:-len('newgoru')]
-            logger.debug(f"Stripped 'newgoru' suffix → {url}")
-
         try:
             logger.debug(f"Extracting R2 links from: {url} (Proxy: {bool(proxy)})")
             with httpx.Client(
