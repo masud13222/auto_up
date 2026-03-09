@@ -33,7 +33,7 @@ def process_media_task(task_pk: int) -> str:
         logger.info(f"Task started for URL: {url}")
 
         # ── Step 0: Duplicate Check ──
-        dup = check_duplicate(url)
+        dup = check_duplicate(url, current_task_pk=media_task.pk)
         action = dup["action"]
         reason = dup["reason"]
 

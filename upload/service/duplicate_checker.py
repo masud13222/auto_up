@@ -10,7 +10,7 @@ from llm.schema.duplicate_schema import DUPLICATE_CHECK_PROMPT
 logger = logging.getLogger(__name__)
 
 
-def check_duplicate(url: str) -> dict:
+def check_duplicate(url: str, current_task_pk: int = None) -> dict:
     """
     Full duplicate detection pipeline:
     1. Fetch page title (no LLM needed)
@@ -60,7 +60,7 @@ def check_duplicate(url: str) -> dict:
         }
 
     # Step 3: Search DB — name only first, then name + year
-    matches = _search_db(name, year)
+    matches = _search_db(name, year, exclude_pk=current_task_pk)
 
     if not matches:
         logger.info(f"No existing match found for '{name}' ({year}). New content.")
@@ -87,13 +87,16 @@ def check_duplicate(url: str) -> dict:
     return result
 
 
-def _search_db(name: str, year: str = None) -> list:
+def _search_db(name: str, year: str = None, exclude_pk: int = None) -> list:
     """
     Search MediaTask for matching entries.
     Tries name+year first (more specific), falls back to name-only.
-    Only searches completed tasks.
+    Searches tasks that have results (completed or processing).
+    Excludes current task to prevent self-matching on resume.
     """
-    base_qs = MediaTask.objects.filter(status='completed')
+    base_qs = MediaTask.objects.filter(status__in=['completed', 'processing']).exclude(result__isnull=True)
+    if exclude_pk:
+        base_qs = base_qs.exclude(pk=exclude_pk)
 
     # Try name + year first (most specific)
     if year:
