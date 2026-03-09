@@ -60,11 +60,12 @@ First, from `new_website_title`, detect if the new content is a **movie** or **t
 - Set `detected_new_type` accordingly
 
 ## STEP 2: Type Mismatch Check
-⚠️ If `detected_new_type` ≠ `existing_type` → they are DIFFERENT content → action="process"
-- A movie and a TV show can have the SAME name (e.g. "Sa Re Ga Ma Pa" movie vs "Sa Re Ga Ma Pa Season 22" series)
-- NEVER skip/update/replace if types don't match — they are different content entirely
+If `detected_new_type` ≠ `existing_type`:
+- If SAME title/name → the existing entry was MISCLASSIFIED → action="replace"
+  - Example: existing="Sa Re Ga Ma Pa Legends" (movie) vs new="Sa Re Ga Ma Pa Legends Season 22" (tvshow) → REPLACE (same content, wrong classification)
+- If DIFFERENT title/name → genuinely different content → action="process"
 
-## STEP 3: Same-Type Comparison (only if types match)
+## STEP 3: Same-Type Comparison (only if types match OR already decided)
 
 ### → "skip" (is_duplicate=true)
 - SAME media, SAME quality, and NO missing resolutions
