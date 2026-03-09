@@ -1,6 +1,7 @@
 import httpx
 import re
 import io
+import ssl
 import time
 import logging
 from django.conf import settings
@@ -28,19 +29,22 @@ class WebScrapeService:
     # Retry configuration
     MAX_RETRIES = 3
     RETRY_DELAYS = [3, 8, 15]  # seconds between retries (escalating)
+    # Per-request hard timeout (prevents proxy hangs from blocking worker for hours)
+    REQUEST_TIMEOUT = httpx.Timeout(connect=15.0, read=20.0, write=15.0, pool=10.0)
 
     @staticmethod
     def _request_with_retry(client, url, method="GET"):
         """
         Makes an HTTP request with automatic retry on failure.
-        Retries on: connection errors, timeouts, proxy issues, 5xx responses.
+        Retries on: connection errors, timeouts, proxy issues, SSL errors, 5xx responses.
         Uses escalating delays: 3s → 8s → 15s
+        Total max time: ~46s per request (20s read + retries)
         """
         last_error = None
 
         for attempt in range(WebScrapeService.MAX_RETRIES + 1):
             try:
-                r = client.request(method, url)
+                r = client.request(method, url, timeout=WebScrapeService.REQUEST_TIMEOUT)
 
                 # Retry on server errors (5xx)
                 if r.status_code >= 500:
@@ -54,7 +58,8 @@ class WebScrapeService:
 
             except (httpx.ConnectError, httpx.TimeoutException,
                     httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError,
-                    httpx.ProxyError, httpx.HTTPStatusError) as e:
+                    httpx.ProxyError, httpx.HTTPStatusError,
+                    ssl.SSLError, OSError) as e:
                 last_error = e
 
                 if attempt < WebScrapeService.MAX_RETRIES:
@@ -102,7 +107,7 @@ class WebScrapeService:
             with httpx.Client(
                 headers=WebScrapeService.DEFAULT_HEADERS, 
                 proxy=proxy,
-                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
+                timeout=WebScrapeService.REQUEST_TIMEOUT,
                 follow_redirects=True
             ) as client:
                 r = WebScrapeService._request_with_retry(client, url)
@@ -137,7 +142,7 @@ class WebScrapeService:
             with httpx.Client(
                 headers=WebScrapeService.DEFAULT_HEADERS,
                 proxy=proxy,
-                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
+                timeout=WebScrapeService.REQUEST_TIMEOUT,
                 follow_redirects=True
             ) as client:
                 r = WebScrapeService._request_with_retry(client, url)
@@ -170,7 +175,7 @@ class WebScrapeService:
             with httpx.Client(
                 headers=headers, 
                 proxy=proxy,
-                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
+                timeout=WebScrapeService.REQUEST_TIMEOUT,
                 follow_redirects=True
             ) as client:
                 # 1. Initial request to find window.location.href
