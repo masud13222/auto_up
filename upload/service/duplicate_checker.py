@@ -1,5 +1,6 @@
 import json
 import logging
+from django.db.models import Q
 from upload.models import MediaTask
 from upload.utils.web_scrape import WebScrapeService
 from llm.utils.name_extractor import extract_title_info
@@ -87,48 +88,103 @@ def check_duplicate(url: str, current_task_pk: int = None) -> dict:
     return result
 
 
+FUZZY_THRESHOLD = 85
+
+
+def _get_search_keywords(name: str) -> list[str]:
+    """Generate progressively broader search keywords from a name."""
+    words = name.strip().split()
+    queries = [name]
+    for i in range(len(words) - 1, 0, -1):
+        partial = " ".join(words[:i])
+        if partial != name and len(partial) >= 3:
+            queries.append(partial)
+    return queries
+
+
 def _search_db(name: str, year: str = None, exclude_pk: int = None) -> list:
     """
-    Search MediaTask for matching entries.
-    Tries name+year first (more specific), falls back to name-only.
-    Searches tasks that have results (completed or processing).
-    Excludes current task to prevent self-matching on resume.
+    Search MediaTask for matching entries using fuzzy matching.
+    Fetches broader candidates from DB, then scores with rapidfuzz.
+    Returns only matches above FUZZY_THRESHOLD, sorted by score (best first).
     """
+    from rapidfuzz import fuzz
+
     base_qs = MediaTask.objects.filter(status__in=['completed', 'processing']).exclude(result__isnull=True)
     if exclude_pk:
         base_qs = base_qs.exclude(pk=exclude_pk)
 
-    # Try name + year first (most specific)
-    if year:
-        matches = list(base_qs.filter(title__icontains=name, result__year=int(year)).order_by('-updated_at')[:5])
-        if matches:
-            logger.debug(f"DB match (name+year): {len(matches)} found")
-            return matches
+    keywords = _get_search_keywords(name)
+    candidates = {}  # pk -> (task, score)
 
-    # Fallback: name only
-    matches = list(base_qs.filter(title__icontains=name).order_by('-updated_at')[:5])
+    # Fetch candidates from DB using keyword variants
+    for keyword in keywords:
+        # Try name + year first
+        if year:
+            try:
+                qs = base_qs.filter(
+                    Q(title__icontains=keyword) | Q(website_title__icontains=keyword),
+                    result__year=int(year),
+                ).order_by('-updated_at')[:10]
+                for task in qs:
+                    if task.pk not in candidates:
+                        q = name.lower()
+                        scores = []
+                        if task.title:
+                            scores.append(fuzz.partial_ratio(q, task.title.lower()))
+                        if task.website_title:
+                            scores.append(fuzz.partial_ratio(q, task.website_title.lower()))
+                        score = max(scores) if scores else 0
+                        if score >= FUZZY_THRESHOLD:
+                            candidates[task.pk] = (task, score)
+            except (ValueError, TypeError):
+                pass
+
+        # Name only (broader)
+        qs = base_qs.filter(
+            Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
+        ).order_by('-updated_at')[:10]
+        for task in qs:
+            if task.pk not in candidates:
+                q = name.lower()
+                scores = []
+                if task.title:
+                    scores.append(fuzz.partial_ratio(q, task.title.lower()))
+                if task.website_title:
+                    scores.append(fuzz.partial_ratio(q, task.website_title.lower()))
+                score = max(scores) if scores else 0
+                if score >= FUZZY_THRESHOLD:
+                    candidates[task.pk] = (task, score)
+
+    # Sort by score (best first) and return task list
+    sorted_matches = sorted(candidates.values(), key=lambda x: x[1], reverse=True)
+    matches = [task for task, score in sorted_matches]
+
     if matches:
-        logger.debug(f"DB match (name only): {len(matches)} found")
+        logger.debug(
+            f"DB fuzzy match for '{name}': {len(matches)} found "
+            f"(scores: {[s for _, s in sorted_matches]})"
+        )
 
     return matches
 
 
 def _get_existing_resolutions(task: MediaTask) -> list:
-    """Extract resolution keys from existing task's result."""
+    """Extract resolution keys from existing task's result. Filters out null values."""
     result = task.result or {}
 
-    # Movie: download_links keys
+    # Movie: download_links keys (only non-null values)
     dl = result.get("download_links", {})
     if dl:
-        return list(dl.keys())
+        return sorted(k for k, v in dl.items() if v)
 
-    # TV show: collect all resolution keys across seasons
+    # TV show: collect all resolution keys across seasons (only non-null)
     resolutions = set()
     for season in result.get("seasons", []):
         for item in season.get("download_items", []):
-            resolutions.update(item.get("resolutions", {}).keys())
+            resolutions.update(k for k, v in item.get("resolutions", {}).items() if v)
 
-    return list(resolutions)
+    return sorted(resolutions)
 
 
 def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_website_title: str) -> dict:
@@ -143,12 +199,15 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         is_tvshow = bool(result_data.get("seasons"))
 
     episode_count = 0
-    episode_labels = []
+    episodes = []
     if is_tvshow:
         for season in result_data.get("seasons", []):
             for item in season.get("download_items", []):
                 episode_count += 1
-                episode_labels.append(item.get("label", ""))
+                label = item.get("label", "")
+                res = item.get("resolutions", {})
+                ep_res = sorted(k for k, v in res.items() if v)
+                episodes.append(f"{label}: {','.join(ep_res)}")
 
     comparison_data = json.dumps({
         "new_website_title": new_website_title,
@@ -158,7 +217,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         "existing_resolutions": existing_resolutions,
         "existing_type": "tvshow" if is_tvshow else "movie",
         "existing_episode_count": episode_count,
-        "existing_episode_labels": episode_labels,
+        "existing_episodes": episodes,
     }, ensure_ascii=False)
 
     logger.info(f"LLM comparing: '{new_name}' vs existing '{existing_task.title}' "

@@ -66,7 +66,9 @@ def process_media_task(task_pk: int) -> str:
         title = data.get("title", "Unknown")
 
         media_task.content_type = content_type
-        save_task(media_task, title=title, result=data)
+        # Extract website_title from result data
+        web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
+        save_task(media_task, title=title, website_title=web_title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
         # Step 2: Route to appropriate pipeline

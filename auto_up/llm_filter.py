@@ -1,8 +1,8 @@
 """
 LLM-based filtering for auto-upload.
 
-Sends scraped items + DB search results to the LLM,
-which decides what should be processed and what should be skipped.
+Sends scraped items + DB search results (with full resolution/episode info)
+to the LLM, which decides what should be processed and what should be skipped.
 """
 
 import json
@@ -13,6 +13,41 @@ from llm.json_repair import repair_json
 from auto_up.schema import AUTO_FILTER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _build_db_result_entry(r: dict) -> dict:
+    """
+    Build a single DB result entry for LLM payload.
+    Includes all rich info: website_title, resolutions, episodes, etc.
+    """
+    entry = {
+        "task_pk": r["task_pk"],
+        "matched_by": r.get("matched_by", []),
+        "title": r["title"],
+        "status": r["status"],
+        "content_type": r["content_type"],
+        "url": r["url"],
+    }
+
+    # Rich fields — only include if present
+    if r.get("website_title"):
+        entry["website_title"] = r["website_title"]
+    if r.get("year"):
+        entry["year"] = r["year"]
+
+    # Movie resolutions
+    if r.get("resolutions"):
+        entry["resolutions"] = r["resolutions"]
+
+    # TV Show episode-level detail
+    if r.get("season_numbers"):
+        entry["season_numbers"] = r["season_numbers"]
+    if r.get("total_episodes"):
+        entry["total_episodes"] = r["total_episodes"]
+    if r.get("episodes"):
+        entry["episodes"] = r["episodes"]
+
+    return entry
 
 
 def filter_items_with_llm(items: list[dict]) -> list[dict]:
@@ -28,6 +63,8 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             - season_tag: str or None
             - url: str
             - db_results: dict from db_search.search_existing()
+                          (now includes rich info: website_title, resolutions,
+                           episode_count, episode_labels, season_numbers)
 
     Returns:
         List of items that should be processed, each with:
@@ -41,7 +78,7 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
         logger.info("No items to filter")
         return []
 
-    # Build the prompt payload
+    # Build the prompt payload with full rich data
     payload = []
     for item in items:
         db_results = item.get("db_results", {})
@@ -52,25 +89,9 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             "season_tag": item.get("season_tag"),
             "url": item["url"],
             "db_results": {
-                "name_only_results": [
-                    {
-                        "task_pk": r["task_pk"],
-                        "title": r["title"],
-                        "status": r["status"],
-                        "content_type": r["content_type"],
-                        "url": r["url"],
-                    }
-                    for r in db_results.get("name_only_results", [])
-                ],
-                "name_year_results": [
-                    {
-                        "task_pk": r["task_pk"],
-                        "title": r["title"],
-                        "status": r["status"],
-                        "content_type": r["content_type"],
-                        "url": r["url"],
-                    }
-                    for r in db_results.get("name_year_results", [])
+                "results": [
+                    _build_db_result_entry(r)
+                    for r in db_results.get("results", [])
                 ],
                 "has_matches": db_results.get("has_matches", False),
             },

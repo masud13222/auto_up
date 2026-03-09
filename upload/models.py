@@ -20,6 +20,7 @@ class MediaTask(models.Model):
 
     url = models.URLField(max_length=500, db_index=True)
     title = models.CharField(max_length=500, blank=True, default='')
+    website_title = models.CharField(max_length=1000, blank=True, default='', db_index=True)
     content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     result = models.JSONField(null=True, blank=True)

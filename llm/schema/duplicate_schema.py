@@ -48,10 +48,11 @@ You will receive JSON with:
 - `new_name`: Clean extracted name
 - `new_year`: Extracted year (if any)
 - `existing_title`: Title stored in our database
-- `existing_resolutions`: Resolutions the existing entry already has (e.g. ["720p", "1080p"])
+- `existing_resolutions`: Resolutions the existing entry already has (e.g. ["720p", "1080p"]) — null values are already filtered out
 - `existing_type`: "movie" or "tvshow"
 - `existing_episode_count`: Number of download items in existing (TV shows only)
-- `existing_episode_labels`: Labels like "Episode 01-08", "Episode 09-16" (TV shows only)
+- `existing_episodes`: Per-episode resolution info like ["Episode 01: 480p,720p,1080p", "Episode 06: 720p,1080p"] (TV shows only)
+  → This tells you EXACTLY which episodes have which resolutions. Null/empty resolution values are already filtered.
 
 ## STEP 1: Detect New Content Type
 First, from `new_website_title`, detect if the new content is a **movie** or **tvshow**.
@@ -104,8 +105,9 @@ CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluR
   → no missing, likely "skip"
 
 ## How to detect new episodes:
-- Compare what existing_episode_labels cover vs what the new title suggests
-- If existing has "Episode 01-08" but the show likely has more episodes now → has_new_episodes=true
+- Compare what existing_episodes cover vs what the new title suggests
+- If existing has "Episode 01: 480p,720p,1080p" through "Episode 08: 480p,720p,1080p" but the show likely has more episodes now → has_new_episodes=true
+- Also check per-episode resolutions — if an episode is missing a resolution, that counts as needing update
 - If you can't tell from the title alone, default has_new_episodes=true for safety
 
 ## Important:
