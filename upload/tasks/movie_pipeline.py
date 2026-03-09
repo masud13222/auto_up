@@ -9,7 +9,7 @@ from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
 from llm.services import LLMService
-from llm.schema import FILENAME_SYSTEM_PROMPT, filename_schema
+from llm.schema import FILENAME_SYSTEM_PROMPT
 from django.conf import settings
 
 from .helpers import save_task, is_drive_link
@@ -42,7 +42,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         prompt=json.dumps(movie_data, indent=2),
         system_prompt=FILENAME_SYSTEM_PROMPT
     )
-    filenames = get_structured_output(filename_response, filename_schema)
+    filenames = get_structured_output(filename_response)
 
     # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()
