@@ -17,7 +17,7 @@ from .helpers import save_task, is_drive_link
 logger = logging.getLogger(__name__)
 
 
-def process_movie_pipeline(media_task, movie_data):
+def process_movie_pipeline(media_task, movie_data, dup_info=None):
     """
     Movie pipeline: Generate filenames → Parallel Download+Upload → Cleanup
     Each quality downloads in parallel, and uploads as soon as download finishes.

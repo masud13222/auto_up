@@ -17,7 +17,7 @@ from .helpers import save_task, is_drive_link, log_memory
 logger = logging.getLogger(__name__)
 
 
-def process_tvshow_pipeline(media_task, tvshow_data):
+def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     """
     TV Show pipeline: Generate filenames → Download/Clean/Upload → Cleanup
 

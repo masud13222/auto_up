@@ -44,16 +44,21 @@ def process_media_task(task_pk: int) -> str:
                       error_message=f"Skipped (duplicate): {reason}")
             return json.dumps({"status": "skipped", "message": reason})
 
+        if action == "update":
+            existing_task = dup.get("existing_task")
+            missing_res = dup.get("missing_resolutions", [])
+            new_eps = dup.get("has_new_episodes", False)
+            logger.info(f"DUPLICATE UPDATE: {reason} (missing_res={missing_res}, new_eps={new_eps})")
+
         if action == "replace":
             old_task = dup.get("existing_task")
             if old_task:
                 logger.info(f"DUPLICATE REPLACE: Marking old task [{old_task.pk}] '{old_task.title}' for replacement. Reason: {reason}")
-                # Mark old task as replaced (keep in DB for history)
                 old_task.status = 'failed'
                 old_task.error_message = f"Replaced by task {media_task.pk}: {reason}"
                 old_task.save(update_fields=['status', 'error_message', 'updated_at'])
 
-        # action == "process" or "replace" → continue with pipeline
+        # Save extracted name early
         if dup.get("extracted_name"):
             save_task(media_task, title=dup["extracted_name"])
 
@@ -73,10 +78,11 @@ def process_media_task(task_pk: int) -> str:
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
         # Step 2: Route to appropriate pipeline
+        # Pass dup context so pipeline can handle partial downloads
         if content_type == "tvshow":
-            return process_tvshow_pipeline(media_task, data)
+            return process_tvshow_pipeline(media_task, data, dup_info=dup)
         else:
-            return process_movie_pipeline(media_task, data)
+            return process_movie_pipeline(media_task, data, dup_info=dup)
 
     except Exception as e:
         logger.error(f"Task failed: {e}", exc_info=True)

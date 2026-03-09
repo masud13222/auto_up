@@ -130,7 +130,18 @@ def _get_existing_resolutions(task: MediaTask) -> list:
 
 def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_website_title: str) -> dict:
     """Use LLM to compare new vs existing content."""
+    result_data = existing_task.result or {}
     existing_resolutions = _get_existing_resolutions(existing_task)
+
+    # Determine existing content type and episode info
+    is_tvshow = bool(result_data.get("seasons"))
+    episode_count = 0
+    episode_labels = []
+    if is_tvshow:
+        for season in result_data.get("seasons", []):
+            for item in season.get("download_items", []):
+                episode_count += 1
+                episode_labels.append(item.get("label", ""))
 
     comparison_data = json.dumps({
         "new_website_title": new_website_title,
@@ -138,9 +149,13 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         "new_year": new_year,
         "existing_title": existing_task.title,
         "existing_resolutions": existing_resolutions,
+        "existing_type": "tvshow" if is_tvshow else "movie",
+        "existing_episode_count": episode_count,
+        "existing_episode_labels": episode_labels,
     }, ensure_ascii=False)
 
-    logger.info(f"LLM comparing: '{new_name}' vs existing '{existing_task.title}' (resolutions: {existing_resolutions})")
+    logger.info(f"LLM comparing: '{new_name}' vs existing '{existing_task.title}' "
+                f"(type={'tvshow' if is_tvshow else 'movie'}, res={existing_resolutions}, episodes={episode_count})")
 
     try:
         raw = LLMService.generate_completion(
@@ -151,14 +166,28 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
 
         action = result.get("action", "process")
         reason = result.get("reason", "LLM decision")
+        missing_resolutions = result.get("missing_resolutions", [])
+        has_new_episodes = result.get("has_new_episodes", False)
 
         # Validate action
-        if action not in ("skip", "process", "replace"):
+        if action not in ("skip", "update", "replace", "process"):
             action = "process"
             reason = f"Invalid LLM action, defaulting to process: {result}"
 
-        return {"action": action, "reason": reason}
+        return {
+            "action": action,
+            "reason": reason,
+            "missing_resolutions": missing_resolutions,
+            "has_new_episodes": has_new_episodes,
+        }
 
     except Exception as e:
         logger.warning(f"LLM comparison failed, defaulting to process: {e}")
-        return {"action": "process", "reason": f"LLM comparison error: {e}"}
+        return {
+            "action": "process",
+            "reason": f"LLM comparison error: {e}",
+            "missing_resolutions": [],
+            "has_new_episodes": False,
+        }
+
+
