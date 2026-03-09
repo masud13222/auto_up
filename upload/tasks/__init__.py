@@ -38,29 +38,20 @@ def process_media_task(task_pk: int) -> str:
         reason = dup["reason"]
 
         if action == "skip":
-            logger.info(f"DUPLICATE SKIP: {reason}")
-            save_task(media_task, status='completed',
-                      title=dup.get("extracted_name") or media_task.title,
-                      error_message=f"Skipped (duplicate): {reason}")
+            logger.info(f"DUPLICATE SKIP: {reason} — deleting new entry (pk={media_task.pk})")
+            media_task.delete()
             return json.dumps({"status": "skipped", "message": reason})
 
-        if action == "update":
+        if action in ("update", "replace"):
             existing_task = dup.get("existing_task")
-            missing_res = dup.get("missing_resolutions", [])
-            new_eps = dup.get("has_new_episodes", False)
-            logger.info(f"DUPLICATE UPDATE: {reason} (missing_res={missing_res}, new_eps={new_eps})")
-
-        if action == "replace":
-            old_task = dup.get("existing_task")
-            if old_task:
-                logger.info(f"DUPLICATE REPLACE: Marking old task [{old_task.pk}] '{old_task.title}' for replacement. Reason: {reason}")
-                old_task.status = 'failed'
-                old_task.error_message = f"Replaced by task {media_task.pk}: {reason}"
-                old_task.save(update_fields=['status', 'error_message', 'updated_at'])
-
-        # Save extracted name early
-        if dup.get("extracted_name"):
-            save_task(media_task, title=dup["extracted_name"])
+            if existing_task:
+                logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
+                media_task.delete()
+                # Continue pipeline with existing task
+                media_task = existing_task
+                media_task.status = 'processing'
+                media_task.error_message = ''
+                media_task.save(update_fields=['status', 'error_message', 'updated_at'])
 
         # ── Step 1: Extract content info ──
         def _on_progress(data):
