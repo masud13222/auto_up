@@ -201,9 +201,8 @@ def process_media_task(task_pk: int) -> str:
             data = _merge_drive_links(existing_result, data)
             logger.info(f"Merged existing drive links into new extraction data")
 
-        media_task.content_type = content_type
         web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
-        save_task(media_task, title=title, website_title=web_title, result=data)
+        save_task(media_task, content_type=content_type, title=title, website_title=web_title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
         # ── Step 2: Route to appropriate pipeline ──
