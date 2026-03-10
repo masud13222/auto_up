@@ -121,8 +121,8 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "All entries hit daily limit")
             return "All entries hit daily process limit."
 
-        # ── Step 2b: Skip URLs already in MediaTask DB ──
-        # This prevents wasting LLM tokens on URLs already queued/processing/completed
+        # ── Step 2b: Skip URLs currently pending/processing in MediaTask DB ──
+        # This prevents wasting LLM tokens on URLs already queued/processing
         url_filtered = []
         url_exists_skipped = 0
 
@@ -220,15 +220,15 @@ def auto_scrape_and_queue() -> str:
             raw_title = item.get("raw_title", url[:50])
             priority = item.get("priority", "normal")
 
-            # Race condition guard
-            if MediaTask.objects.filter(url=url).exists():
-                logger.info(f"Race condition guard: URL already in DB, skipping: {url}")
+            # Race condition guard — only block if pending/processing
+            if MediaTask.objects.filter(url=url, status__in=['pending', 'processing']).exists():
+                logger.info(f"Race condition guard: URL already queued/processing, skipping: {url}")
                 ScrapeItem.objects.create(
                     run=scrape_run,
                     raw_title=raw_title,
                     url=url,
                     action='skip_race',
-                    reason='URL appeared in DB between LLM call and queue',
+                    reason='URL is currently pending/processing',
                 )
                 continue
 
