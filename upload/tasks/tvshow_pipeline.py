@@ -202,42 +202,50 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
         # ── Phase 1: Download ALL resolutions PARALLEL ──
         uploaded_resolutions = dict(already_uploaded)
-        upload_executor = ThreadPoolExecutor(max_workers=3)
-        upload_futures = []
 
-        with ThreadPoolExecutor(max_workers=len(to_process)) as dl_executor:
-            download_futures = {
-                dl_executor.submit(
-                    _download_one, q, u, f, season_num, item_label
-                ): q
-                for q, u, f in to_process
-            }
+        with ThreadPoolExecutor(max_workers=3) as upload_executor:
+            upload_futures = []
 
-            # ── Phase 2: As each download completes ──
-            #   FFmpeg: SEQUENTIAL (blocks in main thread)
-            #   Upload: PARALLEL (fire to background thread)
-            for future in as_completed(download_futures):
-                quality, file_path = future.result()
-                if not file_path:
+            with ThreadPoolExecutor(max_workers=len(to_process)) as dl_executor:
+                download_futures = {
+                    dl_executor.submit(
+                        _download_one, q, u, f, season_num, item_label
+                    ): q
+                    for q, u, f in to_process
+                }
+
+                # ── Phase 2: As each download completes ──
+                #   FFmpeg: SEQUENTIAL (blocks in main thread)
+                #   Upload: PARALLEL (fire to background thread)
+                for future in as_completed(download_futures):
+                    try:
+                        quality, file_path = future.result()
+                    except Exception as e:
+                        quality = download_futures[future]
+                        logger.error(f"Download failed for S{season_num} {item_label} {quality}: {e}")
+                        continue
+                    if not file_path:
+                        continue
+
+                    # FFmpeg — SEQUENTIAL (one at a time)
+                    file_path = _clean_one(quality, file_path)
+
+                    # Upload — PARALLEL (background thread)
+                    uf = upload_executor.submit(
+                        _upload_one, quality, file_path,
+                        season_folder_id, season_num, item_label
+                    )
+                    upload_futures.append(uf)
+
+            # Wait for all background uploads to finish (with statement handles shutdown)
+            for uf in upload_futures:
+                try:
+                    quality, link = uf.result()
+                except Exception as e:
+                    logger.error(f"Upload thread failed for S{season_num} {item_label}: {e}")
                     continue
-
-                # FFmpeg — SEQUENTIAL (one at a time)
-                file_path = _clean_one(quality, file_path)
-
-                # Upload — PARALLEL (background thread)
-                uf = upload_executor.submit(
-                    _upload_one, quality, file_path,
-                    season_folder_id, season_num, item_label
-                )
-                upload_futures.append(uf)
-
-        # Wait for all background uploads to finish
-        for uf in upload_futures:
-            quality, link = uf.result()
-            if link:
-                uploaded_resolutions[quality] = link
-
-        upload_executor.shutdown(wait=False)
+                if link:
+                    uploaded_resolutions[quality] = link
 
         if uploaded_resolutions:
             uploaded_count += 1

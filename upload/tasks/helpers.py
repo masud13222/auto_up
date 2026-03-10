@@ -4,10 +4,13 @@ logger = logging.getLogger(__name__)
 
 
 def save_task(media_task, **fields):
-    """Update task fields and save to DB immediately."""
+    """Update task fields and save to DB immediately (only changed fields)."""
     for key, value in fields.items():
         setattr(media_task, key, value)
-    media_task.save()
+    if fields:
+        media_task.save(update_fields=list(fields.keys()) + ['updated_at'])
+    else:
+        media_task.save()
 
 
 def is_drive_link(url):
