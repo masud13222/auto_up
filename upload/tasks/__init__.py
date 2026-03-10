@@ -127,6 +127,11 @@ def process_media_task(task_pk: int) -> str:
                     existing_task = matches[0]
                     logger.info(f"Found existing match: [{existing_task.pk}] {existing_task.title}")
                     db_match_info = _build_db_match_info(existing_task)
+                elif resume_result:
+                    # Reused task: no OTHER match found, but this task has its own
+                    # previous result — use it for LLM duplicate comparison
+                    logger.info(f"No other match, but task has existing result (reused task). Using self for dup check.")
+                    db_match_info = _build_db_match_info(media_task)
                 else:
                     logger.info(f"No existing match for '{name}'. New content.")
 
@@ -142,7 +147,8 @@ def process_media_task(task_pk: int) -> str:
                 save_task(media_task, result=data)
 
         content_type, data, dup_result = get_content_info(
-            url, on_progress=_on_progress, db_match_info=db_match_info
+            url, on_progress=_on_progress, db_match_info=db_match_info,
+            existing_result=resume_result if resume_result else None,
         )
         title = data.get("title", "Unknown")
 
@@ -166,8 +172,14 @@ def process_media_task(task_pk: int) -> str:
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
 
             if action == "skip":
-                logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
-                media_task.delete()
+                if resume_result:
+                    # Reused task — restore to completed, don't delete!
+                    logger.info(f"DUPLICATE SKIP: {reason} — restoring reused task to completed (pk={media_task.pk})")
+                    save_task(media_task, status='completed')
+                else:
+                    # New task — safe to delete
+                    logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
+                    media_task.delete()
                 return json.dumps({"status": "skipped", "message": reason})
 
             if action in ("update", "replace") and existing_task:

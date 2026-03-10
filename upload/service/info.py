@@ -56,58 +56,132 @@ def detect_and_extract(html_content: str, db_match_info: dict = None) -> tuple:
     return content_type, data, dup_result
 
 
-def resolve_movie_links(movie_data: dict) -> dict:
+def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
     """
     Resolve download links for a movie (generate.php → actual R2 URLs).
+    Skips qualities that already have Drive links in existing_result.
     """
+    from upload.tasks.helpers import is_drive_link
+
+    # Build lookup of existing drive links
+    existing_links = {}
+    if existing_result:
+        for q, link in existing_result.get("download_links", {}).items():
+            if is_drive_link(link):
+                existing_links[q] = link
+
     download_links = movie_data.get("download_links", {})
     if download_links:
+        skipped = 0
+        resolved = 0
         logger.info("Resolving movie download links...")
         for quality, url in list(download_links.items()):
+            # Skip if we already have a drive link for this quality
+            if quality in existing_links:
+                movie_data["download_links"][quality] = existing_links[quality]
+                skipped += 1
+                logger.debug(f"Skipping {quality}: already has Drive link")
+                continue
             if url:
                 logger.debug(f"Resolving {quality}: {url}")
                 movie_data["download_links"][quality] = WebScrapeService.get_url(url)
+                resolved += 1
+        if skipped:
+            logger.info(f"Link resolution: {resolved} resolved, {skipped} skipped (already uploaded)")
     return movie_data
 
 
-def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None) -> dict:
+def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_result: dict = None) -> dict:
     """
     Resolve download links for a TV show (generate.php → actual R2 URLs).
+    Skips items/qualities that already have Drive links in existing_result.
     
     Args:
         tvshow_data: TV show data with generate.php URLs
         on_item_resolved: Optional callback(tvshow_data) called after each 
                           download item is fully resolved. Use this to save 
                           progress to DB incrementally.
+        existing_result: Optional dict with previous task result containing
+                         Drive links to skip resolving.
     """
+    from upload.tasks.helpers import is_drive_link
+
     seasons = tvshow_data.get("seasons", [])
     if not seasons:
         return tvshow_data
 
-    logger.info(f"Resolving download links for {len(seasons)} season(s)...")
+    # Build lookup of existing drive links: {(season_num, label, quality): drive_link}
+    existing_links = {}
+    if existing_result:
+        for season in existing_result.get("seasons", []):
+            snum = season.get("season_number")
+            for item in season.get("download_items", []):
+                label = item.get("label", "")
+                item_type = item.get("type", "")
+                for q, link in item.get("resolutions", {}).items():
+                    if is_drive_link(link):
+                        existing_links[(snum, label, q)] = link
+                        # Also index by type for flexible matching
+                        existing_links[(snum, item_type, q)] = link
+
+    total_skipped = 0
+    total_resolved = 0
+
+    logger.info(f"Resolving download links for {len(seasons)} season(s)..."
+                + (f" ({len(existing_links)} existing Drive links to skip)" if existing_links else ""))
+
     for season in seasons:
         season_num = season.get("season_number", "?")
         download_items = season.get("download_items", [])
 
         for item in download_items:
             item_label = item.get("label", "Unknown")
+            item_type = item.get("type", "")
             resolutions = item.get("resolutions", {})
 
+            # Check if ALL resolutions for this item already have drive links
+            all_uploaded = all(
+                (season_num, item_label, q) in existing_links
+                or (season_num, item_type, q) in existing_links
+                for q in resolutions
+            ) if resolutions and existing_links else False
+
+            if all_uploaded:
+                # Restore all drive links from existing result
+                for q in list(resolutions.keys()):
+                    link = existing_links.get((season_num, item_label, q)) or existing_links.get((season_num, item_type, q))
+                    if link:
+                        item["resolutions"][q] = link
+                        total_skipped += 1
+                logger.debug(f"Skipping S{season_num} {item_label}: all resolutions already uploaded")
+                if on_item_resolved:
+                    on_item_resolved(tvshow_data)
+                continue
+
+            # Resolve only missing resolutions
             for quality, url in list(resolutions.items()):
+                existing_link = existing_links.get((season_num, item_label, quality)) or existing_links.get((season_num, item_type, quality))
+                if existing_link:
+                    item["resolutions"][quality] = existing_link
+                    total_skipped += 1
+                    logger.debug(f"Skipping S{season_num} {item_label} {quality}: already has Drive link")
+                    continue
                 if url:
                     logger.debug(f"Resolving S{season_num} {item_label} {quality}: {url}")
                     resolved = WebScrapeService.get_url(url)
                     item["resolutions"][quality] = resolved
+                    total_resolved += 1
 
             # Callback after each item is fully resolved
             if on_item_resolved:
                 on_item_resolved(tvshow_data)
                 logger.debug(f"Progress saved: S{season_num} {item_label} resolved")
 
+    logger.info(f"Link resolution complete: {total_resolved} resolved, {total_skipped} skipped (already uploaded)")
     return tvshow_data
 
 
-def get_content_info(url, on_progress=None, db_match_info=None):
+def get_content_info(url, on_progress=None, db_match_info=None, existing_result=None):
     """
     Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
     then resolves URLs. Scrapes only ONCE, then reuses the HTML.
@@ -117,6 +191,8 @@ def get_content_info(url, on_progress=None, db_match_info=None):
         on_progress: Optional callback(data) for incremental DB saves during 
                      URL resolution. Called after each download item is resolved.
         db_match_info: Optional dict with existing DB match info for duplicate check.
+        existing_result: Optional dict with previous task result containing
+                         Drive links — used to skip resolving already-uploaded items.
     
     Returns: (content_type, data, dup_result_or_None)
     """
@@ -141,10 +217,10 @@ def get_content_info(url, on_progress=None, db_match_info=None):
 
     # Step 3: Resolve URLs based on content type
     if content_type == "tvshow":
-        data = resolve_tvshow_links(data, on_item_resolved=on_progress)
+        data = resolve_tvshow_links(data, on_item_resolved=on_progress, existing_result=existing_result)
         logger.info("TV show info extraction complete.")
     else:
-        data = resolve_movie_links(data)
+        data = resolve_movie_links(data, existing_result=existing_result)
         logger.info("Movie info extraction complete.")
 
     return content_type, data, dup_result

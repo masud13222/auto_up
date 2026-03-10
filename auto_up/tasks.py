@@ -232,8 +232,19 @@ def auto_scrape_and_queue() -> str:
                 )
                 continue
 
-            # Create MediaTask
-            media_task = MediaTask.objects.create(url=url)
+            # Reuse existing completed/failed task, or create new
+            existing = MediaTask.objects.filter(
+                url=url, status__in=['completed', 'failed']
+            ).order_by('-updated_at').first()
+
+            if existing:
+                media_task = existing
+                media_task.status = 'pending'
+                media_task.error_message = ''
+                media_task.save(update_fields=['status', 'error_message', 'updated_at'])
+                logger.info(f"Reusing existing task (pk={media_task.pk}) for: {raw_title[:60]}")
+            else:
+                media_task = MediaTask.objects.create(url=url)
 
             # Queue for processing
             q_task_id = async_task(
@@ -243,7 +254,7 @@ def auto_scrape_and_queue() -> str:
             )
 
             media_task.task_id = q_task_id or ""
-            media_task.save(update_fields=["task_id"])
+            media_task.save(update_fields=["task_id", "updated_at"])
 
             # Log the item
             # Find clean_name from enriched_items
