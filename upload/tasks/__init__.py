@@ -61,6 +61,56 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
     return new_data
 
 
+def _has_drive_links(result: dict) -> bool:
+    """Check if a result dict actually contains any Google Drive upload links."""
+    if not result:
+        return False
+    # Check movie download_links
+    for link in result.get('download_links', {}).values():
+        if is_drive_link(link):
+            return True
+    # Check TV show seasons
+    for season in result.get('seasons', []):
+        for item in season.get('download_items', []):
+            for res_val in item.get('resolutions', {}).values():
+                if is_drive_link(res_val):
+                    return True
+    return False
+
+
+def _clean_result_keep_drive_links(result: dict) -> dict:
+    """Strip resolutions without Drive links from a failed task's result.
+    
+    Keeps metadata (title, plot, poster, etc.) intact.
+    Only removes resolution entries that were scraped but never uploaded.
+    This ensures reused tasks only have real uploaded data in resume_result.
+    """
+    if not result:
+        return result
+
+    cleaned = dict(result)
+
+    # Clean movie download_links
+    if 'download_links' in cleaned:
+        cleaned['download_links'] = {
+            k: v for k, v in cleaned['download_links'].items()
+            if is_drive_link(v)
+        }
+
+    # Clean TV show seasons
+    for season in cleaned.get('seasons', []):
+        items_to_keep = []
+        for item in season.get('download_items', []):
+            res = item.get('resolutions', {})
+            cleaned_res = {k: v for k, v in res.items() if is_drive_link(v)}
+            if cleaned_res:
+                item['resolutions'] = cleaned_res
+                items_to_keep.append(item)
+        season['download_items'] = items_to_keep
+
+    return cleaned
+
+
 def _build_db_match_info(existing_task: MediaTask) -> dict:
     """Build the DB match info dict to inject into the combined LLM prompt."""
     result_data = existing_task.result or {}
@@ -214,7 +264,9 @@ def process_media_task(task_pk: int) -> str:
 
     except Exception as e:
         logger.error(f"Task failed: {e}", exc_info=True)
-        save_task(media_task, status='failed', error_message=str(e))
+        # Clean result: only keep items that have Drive links (remove unprocessed scrape data)
+        cleaned = _clean_result_keep_drive_links(media_task.result)
+        save_task(media_task, status='failed', error_message=str(e), result=cleaned)
         return json.dumps({"status": "error", "message": str(e)})
 
 
