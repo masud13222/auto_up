@@ -114,6 +114,7 @@ def process_media_task(task_pk: int) -> str:
         db_match_info = None
         existing_task = None
         existing_result = {}
+        resume_result = media_task.result or {}
 
         if website_title:
             logger.info(f"Website title: {website_title}")
@@ -134,8 +135,6 @@ def process_media_task(task_pk: int) -> str:
                     db_match_info = _build_db_match_info(media_task)
                 else:
                     logger.info(f"No existing match for '{name}'. New content.")
-
-        resume_result = media_task.result or {}
 
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
