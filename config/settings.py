@@ -29,6 +29,9 @@ DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 
+# Allow large admin bulk operations (default 1000 is too low for media tasks)
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 5000
+
 CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://drivebot.gcloud.lol,https://upload.gcloud.sbs').split(',')
 
 SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://R.Sakib07%2F04:R.Sakib07%2F04@103.85.159.244:1088')
