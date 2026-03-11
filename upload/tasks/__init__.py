@@ -164,7 +164,7 @@ def process_media_task(task_pk: int) -> str:
         db_match_info = None
         existing_task = None
         existing_result = {}
-        resume_result = media_task.result or {}
+        resume_result = _clean_result_keep_drive_links(media_task.result or {})
 
         if website_title:
             logger.info(f"Website title: {website_title}")
@@ -222,9 +222,9 @@ def process_media_task(task_pk: int) -> str:
 
             if action == "skip":
                 if resume_result:
-                    # Reused task — restore to completed, don't delete!
+                    # Reused task — restore to completed with the merged data (preserving Drive links)
                     logger.info(f"DUPLICATE SKIP: {reason} — restoring reused task to completed (pk={media_task.pk})")
-                    save_task(media_task, status='completed')
+                    save_task(media_task, status='completed', result=data)
                 else:
                     # New task — safe to delete
                     logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
