@@ -164,7 +164,11 @@ def process_media_task(task_pk: int) -> str:
         db_match_info = None
         existing_task = None
         existing_result = {}
-        resume_result = _clean_result_keep_drive_links(media_task.result or {})
+        resume_result_raw = _clean_result_keep_drive_links(media_task.result or {})
+        has_existing_drive = _has_drive_links(resume_result_raw)
+        resume_result = resume_result_raw if has_existing_drive else {}
+
+
 
         if website_title:
             logger.info(f"Website title: {website_title}")
