@@ -36,6 +36,7 @@ CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://drivebot.
 
 # SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://R.Sakib07%2F04:R.Sakib07%2F04@103.85.159.244:1088')
 SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://sakib:sakib@103.192.158.228:1080')
+GOOGLE_LLM_USE_PROXY = os.environ.get('GOOGLE_LLM_USE_PROXY', 'True').lower() in ('true', '1', 'yes')
 
 # Application definition
 

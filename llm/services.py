@@ -72,8 +72,19 @@ def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature
     """Call Google Gemini API. Returns (content, response)."""
     from google import genai
     from google.genai import types
+    from django.conf import settings
 
-    client = genai.Client(api_key=config.api_key)
+    use_proxy = getattr(settings, 'GOOGLE_LLM_USE_PROXY', False)
+    proxy_url = getattr(settings, 'SCRAPE_PROXY', None) if use_proxy else None
+
+    http_options = None
+    if proxy_url:
+        http_options = types.HttpOptions(client_args={"proxy": proxy_url})
+
+    client = genai.Client(
+        api_key=config.api_key,
+        http_options=http_options,
+    )
     response = client.models.generate_content(
         model=config.model_name,
         contents=prompt,
