@@ -31,8 +31,7 @@ RUN mkdir -p /app/downloads /app/media
 # Expose port
 EXPOSE 5000
 
-# Start: run migrations, then launch gunicorn + qcluster
+# Start: run migrations, then launch gunicorn
 CMD sh -c "\
     python manage.py migrate --noinput && \
-    python manage.py qcluster & \
     gunicorn config.wsgi:application --bind 0.0.0.0:5000 --workers 2 --timeout 300"

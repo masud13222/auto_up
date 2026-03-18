@@ -13,5 +13,17 @@ services:
       - DATABASE_URL=postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
     restart: always
 
+  # Comment out this service to disable the task worker (qcluster)
+  worker:
+    build: .
+    container_name: flixbd_worker
+    command: python manage.py qcluster
+    volumes:
+      - flixbd_media:/app/media
+    environment:
+      - DEBUG=False
+      - DATABASE_URL=postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
+    restart: always
+
 volumes:
   flixbd_media:
