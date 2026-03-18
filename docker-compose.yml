@@ -11,7 +11,6 @@ services:
       - ALLOWED_HOSTS=upload.gcloud.sbs,drivebot.gcloud.lol,72.18.215.205,localhost,*
       - CSRF_TRUSTED_ORIGINS=https://upload.gcloud.sbs,https://drivebot.gcloud.lol,http://72.18.215.205:5000
       - DATABASE_URL=postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
-      - SCRAPE_PROXY=socks5://R.Sakib07%2F04:R.Sakib07%2F04@103.85.159.244:1088
     restart: always
 
 volumes:
