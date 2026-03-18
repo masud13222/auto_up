@@ -130,23 +130,28 @@ Based on your detection, extract the full structured data.
 {json.dumps(tvshow_schema, indent=2)}
 
 ### TV Show Download Structure:
-TV shows have complex download structures organized SEASON-WISE.
+Each download item belongs to exactly ONE of these types. Classification is based ENTIRELY on the HTML/page structure — not the episode number or resolution count.
 
-Each season can have these download item types:
-1. **combo_pack** — Entire season as a single download
-2. **partial_combo** — Range of episodes bundled together (e.g., Ep 01-08)
-3. **single_episode** — Individual episode download
+**`combo_pack`** — the download section covers the ENTIRE season with no episode breakdown in the heading.
+
+**`partial_combo`** — the heading contains a NUMBER RANGE indicating multiple episodes (e.g., "Ep X-Y", "Episode N to M", "Part 1-8"). The section may have any number of resolution buttons (even just one). The defining signal is the RANGE in the label, not the button count.
+
+**`single_episode`** — each individual episode has its OWN heading/section. There is no range — each heading refers to ONE episode only.
+
+### ✅ Classification decision — ask these questions in order:
+1. Does the heading cover the WHOLE season (no episode details)? → `combo_pack`
+2. Does the heading contain a NUMBER RANGE (any two episode numbers joined by a hyphen, dash, or "to")? → `partial_combo`. Set `episode_range` to that range as-is.
+3. Does the heading refer to exactly ONE episode? → `single_episode`
+
+### ⚠️ Critical:
+- The number of resolution buttons (1, 2, or 3) does NOT affect the type
+- A range heading is ALWAYS `partial_combo` regardless of how few or many resolutions are available
+- Do NOT infer or merge: if separate headings exist for each episode → keep as separate `single_episode` items
 
 ### ⚠️ NO DUPLICATE EPISODES — Priority Rules:
-1. **combo_pack** covers ALL episodes → do NOT add partial combos or singles for that season
-2. **partial_combo** covers a range → do NOT add singles for episodes in that range
-3. **single_episode** ONLY for episodes NOT covered by a combo or partial combo
-
-### Classifying download types:
-- **combo_pack**: ONE download section for the WHOLE season
-- **partial_combo**: ONE download section for a RANGE of episodes (e.g., "Ep 01-08")
-- **single_episode**: Each episode has its OWN separate download section
-- DO NOT group consecutive single episodes into combos
+1. **combo_pack** present for the season → include ONLY the combo_pack, no partials or singles
+2. **partial_combo** covers a range → do NOT add singles for any episode within that range
+3. **single_episode** only for episodes not covered by any combo or partial
 
 ### ⚠️ RESOLUTION RULES:
 {res_note}

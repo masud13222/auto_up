@@ -85,27 +85,35 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 - ❌ WRONG:   `/generate.php?id=aHR0cHM6...` → `https://new5.cinecloud.site/f/abc123` (decoded — NEVER do this)
 
 ## DOWNLOAD STRUCTURE:
-Organize all downloads season-wise. Each download item has one of three types:
+Classify each download item based ENTIRELY on the page's HTML structure — not the specific episode numbers or how many resolution buttons appear.
 
-| Type | When to use | episode_range |
-|------|-------------|---------------|
-| `combo_pack` | ONE download covers the ENTIRE season | omit |
-| `partial_combo` | ONE download covers a RANGE of episodes (e.g. Ep 01-08) | "01-08" |
-| `single_episode` | Each episode has its OWN separate download section | "05" |
+**`combo_pack`** — One section covers the ENTIRE season with no episode breakdown in the heading.
 
-⚠️ DO NOT group consecutive single episodes into a partial_combo. If each episode has its own links → always `single_episode`.
+**`partial_combo`** — The heading contains a NUMBER RANGE (two episode numbers joined by a hyphen, dash, or "to"), indicating multiple episodes in one bundle. The defining signal is the range in the label — NOT how many resolution buttons exist. Even a single resolution button qualifies.
+
+**`single_episode`** — Each individual episode has its OWN separate heading/section. No range — each heading refers to exactly one episode.
+
+### ✅ Decision order — classify by structure:
+1. Heading covers the WHOLE season without episode breakdown → `combo_pack`
+2. Heading contains a RANGE (any two episode identifiers connected) → `partial_combo`; set `episode_range` to that range as-is from the page
+3. Heading refers to exactly ONE episode → `single_episode`
+
+### ⚠️ Strict rules:
+- Resolution button count (1, 2, or 3+) NEVER changes the type — a range heading is always `partial_combo`
+- Do NOT merge separate single-episode sections into a range
+- Do NOT split a range heading into individual single episodes
 
 ## NO DUPLICATE EPISODES (strict priority):
-1. If `combo_pack` exists for a season → include ONLY the combo_pack. No partials, no singles.
-2. If `partial_combo` covers Ep 01-08 → do NOT add single episodes for Ep 01-08. Only add singles for episodes outside that range.
-3. `single_episode` only for episodes not covered by any combo or partial.
+1. If `combo_pack` present for the season → include ONLY the combo_pack
+2. If `partial_combo` covers a range → do NOT add singles for episodes within that range
+3. `single_episode` only for episodes not covered by any combo or partial
 
-## CORRECT EXAMPLE:
-Page has: Season 1 full combo | Season 2 Ep 01-08 bundle | Season 2 Ep 09-16 bundle | Season 2 Ep 17,18,19 individually
+## CORRECT EXAMPLE (generic pattern):
+Pagestructure: [Season A — full season section] | [Season B — range section] | [Season B — another range section] | [Season B — individual episode sections]
 
 Output:
-- Season 1 → combo_pack only
-- Season 2 → partial_combo "01-08", partial_combo "09-16", single_episode 17, single_episode 18, single_episode 19
+- Season A → one `combo_pack` only
+- Season B → two `partial_combo` items (one per range section) + one `single_episode` per individual episode section
 
 ## JSON SCHEMA:
 {json.dumps(tvshow_schema, indent=2)}
