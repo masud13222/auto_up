@@ -35,7 +35,7 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 5000
 CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://drivebot.gcloud.lol,https://upload.gcloud.sbs').split(',')
 
 # SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://R.Sakib07%2F04:R.Sakib07%2F04@103.85.159.244:1088')
-SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://masud%40itcnbd:123456@113.192.43.43:1080')
+SCRAPE_PROXY = os.environ.get('SCRAPE_PROXY', 'socks5://sakib:sakib@103.192.158.228:1080')
 
 # Application definition
 
