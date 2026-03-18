@@ -31,13 +31,13 @@ class UploadConfig(AppConfig):
                     # Another worker already grabbed the lock (or no stuck tasks)
                     return
 
-                # Bulk-delete ALL stale Resume queue entries before re-queuing.
-                # This prevents duplicate accumulation across container restarts.
-                deleted, _ = OrmQ.objects.filter(
-                    func='upload.tasks.process_media_task'
-                ).delete()
+                # Bulk-delete ALL stale queue entries before re-queuing.
+                # OrmQ fields are: id, key, lock, payload (func is inside payload, not filterable).
+                # On restart we clear everything — scheduled tasks will re-trigger on their own schedule.
+                deleted, _ = OrmQ.objects.all().delete()
                 if deleted:
-                    logger.debug(f"Removed {deleted} stale Resume Q entries before re-queuing")
+                    logger.debug(f"Removed {deleted} stale Q entries before re-queuing")
+
 
                 count = len(stuck)
                 for task in stuck:
