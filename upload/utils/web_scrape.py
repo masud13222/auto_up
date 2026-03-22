@@ -77,18 +77,32 @@ async def _navigate(tab, url: str, settle: float = 3.0) -> str:
     return html
 
 
-async def _navigate_and_follow(tab, url: str, max_poll: int = 10):
+async def _navigate_and_follow(tab, url: str, max_poll: int = 20):
+    """
+    Navigate to *url*, then poll using execute_script so JS redirects
+    are detected correctly (tab.current_url only reflects go_to() URL).
+    Returns (final_url, page_html).
+    """
     logger.debug(f"[Tab] redirect-follow → {url}")
     await asyncio.wait_for(tab.go_to(url), timeout=30)
+
+    # Give JS time to execute the redirect before we start polling
+    await asyncio.sleep(3)
+
     prev = url
+    current = url
     for i in range(max_poll):
         await asyncio.sleep(1)
-        current = await tab.current_url
+        # execute_script reflects the ACTUAL current URL after JS redirect
+        result = await tab.execute_script("return window.location.href")
+        current = result if result else prev
         logger.debug(f"[Tab] poll {i+1}/{max_poll} — {current}")
         if current != prev and "generate.php" not in current:
             logger.debug(f"[Tab] Settled → {current}")
+            await asyncio.sleep(2)   # let the new page finish loading
             break
         prev = current
+
     html = await tab.page_source
     logger.debug(f"[Tab] Final: {current} | {len(html):,} bytes")
     return current, html
@@ -184,7 +198,7 @@ class WebScrapeService:
                 tab = await browser.start()
                 await tab.enable_auto_solve_cloudflare_captcha()
                 logger.debug("[Browser] Chrome started, CF auto-solve ON")
-                return await _navigate_and_follow(tab, target_url, max_poll=10)
+                return await _navigate_and_follow(tab, target_url, max_poll=20)
 
         try:
             final_url, html = _run(_impl(url))
