@@ -3,10 +3,11 @@ Web scraping service using pydoll (headless Chromium + Cloudflare auto-solve).
 
 Design
 ------
-* Each public method call uses asyncio.run() — simple, reliable, no threads.
-  Proven to work on both Windows and Linux/Docker.
-* Cloudflare handled automatically via enable_auto_solve_cloudflare_captcha().
-* Chrome opens and closes per call using proper async with context manager.
+* Each public method uses asyncio.run() — simple, reliable, no background threads.
+* Cloudflare is handled automatically via enable_auto_solve_cloudflare_captcha().
+* get_page_content  → navigate → CSS selector → return Markdown
+* cinefreak_title   → navigate → h1 text
+* get_url           → navigate → extract download URL from page HTML automatically
 """
 
 import asyncio
@@ -21,13 +22,15 @@ from selectolax.lexbor import LexborHTMLParser
 logger = logging.getLogger(__name__)
 _markitdown = MarkItDown()
 
+# Suppress pydoll internal CDP/websocket logs
+logging.getLogger("pydoll").setLevel(logging.WARNING)
+
 
 # ── Chrome options ────────────────────────────────────────────────────────────
 
 def _chrome_options():
     from pydoll.browser.options import ChromiumOptions
     opts = ChromiumOptions()
-
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--headless=new")
     opts.add_argument(
@@ -44,17 +47,15 @@ def _chrome_options():
     opts.add_argument("--disable-translate")
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--window-size=1280,720")
-
     opts.start_timeout = 30
     opts.block_notifications = True
     opts.block_popups = True
     opts.password_manager_enabled = False
-
     return opts
 
 
 def _run(coro):
-    """Run *coro* safely from synchronous Django / Django-Q context."""
+    """Run async coroutine safely from sync Django/Django-Q context."""
     if sys.platform == "win32":
         loop = asyncio.ProactorEventLoop()
         try:
@@ -65,60 +66,9 @@ def _run(coro):
         return asyncio.run(coro)
 
 
-# ── Core async navigation ─────────────────────────────────────────────────────
-
-async def _navigate(tab, url: str, settle: float = 3.0) -> str:
-    logger.debug(f"[Tab] → {url}")
-    await asyncio.wait_for(tab.go_to(url), timeout=30)
-    logger.debug(f"[Tab] Loaded — settling {settle}s...")
-    await asyncio.sleep(settle)
-    html = await tab.page_source
-    logger.debug(f"[Tab] Got {len(html):,} bytes")
-    return html
-
-
-async def _navigate_and_follow(tab, url: str, max_poll: int = 20):
-    """
-    Navigate to *url*, then poll using execute_script so JS redirects
-    are detected correctly (tab.current_url only reflects go_to() URL).
-    Returns (final_url, page_html).
-    """
-    logger.debug(f"[Tab] redirect-follow → {url}")
-    await asyncio.wait_for(tab.go_to(url), timeout=30)
-
-    # Give JS time to execute the redirect before we start polling
-    await asyncio.sleep(3)
-
-    prev = url
-    current = url
-    for i in range(max_poll):
-        await asyncio.sleep(1)
-        # execute_script reflects the ACTUAL current URL after JS redirect
-        result = await tab.execute_script("return window.location.href")
-        current = result if result else prev
-        logger.debug(f"[Tab] poll {i+1}/{max_poll} — {current}")
-        if current != prev and "generate.php" not in current:
-            logger.debug(f"[Tab] Settled → {current}")
-            await asyncio.sleep(2)   # let the new page finish loading
-            break
-        prev = current
-
-    html = await tab.page_source
-    logger.debug(f"[Tab] Final: {current} | {len(html):,} bytes")
-    return current, html
-
-
 # ── Public scraping service ───────────────────────────────────────────────────
 
 class WebScrapeService:
-
-    _RE_R2 = re.compile(
-        r'href=["\'](?P<u>(?:https?:)?//[^"\']*'
-        r'(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
-    )
-    _RE_VIDEO = re.compile(
-        r'href=["\'](?P<u>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
-    )
 
     @staticmethod
     def _to_markdown(html: str) -> str:
@@ -126,16 +76,11 @@ class WebScrapeService:
         md = _markitdown.convert_stream(buf, file_extension=".html").text_content
         return re.sub(r"\n{3,}", "\n\n", md).strip()
 
-    @staticmethod
-    def _scan_links(html: str):
-        for pat in (WebScrapeService._RE_R2, WebScrapeService._RE_VIDEO):
-            hits = pat.findall(html)
-            if hits:
-                return hits
-        return None
+    # ── 1. get_page_content ───────────────────────────────────────────────────
 
     @staticmethod
     def get_page_content(url: str, selector: str = "div.content-grid.container"):
+        """Navigate to *url*, extract *selector* block, return Markdown."""
         logger.info(f"[Scrape] get_page_content → {url}")
 
         async def _impl():
@@ -143,8 +88,9 @@ class WebScrapeService:
             async with Chrome(options=_chrome_options()) as browser:
                 tab = await browser.start()
                 await tab.enable_auto_solve_cloudflare_captcha()
-                logger.debug("[Browser] Chrome started, CF auto-solve ON")
-                return await _navigate(tab, url, settle=3.0)
+                await asyncio.wait_for(tab.go_to(url), timeout=30)
+                await asyncio.sleep(3)
+                return await tab.page_source
 
         try:
             html = _run(_impl())
@@ -163,8 +109,11 @@ class WebScrapeService:
             logger.error(f"[Scrape] get_page_content({url}): {exc}", exc_info=True)
             return None
 
+    # ── 2. cinefreak_title ────────────────────────────────────────────────────
+
     @staticmethod
     def cinefreak_title(url: str):
+        """Navigate to *url*, return h1 title text."""
         logger.info(f"[Scrape] cinefreak_title → {url}")
 
         async def _impl():
@@ -172,8 +121,9 @@ class WebScrapeService:
             async with Chrome(options=_chrome_options()) as browser:
                 tab = await browser.start()
                 await tab.enable_auto_solve_cloudflare_captcha()
-                logger.debug("[Browser] Chrome started, CF auto-solve ON")
-                return await _navigate(tab, url, settle=3.0)
+                await asyncio.wait_for(tab.go_to(url), timeout=30)
+                await asyncio.sleep(3)
+                return await tab.page_source
 
         try:
             html = _run(_impl())
@@ -188,49 +138,57 @@ class WebScrapeService:
             logger.error(f"[Scrape] cinefreak_title({url}): {exc}", exc_info=True)
             return None
 
+    # ── 3. get_url ────────────────────────────────────────────────────────────
+
     @staticmethod
     def get_url(url: str):
+        """
+        Navigate to *url*, get full page HTML,
+        auto-extract download URL from page source.
+
+        Supports:
+          - generate.php pages  → extracts window.location.href cinecloud URL
+          - R2 / Google-video   → scans href patterns in HTML
+        Returns a list of URLs or None.
+        """
         logger.info(f"[Scrape] get_url → {url}")
 
-        async def _impl(target_url):
+        async def _impl():
             from pydoll.browser.chromium import Chrome
             async with Chrome(options=_chrome_options()) as browser:
                 tab = await browser.start()
                 await tab.enable_auto_solve_cloudflare_captcha()
-                logger.debug("[Browser] Chrome started, CF auto-solve ON")
-                return await _navigate_and_follow(tab, target_url, max_poll=20)
+                await asyncio.wait_for(tab.go_to(url), timeout=30)
+                await asyncio.sleep(2)
+                return await tab.page_source
 
         try:
-            final_url, html = _run(_impl(url))
+            html = _run(_impl())
 
-            if any(m in final_url for m in (
-                "r2.dev", "r2.cloudflarestorage.com",
-                "video-downloads.googleusercontent.com",
-            )):
-                logger.info(f"[Scrape] Direct link: {final_url}")
-                return [final_url]
+            # 1. generate.php → extract hardcoded cinecloud URL from page JS
+            match = re.search(
+                r'window\.location\.href\s*=\s*["\']([^"\']*cinecloud\.site[^"\']*)["\']',
+                html,
+            )
+            if match:
+                link = match.group(1)
+                logger.info(f"[Scrape] Extracted cinecloud URL: {link}")
+                return [link]
 
-            links = WebScrapeService._scan_links(html)
-            if links:
-                logger.info(f"[Scrape] Found {len(links)} link(s) in HTML")
-                return links
-
-            logger.info("[Scrape] No links — trying /w/ and /gp/ variants")
-            for variant in (
-                final_url.replace("/f/", "/w/"),
-                final_url.replace("/f/", "/gp/"),
+            # 2. Scan for R2 / Google-video links in href attributes
+            for pattern in (
+                re.compile(
+                    r'href=["\'](?P<u>(?:https?:)?//[^"\']*'
+                    r'(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
+                ),
+                re.compile(
+                    r'href=["\'](?P<u>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
+                ),
             ):
-                if variant == final_url:
-                    continue
-                logger.info(f"[Scrape] Variant: {variant}")
-                try:
-                    _, vh = _run(_impl(variant))
-                    links = WebScrapeService._scan_links(vh)
-                    if links:
-                        logger.info(f"[Scrape] Found {len(links)} link(s) in variant")
-                        return links
-                except Exception as ve:
-                    logger.warning(f"[Scrape] Variant failed: {ve}")
+                hits = pattern.findall(html)
+                if hits:
+                    logger.info(f"[Scrape] Found {len(hits)} link(s) in HTML")
+                    return hits
 
             logger.warning(f"[Scrape] No download links found for: {url}")
             return None
