@@ -1,14 +1,17 @@
 """
 Web scraping service using pydoll (headless Chromium + Cloudflare bypass).
 
-Design (matches the official pydoll pattern)
----------------------------------------------
+Design
+------
 * Browser opens ONCE per process.
-* Cloudflare is bypassed ONCE on the persistent tab.
-* All subsequent scraping navigates the SAME tab — CF session/cookies persist,
-  so no second challenge appears.
-* Sync Django / Django-Q code uses ``_session.run()`` to dispatch async
-  coroutines to the background event-loop thread.
+* Cloudflare is bypassed ONCE on the initial tab.
+  All subsequent tabs share the same CF session cookie — no re-bypass needed.
+* Three persistent tabs are kept alive and reused:
+    _tab_page   → get_page_content()
+    _tab_title  → cinefreak_title()
+    _tab_url    → get_url()
+* Sync Django / Django-Q code calls _session.run() to dispatch async work
+  to the background event-loop thread owned by _BrowserSession.
 """
 
 import asyncio
@@ -28,9 +31,11 @@ _markitdown = MarkItDown()
 
 class _BrowserSession:
     """
-    Owns one persistent Chrome browser and one persistent tab.
-    Cloudflare is bypassed once at startup.
-    All scraping reuses the same tab (navigate → get HTML → repeat).
+    Manages one Chrome browser with three persistent tabs.
+    Tab 1 (page)  : used by get_page_content
+    Tab 2 (title) : used by cinefreak_title
+    Tab 3 (url)   : used by get_url
+    Cloudflare is bypassed once on Tab 1; all tabs share the session cookie.
     """
 
     def __init__(self):
@@ -40,7 +45,11 @@ class _BrowserSession:
         )
         self._thread.start()
 
-        self._tab = None        # the one persistent tab
+        # Three reusable tabs
+        self._tab_page  = None
+        self._tab_title = None
+        self._tab_url   = None
+
         self._started = False
         self._start_lock = threading.Lock()
 
@@ -62,9 +71,9 @@ class _BrowserSession:
                 self._browser_lifetime(ready), self._loop
             )
             if not ready.wait(timeout=120):
-                raise RuntimeError("Browser/Cloudflare startup timed out after 120 s")
+                raise RuntimeError("Browser/CF startup timed out after 120 s")
             self._started = True
-            logger.info("[Browser] Ready — CF session active on persistent tab")
+            logger.info("[Browser] Ready — 3 tabs active, CF session shared")
 
     # ── private async internals ───────────────────────────────────────────────
 
@@ -73,7 +82,7 @@ class _BrowserSession:
         from pydoll.browser.options import ChromiumOptions
         opts = ChromiumOptions()
 
-        # Headless + anti-detection (matches the official pydoll example)
+        # Anti-detection (matches the official pydoll CF-bypass example)
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--headless=new")
         opts.add_argument(
@@ -83,7 +92,7 @@ class _BrowserSession:
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
-        opts.add_argument("--enable-webgl")   # improves CF detection evasion
+        opts.add_argument("--enable-webgl")   # helps CF evasion
 
         # RAM savers
         opts.add_argument("--disable-extensions")
@@ -103,70 +112,81 @@ class _BrowserSession:
 
     async def _browser_lifetime(self, ready: threading.Event):
         """
-        Long-lived coroutine: keeps Chrome + the persistent tab alive forever.
-        Bypasses Cloudflare once before signalling ready.
+        Long-lived coroutine: launches Chrome, creates 3 persistent tabs,
+        bypasses Cloudflare on Tab 1, then idles forever.
         """
         from pydoll.browser.chromium import Chrome
 
         logger.info("[Browser] Launching Chrome process...")
         async with Chrome(options=self._chrome_options()) as browser:
-            self._tab = await browser.start()
-            logger.info("[Browser] Chrome started — beginning Cloudflare bypass...")
 
+            # Tab 1 — page content (also carries out CF bypass)
+            self._tab_page = await browser.start()
+            logger.info("[Browser] Tab 1 (page) created")
+
+            logger.info("[CF] Bypassing Cloudflare on Tab 1...")
             try:
-                async with self._tab.expect_and_bypass_cloudflare_captcha(
+                async with self._tab_page.expect_and_bypass_cloudflare_captcha(
                     time_to_wait_captcha=15
                 ):
                     await asyncio.wait_for(
-                        self._tab.go_to("https://cinefreak.net"),
+                        self._tab_page.go_to("https://cinefreak.net"),
                         timeout=45,
                     )
                 logger.info("[CF] Cloudflare bypassed successfully!")
             except asyncio.TimeoutError:
-                logger.warning("[CF] go_to() timed out — continuing without bypass")
+                logger.warning("[CF] go_to() timed out — continuing")
             except Exception as exc:
                 logger.warning(f"[CF] Bypass skipped: {exc}")
 
+            # Tab 2 — title lookups (inherits CF cookie automatically)
+            self._tab_title = await browser.new_tab()
+            logger.info("[Browser] Tab 2 (title) created")
+
+            # Tab 3 — URL / redirect resolution
+            self._tab_url = await browser.new_tab()
+            logger.info("[Browser] Tab 3 (url) created")
+
             ready.set()   # unblock ensure_ready()
 
-            # Keep async-with context alive until the process exits
+            # Keep the async-with context alive until the process exits
             while True:
                 await asyncio.sleep(30)
 
-    # ── navigation helpers ────────────────────────────────────────────────────
+    # ── per-tab navigation helpers ────────────────────────────────────────────
 
-    async def _navigate(self, url: str, settle: float = 3.0) -> str:
-        """Navigate the persistent tab to *url*, wait *settle* s, return HTML."""
-        logger.info(f"[Tab] Navigating → {url}")
-        await asyncio.wait_for(self._tab.go_to(url), timeout=30)
-        logger.info(f"[Tab] Page loaded — settling {settle}s...")
+    async def _navigate(self, tab, url: str, settle: float = 3.0) -> str:
+        """Navigate *tab* to *url*, wait *settle* s, return page HTML."""
+        logger.info(f"[Tab] → {url}")
+        await asyncio.wait_for(tab.go_to(url), timeout=30)
+        logger.info(f"[Tab] Loaded — settling {settle}s...")
         await asyncio.sleep(settle)
-        html = await self._tab.page_source
-        logger.info(f"[Tab] Got page source ({len(html):,} bytes)")
+        html = await tab.page_source
+        logger.info(f"[Tab] Got {len(html):,} bytes")
         return html
 
-    async def _navigate_and_follow(self, url: str, max_poll: int = 10):
+    async def _navigate_and_follow(self, tab, url: str, max_poll: int = 10):
         """
-        Navigate to *url* and poll until JS redirects stop.
+        Navigate *tab* to *url* and poll until JS redirects settle.
         Returns ``(final_url, page_html)``.
         """
-        logger.info(f"[Tab] Navigating (redirect-follow) → {url}")
-        await asyncio.wait_for(self._tab.go_to(url), timeout=30)
+        logger.info(f"[Tab] redirect-follow → {url}")
+        await asyncio.wait_for(tab.go_to(url), timeout=30)
         prev = url
         for i in range(max_poll):
             await asyncio.sleep(1)
-            current = await self._tab.current_url
-            logger.info(f"[Tab] Poll {i+1}/{max_poll} — {current}")
+            current = await tab.current_url
+            logger.info(f"[Tab] poll {i+1}/{max_poll} — {current}")
             if current != prev and "generate.php" not in current:
-                logger.info(f"[Tab] Redirect settled → {current}")
+                logger.info(f"[Tab] Settled → {current}")
                 break
             prev = current
-        html = await self._tab.page_source
-        logger.info(f"[Tab] Final URL: {current} | HTML: {len(html):,} bytes")
+        html = await tab.page_source
+        logger.info(f"[Tab] Final: {current} | {len(html):,} bytes")
         return current, html
 
 
-# Module-level singleton — one browser per process
+# Module-level singleton — one browser per worker process
 _session = _BrowserSession()
 
 
@@ -197,21 +217,24 @@ class WebScrapeService:
                 return hits
         return None
 
-    # ── public methods ────────────────────────────────────────────────────────
+    # ── public methods (each uses its dedicated persistent tab) ──────────────
 
     @staticmethod
     def get_page_content(url: str, selector: str = "div.single-service-content"):
-        """Navigate to *url*, extract the content block, return Markdown."""
+        """Navigate Tab 1 to *url*, extract content block, return Markdown."""
         logger.info(f"[Scrape] get_page_content → {url}")
         try:
             _session.ensure_ready()
-            html = _session.run(_session._navigate(url, settle=3.0), timeout=90)
+            html = _session.run(
+                _session._navigate(_session._tab_page, url, settle=3.0),
+                timeout=90,
+            )
             node = LexborHTMLParser(html).css_first(selector)
             if node:
                 raw = node.html
                 cleaned = WebScrapeService._to_markdown(raw)
                 logger.info(
-                    f"[Scrape] Content extracted: {len(raw):,} → {len(cleaned):,} chars "
+                    f"[Scrape] Extracted {len(raw):,} → {len(cleaned):,} chars "
                     f"({100 - len(cleaned)/len(raw)*100:.0f}% reduction)"
                 )
                 return cleaned
@@ -223,15 +246,18 @@ class WebScrapeService:
 
     @staticmethod
     def cinefreak_title(url: str):
-        """Return the h1 title text from *url*'s content container."""
+        """Navigate Tab 2 to *url*, return h1 title text."""
         logger.info(f"[Scrape] cinefreak_title → {url}")
         try:
             _session.ensure_ready()
-            html = _session.run(_session._navigate(url, settle=3.0), timeout=90)
+            html = _session.run(
+                _session._navigate(_session._tab_title, url, settle=3.0),
+                timeout=90,
+            )
             node = LexborHTMLParser(html).css_first("div.single-service-content h1")
             if node:
                 title = node.text(strip=True)
-                logger.info(f"[Scrape] Title found: {title}")
+                logger.info(f"[Scrape] Title: {title}")
                 return title
             logger.warning(f"[Scrape] h1 not found at {url}")
             return None
@@ -242,20 +268,21 @@ class WebScrapeService:
     @staticmethod
     def get_url(url: str):
         """
-        Resolve a generate.php URL → actual R2 / Google video download links.
-        Returns a list of URLs, or None.
+        Navigate Tab 3 to *url*, follow JS redirects, return download links.
+        Returns a list of R2 / Google-video URLs, or None.
         """
         logger.info(f"[Scrape] get_url → {url}")
         try:
             _session.ensure_ready()
             final_url, html = _session.run(
-                _session._navigate_and_follow(url, max_poll=10), timeout=90
+                _session._navigate_and_follow(_session._tab_url, url, max_poll=10),
+                timeout=90,
             )
 
-            # 1. Current URL itself is an R2/video link
+            # 1. The final URL itself is a download link
             if any(m in final_url for m in (
                 "r2.dev", "r2.cloudflarestorage.com",
-                "video-downloads.googleusercontent.com"
+                "video-downloads.googleusercontent.com",
             )):
                 logger.info(f"[Scrape] Direct link: {final_url}")
                 return [final_url]
@@ -263,28 +290,31 @@ class WebScrapeService:
             # 2. Scan page HTML for link patterns
             links = WebScrapeService._scan_links(html)
             if links:
-                logger.info(f"[Scrape] Found {len(links)} link(s) in page HTML")
+                logger.info(f"[Scrape] Found {len(links)} link(s) in HTML")
                 return links
 
-            # 3. Fallback: try /w/ and /gp/ URL variants
-            logger.info(f"[Scrape] No links found — trying /w/ and /gp/ variants")
+            # 3. Try /w/ and /gp/ URL variants
+            logger.info("[Scrape] No links — trying /w/ and /gp/ variants")
             for variant in (
                 final_url.replace("/f/", "/w/"),
                 final_url.replace("/f/", "/gp/"),
             ):
                 if variant == final_url:
                     continue
-                logger.info(f"[Scrape] Trying variant: {variant}")
+                logger.info(f"[Scrape] Variant: {variant}")
                 try:
                     _, vh = _session.run(
-                        _session._navigate_and_follow(variant, max_poll=6), timeout=60
+                        _session._navigate_and_follow(
+                            _session._tab_url, variant, max_poll=6
+                        ),
+                        timeout=60,
                     )
                     links = WebScrapeService._scan_links(vh)
                     if links:
                         logger.info(f"[Scrape] Found {len(links)} link(s) in variant")
                         return links
                 except Exception as ve:
-                    logger.warning(f"[Scrape] Variant {variant} failed: {ve}")
+                    logger.warning(f"[Scrape] Variant failed: {ve}")
 
             logger.warning(f"[Scrape] No download links found for: {url}")
             return None
