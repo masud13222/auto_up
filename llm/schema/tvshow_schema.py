@@ -29,6 +29,9 @@ tvshow_schema = {
             "items": {"type": "string"},
             "description": "All screenshot image URLs found on page"
         },
+        "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern."},
+        "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with CTA. Include show name, year/season, quality, language."},
+        "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, season info, quality variants, language, 'download', 'watch online'."},
         "total_seasons": {"type": "integer"},
         "seasons": {
             "type": "array",
@@ -76,6 +79,19 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 - Strip these site names from ALL fields (including website_tvshow_title): {_blocked_names_str}
 - Prefer x264 encodes when multiple encode options exist
 - rating: numeric only (e.g. 7.5) | year: integer only (e.g. 2024)
+
+## SEO Meta Fields (MUST generate — do NOT skip):
+- **meta_title**: Create a natural, human-like SEO title (50-60 chars). Place the show name early. Vary structure across pages. Include season info if applicable.
+  Good examples:
+  - "Money Heist Season 1-5 Hindi Dubbed 1080p Download"
+  - "Download Mirzapur S3 (2025) Hindi WEB-DL 480p 720p"
+  - "Squid Game Season 2 Korean 1080p WEB-DL Full Series"
+- **meta_description**: Write a compelling, natural meta description (140-160 chars). Use human language — NOT a keyword list. Include a CTA. Mention show name, season, quality, language.
+  Good examples:
+  - "Download Money Heist all seasons in Hindi Dubbed. 480p to 1080p WEB-DL with subtitles. Fast GDrive links. Binge-watch the complete series now."
+  - "Stream or download Mirzapur Season 3 in 480p, 720p & 1080p. Direct links, no waiting. Get all episodes instantly."
+- **meta_keywords**: Generate 10-15 relevant, comma-separated keywords. Include show name variations, season info, quality variants, language, "download", "watch online", "all episodes", genre.
+  Example: "Money Heist, Money Heist Hindi, Money Heist download, Money Heist Season 1, Money Heist 1080p, Hindi dubbed series, Netflix, WEB-DL, all episodes, watch online, GDrive"
 
 ## URL RULES (CRITICAL — violations break all downloads):
 - All URLs must be ABSOLUTE (start with https://)

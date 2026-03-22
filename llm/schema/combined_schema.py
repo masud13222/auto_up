@@ -164,6 +164,11 @@ Each download item belongs to exactly ONE of these types. Classification is base
 - Remove ALL references to these site names from ALL fields (including website_movie_title and website_tvshow_title): {_blocked_names_str}
 - Always prefer x264 encodes when available
 
+## SEO Meta Fields (MUST generate for both movie & tvshow — do NOT skip):
+- **meta_title**: Natural, human-like SEO title (50-60 chars). Place main keyword early. Vary structure — no repetitive patterns.
+- **meta_description**: Compelling meta description (140-160 chars). Natural language with a CTA. Include content name, year, quality, language.
+- **meta_keywords**: 10-15 comma-separated relevant keywords. Include name variations, year, quality variants, language, "download", "watch online", genre.
+
 - ALL download URLs MUST be ABSOLUTE (start with https://).
 - **HOW to make a relative URL absolute**: ONLY prepend the site domain. NOTHING else changes.
 - NEVER decode, transform, resolve, shorten, or alter any URL in any way

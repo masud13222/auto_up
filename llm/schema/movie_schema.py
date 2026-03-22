@@ -20,6 +20,9 @@ movie_schema = {
         "plot": {"type": "string", "description": "The plot of the movie"},
         "poster_url": {"type": "string", "description": "The poster url of the movie"},
         "screen_shots_url": {"type": "array", "items": {"type": "string"}, "description": "The screen shots url of the movie"},
+        "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern across pages."},
+        "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with a click-worthy CTA. Include movie name, year, quality, language naturally."},
+        "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, year, quality variants, language, dubbed, genre, 'download', 'watch online'."},
         "download_links": {
             "type": "object",
             "additionalProperties": {"type": "string"},
@@ -50,6 +53,19 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - Remove ALL references to these site names from ALL fields (title, website_movie_title, etc.): {_blocked_names_str}
 - For example: "CINEFREAK.TOP - War Machine (2026)" should become title: "War Machine"
 - Never include any site watermark names in the extracted data
+
+## SEO Meta Fields (MUST generate — do NOT skip):
+- **meta_title**: Create a natural, human-like SEO title (50-60 chars). Place the main keyword (movie name) early. Avoid repetitive patterns across pages — vary the structure. Do NOT always use the same format.
+  Good examples:
+  - "Ali (2025) Bengali WEB-DL 1080p 720p Full Movie"
+  - "Download Kaliyugam (2025) Hindi Dubbed 480p 720p 1080p"
+  - "War Machine 2026 Hindi Full Movie WEB-DL Download"
+- **meta_description**: Write a compelling, natural meta description (140-160 chars). Use human language — NOT a keyword list. Include a CTA (call-to-action) that makes users want to click. Mention movie name, year, quality, and language naturally.
+  Good examples:
+  - "Download Ali (2025) Bengali full movie in multiple qualities. Fast direct links, English subs included. Stream or download now."
+  - "Watch Kaliyugam (2025) Hindi Dubbed in 480p to 1080p. High-speed GDrive download with subtitles. Grab your copy today."
+- **meta_keywords**: Generate 10-15 relevant, comma-separated keywords. Include name variations (with/without year), quality variants (480p, 720p, 1080p), language, "download", "watch online", "full movie", genre terms.
+  Example: "Ali, Ali 2025, Ali Bengali movie, Ali download, Ali 480p, Ali 720p, Ali 1080p, Bengali movie download, WEB-DL, full movie, watch online, GDrive, drama"
 
 ## JSON Schema you must follow:
 {json.dumps(movie_schema, indent=2)}
