@@ -213,11 +213,20 @@ LOGGING = {
         'level': 'INFO',
     },
     'loggers': {
-        'upload': {'level': 'DEBUG', 'propagate': True},
-        'llm': {'level': 'DEBUG', 'propagate': True},
+        # ── Our app loggers (DEBUG so all detail is visible) ──────────────────
+        'upload':      {'level': 'DEBUG', 'propagate': True},
+        'llm':         {'level': 'DEBUG', 'propagate': True},
         'credentials': {'level': 'DEBUG', 'propagate': True},
-        'settings': {'level': 'DEBUG', 'propagate': True},
-        'auto_up': {'level': 'DEBUG', 'propagate': True},
-        'django.tasks': {'level': 'DEBUG', 'propagate': True},
+        'settings':    {'level': 'DEBUG', 'propagate': True},
+        'auto_up':     {'level': 'DEBUG', 'propagate': True},
+        'django.tasks':{'level': 'DEBUG', 'propagate': True},
+
+        # ── Noisy third-party libs → suppress to WARNING ───────────────────────
+        'httpx':                      {'level': 'WARNING', 'propagate': True},
+        'pydoll':                     {'level': 'WARNING', 'propagate': True},
+        'google_genai':               {'level': 'WARNING', 'propagate': True},
+        'googleapiclient':            {'level': 'WARNING', 'propagate': True},
+        'google_auth_httplib2':       {'level': 'WARNING', 'propagate': True},
+        'django-q':                   {'level': 'WARNING', 'propagate': True},
     },
 }

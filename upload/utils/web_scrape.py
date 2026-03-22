@@ -155,8 +155,8 @@ class WebScrapeService:
             if match_loc:
                 target_url = match_loc.group(1)
                 logger.debug(f"[Scrape] Found redirect URL: {target_url}")
-                # Follow the redirect
-                html = _run(_fetch_html(target_url, settle=2.0))
+                # Follow the redirect — give page more time to fully render R2 links
+                html = _run(_fetch_html(target_url, settle=4))
             else:
                 logger.debug(f"[Scrape] No redirect found, checking current page: {url}")
 
@@ -181,7 +181,7 @@ class WebScrapeService:
                 ):
                     try:
                         logger.debug(f"[Scrape] Checking fallback: {fb_url}")
-                        fb_html = _run(_fetch_html(fb_url, settle=2.0))
+                        fb_html = _run(_fetch_html(fb_url, settle=5.0))
                         fb_matches = re.findall(pattern_video, fb_html)
                         if fb_matches:
                             logger.info(f"[Scrape] Found {len(fb_matches)} video link(s) in {fb_url}")
