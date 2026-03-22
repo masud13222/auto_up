@@ -6,9 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DJANGO_SETTINGS_MODULE=config.settings
 
-# Install system dependencies (aria2, ffmpeg)
+# Install system dependencies (aria2, ffmpeg) + Google Chrome for pydoll
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends aria2 ffmpeg && \
+    apt-get install -y --no-install-recommends aria2 ffmpeg wget ca-certificates && \
+    wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+    apt-get install -y --no-install-recommends /tmp/chrome.deb && \
+    rm /tmp/chrome.deb && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
