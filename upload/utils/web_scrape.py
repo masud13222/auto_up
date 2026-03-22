@@ -1,17 +1,17 @@
 """
-Web scraping service using pydoll (headless Chromium + Cloudflare bypass).
+Web scraping service using pydoll (headless Chromium + Cloudflare auto-solve).
 
 Design
 ------
 * Browser opens ONCE per process.
-* Cloudflare is bypassed ONCE on the initial tab.
-  All subsequent tabs share the same CF session cookie — no re-bypass needed.
-* Three persistent tabs are kept alive and reused:
+* Three persistent tabs are created and kept alive forever:
     _tab_page   → get_page_content()
     _tab_title  → cinefreak_title()
     _tab_url    → get_url()
-* Sync Django / Django-Q code calls _session.run() to dispatch async work
-  to the background event-loop thread owned by _BrowserSession.
+* Each tab calls ``tab.enable_auto_solve_cloudflare_captcha()`` once.
+  From that point Pydoll automatically detects and clicks the CF Turnstile
+  on EVERY navigation — no manual bypass, no session expiry issues.
+* Sync Django / Django-Q code uses _session.run() to dispatch async work.
 """
 
 import asyncio
@@ -31,11 +31,8 @@ _markitdown = MarkItDown()
 
 class _BrowserSession:
     """
-    Manages one Chrome browser with three persistent tabs.
-    Tab 1 (page)  : used by get_page_content
-    Tab 2 (title) : used by cinefreak_title
-    Tab 3 (url)   : used by get_url
-    Cloudflare is bypassed once on Tab 1; all tabs share the session cookie.
+    One Chrome browser, three persistent tabs, CF auto-solve enabled on all tabs.
+    Cloudflare is handled automatically on every navigation forever.
     """
 
     def __init__(self):
@@ -45,10 +42,9 @@ class _BrowserSession:
         )
         self._thread.start()
 
-        # Three reusable tabs
-        self._tab_page  = None
-        self._tab_title = None
-        self._tab_url   = None
+        self._tab_page  = None   # get_page_content
+        self._tab_title = None   # cinefreak_title
+        self._tab_url   = None   # get_url
 
         self._started = False
         self._start_lock = threading.Lock()
@@ -61,19 +57,19 @@ class _BrowserSession:
         return fut.result(timeout=timeout)
 
     def ensure_ready(self):
-        """Start the browser + bypass CF (idempotent, thread-safe)."""
+        """Start browser + enable CF auto-solve on all tabs (idempotent)."""
         with self._start_lock:
             if self._started:
                 return
-            logger.info("[Browser] Starting Chrome + CF bypass...")
+            logger.info("[Browser] Starting Chrome (3 tabs, CF auto-solve)...")
             ready = threading.Event()
             asyncio.run_coroutine_threadsafe(
                 self._browser_lifetime(ready), self._loop
             )
-            if not ready.wait(timeout=120):
-                raise RuntimeError("Browser/CF startup timed out after 120 s")
+            if not ready.wait(timeout=60):
+                raise RuntimeError("Chrome failed to start within 60 s")
             self._started = True
-            logger.info("[Browser] Ready — 3 tabs active, CF session shared")
+            logger.info("[Browser] Ready — CF auto-solve active on all tabs")
 
     # ── private async internals ───────────────────────────────────────────────
 
@@ -82,7 +78,7 @@ class _BrowserSession:
         from pydoll.browser.options import ChromiumOptions
         opts = ChromiumOptions()
 
-        # Anti-detection (matches the official pydoll CF-bypass example)
+        # Anti-detection (matches official pydoll CF-bypass example)
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--headless=new")
         opts.add_argument(
@@ -92,7 +88,7 @@ class _BrowserSession:
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
-        opts.add_argument("--enable-webgl")   # helps CF evasion
+        opts.add_argument("--enable-webgl")
 
         # RAM savers
         opts.add_argument("--disable-extensions")
@@ -103,63 +99,55 @@ class _BrowserSession:
         opts.add_argument("--no-first-run")
         opts.add_argument("--window-size=1280,720")
 
-        # Pydoll preference API
         opts.block_notifications = True
         opts.block_popups = True
         opts.password_manager_enabled = False
 
         return opts
 
+    @staticmethod
+    async def _prepare_tab(tab, name: str):
+        """Enable CF auto-solve on *tab* and log it."""
+        await tab.enable_auto_solve_cloudflare_captcha()
+        logger.info(f"[Browser] Tab '{name}' created — CF auto-solve ON")
+
     async def _browser_lifetime(self, ready: threading.Event):
         """
-        Long-lived coroutine: launches Chrome, creates 3 persistent tabs,
-        bypasses Cloudflare on Tab 1, then idles forever.
+        Launch Chrome, create 3 persistent tabs with CF auto-solve,
+        then idle forever.
         """
         from pydoll.browser.chromium import Chrome
 
         logger.info("[Browser] Launching Chrome process...")
         async with Chrome(options=self._chrome_options()) as browser:
 
-            # Tab 1 — page content (also carries out CF bypass)
+            # Tab 1 — page content
             self._tab_page = await browser.start()
-            logger.info("[Browser] Tab 1 (page) created")
+            await self._prepare_tab(self._tab_page, "page")
 
-            logger.info("[CF] Bypassing Cloudflare on Tab 1...")
-            try:
-                async with self._tab_page.expect_and_bypass_cloudflare_captcha(
-                    time_to_wait_captcha=15
-                ):
-                    await asyncio.wait_for(
-                        self._tab_page.go_to("https://cinefreak.net"),
-                        timeout=45,
-                    )
-                logger.info("[CF] Cloudflare bypassed successfully!")
-            except asyncio.TimeoutError:
-                logger.warning("[CF] go_to() timed out — continuing")
-            except Exception as exc:
-                logger.warning(f"[CF] Bypass skipped: {exc}")
-
-            # Tab 2 — title lookups (inherits CF cookie automatically)
+            # Tab 2 — title lookups
             self._tab_title = await browser.new_tab()
-            logger.info("[Browser] Tab 2 (title) created")
+            await self._prepare_tab(self._tab_title, "title")
 
             # Tab 3 — URL / redirect resolution
             self._tab_url = await browser.new_tab()
-            logger.info("[Browser] Tab 3 (url) created")
+            await self._prepare_tab(self._tab_url, "url")
 
             ready.set()   # unblock ensure_ready()
+            logger.info("[Browser] All tabs ready")
 
-            # Keep the async-with context alive until the process exits
+            # Keep async-with context alive until process exits
             while True:
                 await asyncio.sleep(30)
 
     # ── per-tab navigation helpers ────────────────────────────────────────────
 
     async def _navigate(self, tab, url: str, settle: float = 3.0) -> str:
-        """Navigate *tab* to *url*, wait *settle* s, return page HTML."""
+        """Navigate *tab* to *url*, settle *settle* s, return HTML.
+        CF is handled automatically by the tab's auto-solve engine."""
         logger.info(f"[Tab] → {url}")
         await asyncio.wait_for(tab.go_to(url), timeout=30)
-        logger.info(f"[Tab] Loaded — settling {settle}s...")
+        logger.info(f"[Tab] Loaded — settling {settle}s for JS / CF...")
         await asyncio.sleep(settle)
         html = await tab.page_source
         logger.info(f"[Tab] Got {len(html):,} bytes")
@@ -167,8 +155,8 @@ class _BrowserSession:
 
     async def _navigate_and_follow(self, tab, url: str, max_poll: int = 10):
         """
-        Navigate *tab* to *url* and poll until JS redirects settle.
-        Returns ``(final_url, page_html)``.
+        Navigate *tab* to *url*, poll until JS redirects settle.
+        CF is handled automatically. Returns ``(final_url, page_html)``.
         """
         logger.info(f"[Tab] redirect-follow → {url}")
         await asyncio.wait_for(tab.go_to(url), timeout=30)
@@ -217,11 +205,11 @@ class WebScrapeService:
                 return hits
         return None
 
-    # ── public methods (each uses its dedicated persistent tab) ──────────────
+    # ── public methods ────────────────────────────────────────────────────────
 
     @staticmethod
     def get_page_content(url: str, selector: str = "div.single-service-content"):
-        """Navigate Tab 1 to *url*, extract content block, return Markdown."""
+        """Navigate Tab 1 (page) to *url*, extract content block, return Markdown."""
         logger.info(f"[Scrape] get_page_content → {url}")
         try:
             _session.ensure_ready()
@@ -246,7 +234,7 @@ class WebScrapeService:
 
     @staticmethod
     def cinefreak_title(url: str):
-        """Navigate Tab 2 to *url*, return h1 title text."""
+        """Navigate Tab 2 (title) to *url*, return h1 title text."""
         logger.info(f"[Scrape] cinefreak_title → {url}")
         try:
             _session.ensure_ready()
@@ -268,7 +256,7 @@ class WebScrapeService:
     @staticmethod
     def get_url(url: str):
         """
-        Navigate Tab 3 to *url*, follow JS redirects, return download links.
+        Navigate Tab 3 (url) to *url*, follow JS redirects, return download links.
         Returns a list of R2 / Google-video URLs, or None.
         """
         logger.info(f"[Scrape] get_url → {url}")
@@ -293,7 +281,7 @@ class WebScrapeService:
                 logger.info(f"[Scrape] Found {len(links)} link(s) in HTML")
                 return links
 
-            # 3. Try /w/ and /gp/ URL variants
+            # 3. Fallback: try /w/ and /gp/ URL variants
             logger.info("[Scrape] No links — trying /w/ and /gp/ variants")
             for variant in (
                 final_url.replace("/f/", "/w/"),
