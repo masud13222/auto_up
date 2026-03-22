@@ -56,13 +56,16 @@ class _BrowserSession:
         with self._start_lock:
             if self._started:
                 return
+            logger.info("[Browser] Starting Chrome browser process...")
             ready = threading.Event()
             asyncio.run_coroutine_threadsafe(
                 self._browser_lifetime(ready), self._loop
             )
-            if not ready.wait(timeout=90):
-                raise RuntimeError("Browser startup timed out after 90 s")
+            # Wait only for Chrome to start (not CF bypass — that runs in background)
+            if not ready.wait(timeout=60):
+                raise RuntimeError("Chrome failed to start within 60 s")
             self._started = True
+            logger.info("[Browser] Ready — background CF bypass may still be running")
 
     # ── private async helpers ────────────────────────────────────────────────
 
@@ -116,61 +119,84 @@ class _BrowserSession:
     async def _browser_lifetime(self, ready: threading.Event):
         """
         Long-running coroutine that keeps the Chrome context alive.
-        Opens once, bypasses Cloudflare on the initial tab, then idles.
+        Chrome is signalled ready immediately after it starts.
+        Cloudflare bypass runs in a background task so it never blocks callers.
         """
         from pydoll.browser.chromium import Chrome
 
+        logger.info("[Browser] Launching Chrome...")
         async with Chrome(options=self._chrome_options()) as browser:
             self._browser = browser
+            self._setup_tab = await browser.start()
+            logger.info("[Browser] Chrome process started — signalling ready")
 
-            setup_tab = await browser.start()
-            logger.info("Browser started — bypassing Cloudflare...")
-            try:
-                async with setup_tab.expect_and_bypass_cloudflare_captcha(
-                    time_to_wait_captcha=20
-                ):
-                    await setup_tab.go_to("https://cinefreak.net")
-                logger.info("Cloudflare bypassed.")
-            except Exception as exc:
-                logger.warning(f"Cloudflare bypass skipped: {exc}")
-
+            # Signal ready NOW so sync callers don't wait for CF bypass
             ready.set()
+
+            # Cloudflare bypass runs in background
+            asyncio.ensure_future(self._run_cf_bypass())
 
             while True:
                 await asyncio.sleep(30)
+
+    async def _run_cf_bypass(self):
+        """Warm up the CF session in background (non-blocking for callers)."""
+        logger.info("[CF] Starting Cloudflare bypass on setup tab...")
+        try:
+            async with self._setup_tab.expect_and_bypass_cloudflare_captcha(
+                time_to_wait_captcha=20
+            ):
+                await asyncio.wait_for(
+                    self._setup_tab.go_to("https://cinefreak.net"),
+                    timeout=30,
+                )
+            logger.info("[CF] Cloudflare bypassed successfully.")
+        except asyncio.TimeoutError:
+            logger.warning("[CF] go_to() timed out — site may be slow, continuing.")
+        except Exception as exc:
+            logger.warning(f"[CF] Bypass skipped: {exc}")
 
     # ── tab-based navigation (used by WebScrapeService) ──────────────────────
 
     async def _fetch_source(self, url: str, settle: float = 3.0) -> str:
         """Open a new tab, navigate, wait *settle* seconds, return HTML, close tab."""
+        logger.info(f"[Tab] Opening new tab → {url}")
         tab = await self._browser.new_tab()
         try:
-            await tab.go_to(url)
+            await asyncio.wait_for(tab.go_to(url), timeout=30)
+            logger.info(f"[Tab] Page loaded, waiting {settle}s for JS...")
             await asyncio.sleep(settle)
-            return await tab.page_source
+            html = await tab.page_source
+            logger.info(f"[Tab] Got page source ({len(html)} bytes)")
+            return html
         finally:
             await tab.close()
+            logger.info(f"[Tab] Tab closed")
 
     async def _fetch_and_follow(self, url: str, max_poll: int = 10):
         """
         Open a new tab, navigate, poll until JS redirects settle,
         return ``(final_url, page_html)``, close tab.
         """
+        logger.info(f"[Tab] Opening new tab (redirect-follow) → {url}")
         tab = await self._browser.new_tab()
         try:
-            await tab.go_to(url)
+            await asyncio.wait_for(tab.go_to(url), timeout=30)
             prev = url
-            for _ in range(max_poll):
+            for i in range(max_poll):
                 await asyncio.sleep(1)
                 current = await tab.current_url
-                # Stop as soon as the URL is stable and we've left generate.php
+                logger.info(f"[Tab] Poll {i+1}/{max_poll} — current URL: {current}")
                 if current != prev and "generate.php" not in current:
+                    logger.info(f"[Tab] Redirect settled at: {current}")
                     break
                 prev = current
             source = await tab.page_source
+            logger.info(f"[Tab] Final URL: {current} | HTML: {len(source)} bytes")
             return current, source
         finally:
             await tab.close()
+            logger.info(f"[Tab] Tab closed")
 
 
 # Module-level singleton — one browser per process
@@ -209,40 +235,41 @@ class WebScrapeService:
     @staticmethod
     def get_page_content(url: str, selector: str = "div.single-service-content"):
         """Fetch *url* in a new tab, extract the content block, return Markdown."""
+        logger.info(f"[Scrape] get_page_content → {url}")
         try:
             _session.ensure_ready()
-            logger.debug(f"Fetching page: {url}")
             html = _session.run(_session._fetch_source(url, settle=3.0), timeout=90)
             node = LexborHTMLParser(html).css_first(selector)
             if node:
                 raw = node.html
                 cleaned = WebScrapeService._to_markdown(raw)
-                logger.debug(
-                    f"Extracted: {len(raw)} → {len(cleaned)} chars "
+                logger.info(
+                    f"[Scrape] Content extracted: {len(raw)} → {len(cleaned)} chars "
                     f"({100 - len(cleaned)/len(raw)*100:.0f}% reduction)"
                 )
                 return cleaned
-            logger.warning(f"Selector '{selector}' not found at {url}")
+            logger.warning(f"[Scrape] Selector '{selector}' not found at {url}")
             return None
         except Exception as exc:
-            logger.error(f"get_page_content({url}): {exc}", exc_info=True)
+            logger.error(f"[Scrape] get_page_content({url}): {exc}", exc_info=True)
             return None
 
     @staticmethod
     def cinefreak_title(url: str):
         """Return the h1 title text from *url*'s content container."""
+        logger.info(f"[Scrape] cinefreak_title → {url}")
         try:
             _session.ensure_ready()
             html = _session.run(_session._fetch_source(url, settle=3.0), timeout=90)
             node = LexborHTMLParser(html).css_first("div.single-service-content h1")
             if node:
                 title = node.text(strip=True)
-                logger.debug(f"Title: {title}")
+                logger.info(f"[Scrape] Title found: {title}")
                 return title
-            logger.warning(f"h1 not found at {url}")
+            logger.warning(f"[Scrape] h1 not found at {url}")
             return None
         except Exception as exc:
-            logger.error(f"cinefreak_title({url}): {exc}")
+            logger.error(f"[Scrape] cinefreak_title({url}): {exc}", exc_info=True)
             return None
 
     @staticmethod
@@ -253,9 +280,9 @@ class WebScrapeService:
         The browser executes JS automatically, so ``window.location.href``
         redirects are followed natively.  Returns a list of URLs or ``None``.
         """
+        logger.info(f"[Scrape] get_url → {url}")
         try:
             _session.ensure_ready()
-            logger.debug(f"Resolving: {url}")
             final_url, html = _session.run(
                 _session._fetch_and_follow(url, max_poll=10), timeout=90
             )
@@ -265,36 +292,37 @@ class WebScrapeService:
                 "r2.dev", "r2.cloudflarestorage.com",
                 "video-downloads.googleusercontent.com"
             )):
-                logger.info(f"Direct link resolved: {final_url}")
+                logger.info(f"[Scrape] Direct link resolved: {final_url}")
                 return [final_url]
 
             # 2. Scan page HTML for known link patterns
             links = WebScrapeService._scan_links(html)
             if links:
-                logger.info(f"Found {len(links)} link(s) in page HTML")
+                logger.info(f"[Scrape] Found {len(links)} link(s) in page HTML")
                 return links
 
             # 3. Try /w/ and /gp/ URL variants as fallback
-            logger.info(f"No links found — trying URL variants for: {final_url}")
+            logger.info(f"[Scrape] No links in page — trying /w/ and /gp/ variants")
             for variant in (
                 final_url.replace("/f/", "/w/"),
                 final_url.replace("/f/", "/gp/"),
             ):
                 if variant == final_url:
                     continue
+                logger.info(f"[Scrape] Trying variant: {variant}")
                 try:
                     _, vh = _session.run(
                         _session._fetch_and_follow(variant, max_poll=6), timeout=60
                     )
                     links = WebScrapeService._scan_links(vh)
                     if links:
-                        logger.info(f"Found {len(links)} link(s) in variant {variant}")
+                        logger.info(f"[Scrape] Found {len(links)} link(s) in variant")
                         return links
                 except Exception as ve:
-                    logger.warning(f"Variant {variant} failed: {ve}")
+                    logger.warning(f"[Scrape] Variant {variant} failed: {ve}")
 
-            logger.warning(f"No download links found for: {url}")
+            logger.warning(f"[Scrape] No download links found for: {url}")
             return None
         except Exception as exc:
-            logger.error(f"get_url({url}): {exc}", exc_info=True)
+            logger.error(f"[Scrape] get_url({url}): {exc}", exc_info=True)
             return None
