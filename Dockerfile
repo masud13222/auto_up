@@ -20,7 +20,9 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir pydoll-python gunicorn
+
 
 # Copy project
 COPY . .
