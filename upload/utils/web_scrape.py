@@ -172,7 +172,7 @@ class WebScrapeService:
                 logger.info(f"[Scrape] Found {len(video_matches)} video link(s)")
                 return video_matches
 
-            # 4. Fallback: try /w/ and /gp/ variants
+            # 4. Fallback: try /w/ and /gp/ variants (only when URL has /f/)
             logger.info(f"[Scrape] No R2/video links found. Trying fallback for: {target_url}")
             if "/f/" in target_url:
                 for fb_url in (
@@ -189,7 +189,30 @@ class WebScrapeService:
                     except Exception as ve:
                         logger.warning(f"[Scrape] Fallback failed for {fb_url}: {ve}")
 
-            # 5. Nothing found
+            # 5. Fallback: try domain/instant_{id} (for URLs without /f/)
+            #    e.g. https://example.com/abc123 → https://example.com/instant_abc123
+            #    The instant page embeds the download URL inside a JS downloadUrl variable.
+            else:
+                from urllib.parse import urlparse
+                parsed = urlparse(target_url)
+                path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+                if path_parts:
+                    last_id = path_parts[-1]
+                    instant_url = f"{parsed.scheme}://{parsed.netloc}/instant_{last_id}"
+                    try:
+                        logger.debug(f"[Scrape] Checking instant fallback: {instant_url}")
+                        instant_html = _run(_fetch_html(instant_url, settle=5.0))
+                        # The page embeds: const downloadUrl = "https://video-downloads..."
+                        # pattern_video already matches video-downloads.googleusercontent.com
+                        instant_matches = re.findall(pattern_video, instant_html)
+                        if instant_matches:
+                            logger.info(f"[Scrape] Found {len(instant_matches)} video link(s) via instant fallback: {instant_url}")
+                            return instant_matches
+                        logger.warning(f"[Scrape] Instant fallback returned no video links: {instant_url}")
+                    except Exception as ie:
+                        logger.warning(f"[Scrape] Instant fallback failed for {instant_url}: {ie}")
+
+            # 6. Nothing found
             logger.warning(f"[Scrape] No links found for URL: {url}")
             return None
         except Exception as exc:
