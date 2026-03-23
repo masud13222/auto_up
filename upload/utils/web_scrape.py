@@ -191,7 +191,6 @@ class WebScrapeService:
 
             # 5. Fallback: try domain/instant_{id} (for URLs without /f/)
             #    e.g. https://example.com/abc123 → https://example.com/instant_abc123
-            #    The instant page embeds the download URL inside a JS downloadUrl variable.
             else:
                 from urllib.parse import urlparse
                 parsed = urlparse(target_url)
@@ -202,8 +201,6 @@ class WebScrapeService:
                     try:
                         logger.debug(f"[Scrape] Checking instant fallback: {instant_url}")
                         instant_html = _run(_fetch_html(instant_url, settle=5.0))
-                        # The page embeds: const downloadUrl = "https://video-downloads..."
-                        # pattern_video already matches video-downloads.googleusercontent.com
                         instant_matches = re.findall(pattern_video, instant_html)
                         if instant_matches:
                             logger.info(f"[Scrape] Found {len(instant_matches)} video link(s) via instant fallback: {instant_url}")
