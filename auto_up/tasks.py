@@ -127,17 +127,26 @@ def auto_scrape_and_queue() -> str:
         url_exists_skipped = 0
 
         for entry in daily_filtered:
-            if MediaTask.objects.filter(url=entry["url"], status__in=['pending', 'processing']).exists():
+            # Check both primary url and extra_urls for this entry
+            url_val = entry["url"]
+            already_queued = (
+                MediaTask.objects.filter(url=url_val, status__in=['pending', 'processing']).exists()
+                or MediaTask.objects.filter(
+                    extra_urls__contains=url_val, status__in=['pending', 'processing']
+                ).exists()
+            )
+            if already_queued:
                 url_exists_skipped += 1
                 ScrapeItem.objects.create(
                     run=scrape_run,
                     raw_title=entry["raw_title"],
-                    url=entry["url"],
+                    url=url_val,
                     action='skip_url_exists',
                     reason='URL already queued or processing',
                 )
                 continue
             url_filtered.append(entry)
+
 
         if url_exists_skipped:
             logger.info(f"Skipped {url_exists_skipped} entries (URL already in DB)")
@@ -221,7 +230,14 @@ def auto_scrape_and_queue() -> str:
             priority = item.get("priority", "normal")
 
             # Race condition guard — only block if pending/processing
-            if MediaTask.objects.filter(url=url, status__in=['pending', 'processing']).exists():
+            # Check both primary url and extra_urls
+            race_exists = (
+                MediaTask.objects.filter(url=url, status__in=['pending', 'processing']).exists()
+                or MediaTask.objects.filter(
+                    extra_urls__contains=url, status__in=['pending', 'processing']
+                ).exists()
+            )
+            if race_exists:
                 logger.info(f"Race condition guard: URL already queued/processing, skipping: {url}")
                 ScrapeItem.objects.create(
                     run=scrape_run,
@@ -233,9 +249,14 @@ def auto_scrape_and_queue() -> str:
                 continue
 
             # Reuse existing completed/failed task, or create new
-            existing = MediaTask.objects.filter(
-                url=url, status__in=['completed', 'failed']
-            ).order_by('-updated_at').first()
+            # Also check extra_urls so we don't create a duplicate for a known source URL
+            existing = (
+                MediaTask.objects.filter(url=url, status__in=['completed', 'failed'])
+                .order_by('-updated_at').first()
+                or MediaTask.objects.filter(
+                    extra_urls__contains=url, status__in=['completed', 'failed']
+                ).order_by('-updated_at').first()
+            )
 
             if existing:
                 media_task = existing

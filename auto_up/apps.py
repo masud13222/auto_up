@@ -1,6 +1,9 @@
 import os
 from django.apps import AppConfig
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class AutoUpConfig(AppConfig):
     name = 'auto_up'
@@ -10,15 +13,22 @@ class AutoUpConfig(AppConfig):
     def ready(self):
         """Register the scheduled scraping task on startup.
 
-        Only runs in the main process (not in Gunicorn worker forks)
-        to avoid DB queries during worker initialization.
+        Skipped in Gunicorn worker forks to avoid DB queries during
+        worker initialization (which can cause worker timeouts on
+        slow DB cold starts like Neon serverless).
+
+        Runs in:
+          - manage.py qcluster  (the scheduler consumer)
+          - manage.py runserver (dev)
+        Skipped in:
+          - Gunicorn worker processes (GUNICORN_WORKER_PROCESS=1)
         """
-        # Skip in Gunicorn worker processes — they inherit the schedule
-        # from the master process. Only run in manage.py or qcluster.
+        # Skip in Gunicorn worker processes (env set by CMD in Dockerfile)
         if os.environ.get('GUNICORN_WORKER_PROCESS'):
             return
         try:
             from auto_up.scheduler import ensure_scheduled
             ensure_scheduled()
-        except Exception:
-            pass
+        except Exception as e:
+            # Log but don't crash — scheduler failure should not prevent startup
+            logger.debug(f"Could not register auto-scrape schedule on startup: {e}")

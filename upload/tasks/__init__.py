@@ -32,8 +32,17 @@ def _merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
     existing_seasons = existing_result.get("seasons", [])
     new_seasons = new_data.get("seasons", [])
 
-    if not existing_seasons or not new_seasons:
+    if not existing_seasons:
+        # No existing seasons at all — just use new_data as-is
         return new_data
+
+    if not new_seasons:
+        # New data has no seasons (edge case) — preserve existing entirely
+        logger.warning("Episode merge: new_data has no seasons, preserving existing result to avoid data loss")
+        result = dict(existing_result)
+        result.update({k: v for k, v in new_data.items() if k not in ("seasons",)})
+        result["seasons"] = existing_seasons
+        return result
 
     # Build mutable copy of existing seasons indexed by season_number
     merged_seasons = {s["season_number"]: dict(s) for s in existing_seasons}
