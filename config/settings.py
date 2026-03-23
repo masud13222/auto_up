@@ -106,7 +106,8 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASE_URL = "postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 DATABASES = {
-    'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
+    # conn_max_age=0 is required for Neon serverless pooler to prevent stale connections
+    'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=0)
 }
 
 
@@ -160,18 +161,11 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DOWNLOADS_DIR = BASE_DIR / 'downloads'
 
 # Django-Q2 Queue Configuration (ORM Broker)
-# Worker count is read from UploadSettings in admin panel
-def _get_worker_count():
-    try:
-        from settings.models import UploadSettings
-        s = UploadSettings.objects.first()
-        return s.worker_count if s else 1
-    except Exception:
-        return 1
-
+# Worker count is fixed here; do NOT query DB at settings load time (causes Gunicorn worker timeout)
+# To change worker count, update this value and redeploy.
 Q_CLUSTER = {
     'name': 'Upload',
-    'workers': _get_worker_count(),
+    'workers': 1,
     'timeout': 7200,       # 2 hours max per task
     'retry': 7500,         # Retry after 2.5 hours if no result
     'queue_limit': 50,

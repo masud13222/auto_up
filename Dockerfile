@@ -43,4 +43,10 @@ EXPOSE 5000
 # Start: run migrations, then launch gunicorn
 CMD sh -c "\
     python manage.py migrate --noinput && \
-    gunicorn config.wsgi:application --bind 0.0.0.0:5000 --workers 2 --timeout 300"
+    gunicorn config.wsgi:application \
+        --bind 0.0.0.0:5000 \
+        --workers 2 \
+        --timeout 300 \
+        --graceful-timeout 30 \
+        --keep-alive 5 \
+        --env GUNICORN_WORKER_PROCESS=1"
