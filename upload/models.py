@@ -5,6 +5,11 @@ class MediaTask(models.Model):
     """
     Tracks each media processing task (Movie or TV Show).
     Prevents duplicate processing and stores final results.
+
+    A single MediaTask can aggregate content from MULTIPLE source URLs.
+    This happens when a TV show releases new episode batches under a new URL
+    (e.g. episodes 1-72 at URL-A, then episodes 73-80 at URL-B).
+    The primary `url` is the first one found; subsequent URLs go into `extra_urls`.
     """
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -19,6 +24,15 @@ class MediaTask(models.Model):
     ]
 
     url = models.URLField(max_length=500, db_index=True)
+    extra_urls = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Additional source URLs for this content. "
+            "When a new URL is detected for the same TV show (e.g. new episode batch), "
+            "it is appended here instead of creating a duplicate task."
+        ),
+    )
     title = models.CharField(max_length=500, blank=True, default='')
     website_title = models.CharField(max_length=1000, blank=True, default='', db_index=True)
     content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, blank=True, default='')
@@ -38,3 +52,19 @@ class MediaTask(models.Model):
 
     def __str__(self):
         return f"[{self.status}] {self.title or self.url[:50]}"
+
+    def add_extra_url(self, new_url: str) -> bool:
+        """
+        Register a new source URL for this task (if not already tracked).
+        Returns True if the URL was added, False if it was already known.
+        """
+        urls = self.extra_urls or []
+        if new_url == self.url or new_url in urls:
+            return False
+        urls.append(new_url)
+        self.extra_urls = urls
+        return True
+
+    def all_urls(self) -> list:
+        """Return primary URL + all extra URLs."""
+        return [self.url] + (self.extra_urls or [])

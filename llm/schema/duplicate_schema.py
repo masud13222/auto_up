@@ -15,7 +15,7 @@ duplicate_schema = {
         "action": {
             "type": "string",
             "enum": ["skip", "update", "replace", "process"],
-            "description": "skip=identical, update=add missing parts, replace=quality upgrade, process=new content"
+            "description": "skip=identical, update=add missing parts/episodes, replace=quality upgrade, process=new content"
         },
         "reason": {
             "type": "string",
@@ -33,7 +33,7 @@ duplicate_schema = {
         },
         "has_new_episodes": {
             "type": "boolean",
-            "description": "True if the new version likely has episodes not in existing. Only for TV shows."
+            "description": "True if the new URL has episode labels NOT present in existing_episodes. When true, new episodes will be APPENDED (not replaced)."
         }
     },
     "required": ["is_duplicate", "action", "reason", "detected_new_type"]
@@ -51,7 +51,7 @@ You will receive JSON with:
 - `existing_resolutions`: Resolutions the existing entry already has (e.g. ["720p", "1080p"]) — null values are already filtered out
 - `existing_type`: "movie" or "tvshow"
 - `existing_episode_count`: Number of download items in existing (TV shows only)
-- `existing_episodes`: Per-episode resolution info like ["Episode 01: 480p,720p,1080p", "Episode 06: 720p,1080p"] (TV shows only)
+- `existing_episodes`: Per-episode resolution info like ["Episode 01: 480p,720p,1080p", "Season 5 Episode 73-80: 720p,1080p"] (TV shows only)
   → This tells you EXACTLY which episodes have which resolutions. Null/empty resolution values are already filtered.
 
 ## STEP 1: Detect New Content Type
@@ -69,30 +69,29 @@ If `detected_new_type` ≠ `existing_type`:
 ## STEP 3: Same-Type Comparison (only if types match OR already decided)
 
 ### → "skip" (is_duplicate=true)
-- SAME media, SAME quality, and NO missing resolutions
-- Existing already has all resolutions mentioned in new title
-- For TV shows: same episodes, same resolutions → skip
+- SAME media, SAME quality, and NO missing resolutions AND NO new episodes
+- Existing already has all resolutions AND all episode labels mentioned in new title
 - Nothing new to download
 
 ### → "update" (is_duplicate=true)
-- SAME media BUT has improvements that can be ADDED:
+- SAME media BUT has improvements that can be ADDED WITHOUT replacing existing data:
   - Missing resolutions (e.g. existing has ["720p","1080p"], new title mentions 480p too → missing_resolutions=["480p"])
-  - For TV shows: new episodes exist that aren't in existing_episode_labels → has_new_episodes=true
-- Only the MISSING parts will be downloaded, not everything
+  - NEW episode labels NOT found in existing_episodes → has_new_episodes=true
+- **IMPORTANT for TV shows**: When a new URL contains a DIFFERENT episode batch (e.g. existing has ep 1-72, new URL has ep 73-80), this is ALWAYS "update" with has_new_episodes=true.
+  - The new episodes will be APPENDED to the existing ones — existing Drive links are NEVER touched.
+  - NEVER use "replace" for this case.
 
 ### → "replace" (is_duplicate=true)
 - SAME media BUT quality is UPGRADED:
   - Existing is low quality (CAM, HDCAM, HDTS, DVDRip, DVDScr, HC-HDRip) and new is better (WEB-DL, BluRay, WEBRip)
   - Complete re-download is needed because old quality is unacceptable
 - This replaces the ENTIRE existing entry
-- ALSO use "replace" when existing_type ≠ detected_new_type BUT same title/year
-  - This means the existing entry was MISCLASSIFIED (e.g. a TV show was saved as movie)
-  - Same name + same year + different type = misclassification → "replace"
+- ALSO use "replace" when existing_type ≠ detected_new_type BUT same title/year (misclassification)
 
 ### → "process" (is_duplicate=false)
 - DIFFERENT media entirely
 - Different movie/show name
-- Different season of the same show
+- Different season of the same show (e.g. Season 4 vs Season 5)
 - Year mismatch → usually different content
 
 ## Quality Hierarchy (lowest to highest):
@@ -105,15 +104,16 @@ CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluR
   → no missing, likely "skip"
 
 ## How to detect new episodes:
-- Compare what existing_episodes cover vs what the new title suggests
-- If existing has "Episode 01: 480p,720p,1080p" through "Episode 08: 480p,720p,1080p" but the show likely has more episodes now → has_new_episodes=true
-- Also check per-episode resolutions — if an episode is missing a resolution, that counts as needing update
-- If you can't tell from the title alone, default has_new_episodes=true for safety
+- Compare episode labels in existing_episodes vs what the new title suggests.
+- If existing has "Season 5 Episode 1-72" but new title mentions "Season 5 Episode 73-80" → has_new_episodes=true, action="update"
+- If existing episodes and new title describe the SAME episode range → has_new_episodes=false
+- If you can't tell from the title alone, default has_new_episodes=true for safety.
+- NEVER use "replace" when the only difference is a new episode batch.
 
 ## Important:
 - Be STRICT about name matching
 - Year mismatch = different content → "process"
-- Type mismatch = different content → "process"
+- Same show, same season, new episode batch = "update" with has_new_episodes=true (NEVER "replace")
 - Return ONLY valid JSON — no markdown, no backticks
 
 ## JSON Schema:
@@ -121,3 +121,5 @@ CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluR
 
 ## Output:
 Return only the JSON object. Nothing else."""
+
+

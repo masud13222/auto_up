@@ -15,6 +15,73 @@ from .tvshow_pipeline import process_tvshow_pipeline
 logger = logging.getLogger(__name__)
 
 
+def _merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
+    """
+    Merge new TV show episodes from new_data INTO existing_result.
+
+    Strategy:
+    - Keep ALL existing seasons/episodes (with their Drive links) intact
+    - Append only NEW episodes (by label) that don't exist in existing
+    - Never overwrite existing episodes — they already have Drive links
+
+    This handles the case where a show releases new episodes under a new URL
+    (e.g. Bachelor Point ep 1-72 at URL-A, ep 73-80 at URL-B).
+    The new ep 73-80 batch gets appended to the existing season, not replacing it.
+    """
+    # Only applies to TV shows
+    existing_seasons = existing_result.get("seasons", [])
+    new_seasons = new_data.get("seasons", [])
+
+    if not existing_seasons or not new_seasons:
+        return new_data
+
+    # Build mutable copy of existing seasons indexed by season_number
+    merged_seasons = {s["season_number"]: dict(s) for s in existing_seasons}
+    for s in merged_seasons.values():
+        # Make download_items a mutable list copy
+        s["download_items"] = list(s.get("download_items", []))
+
+    for new_season in new_seasons:
+        snum = new_season.get("season_number")
+        new_items = new_season.get("download_items", [])
+
+        if snum not in merged_seasons:
+            # Entirely new season — add as-is
+            merged_seasons[snum] = dict(new_season)
+            logger.info(f"Episode merge: added new season {snum}")
+            continue
+
+        # Season exists — add only NEW episode labels
+        existing_labels = {
+            item.get("label", "") for item in merged_seasons[snum]["download_items"]
+        }
+
+        added = []
+        for new_item in new_items:
+            label = new_item.get("label", "")
+            if label not in existing_labels:
+                merged_seasons[snum]["download_items"].append(new_item)
+                existing_labels.add(label)
+                added.append(label)
+
+        if added:
+            logger.info(f"Episode merge: appended {len(added)} new episode(s) to S{snum}: {added}")
+        else:
+            logger.info(f"Episode merge: no new episodes to add for S{snum} (all labels already exist)")
+
+    # Reconstruct seasons list sorted by season_number
+    merged_season_list = sorted(merged_seasons.values(), key=lambda s: s["season_number"])
+
+    # Build final merged data: keep new_data metadata but use merged seasons
+    result = dict(existing_result)    # start from existing (has Drive links)
+    result.update({                   # overlay new metadata fields
+        k: v for k, v in new_data.items()
+        if k not in ("seasons",)      # don't overwrite seasons with new_data's seasons
+    })
+    result["seasons"] = merged_season_list
+    return result
+
+
 def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
     """
     Merge existing Drive links from old_result into new_data.
@@ -239,6 +306,12 @@ def process_media_task(task_pk: int) -> str:
                 logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
                 existing_result = existing_task.result or {}
 
+                # Register this new URL in the existing task's extra_urls
+                new_url = url
+                if existing_task.add_extra_url(new_url):
+                    existing_task.save(update_fields=['extra_urls', 'updated_at'])
+                    logger.info(f"Registered new source URL in existing task extra_urls: {new_url}")
+
                 # Replace: clean up old Drive files before re-downloading
                 if action == "replace" and existing_result:
                     logger.info(f"Cleaning up old Drive files for replace action...")
@@ -250,10 +323,19 @@ def process_media_task(task_pk: int) -> str:
                 media_task.error_message = ''
                 media_task.save(update_fields=['status', 'error_message', 'updated_at'])
 
-        # ── Merge existing drive links for update action ──
+        # ── Merge existing data for update action ──
         if action == "update" and existing_result:
-            data = _merge_drive_links(existing_result, data)
-            logger.info(f"Merged existing drive links into new extraction data")
+            is_tvshow = content_type == "tvshow" or bool(existing_result.get("seasons"))
+            has_new_eps = dup_result.get("has_new_episodes", False) if dup_result else False
+
+            if is_tvshow and has_new_eps:
+                # TV show with new episodes: merge new episodes INTO existing (do NOT replace)
+                data = _merge_new_episodes(existing_result, data)
+                logger.info(f"Merged new episodes into existing TV show seasons")
+            else:
+                # Movie or TV show resolution update: just preserve existing drive links
+                data = _merge_drive_links(existing_result, data)
+                logger.info(f"Merged existing drive links into new extraction data")
 
         web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
         save_task(media_task, content_type=content_type, title=title, website_title=web_title, result=data)
