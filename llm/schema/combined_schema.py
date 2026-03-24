@@ -209,15 +209,15 @@ Examples:
 
 - ALL download URLs MUST be ABSOLUTE (start with https://).
 - **HOW to make a relative URL absolute**: ONLY prepend the site domain. NOTHING else changes.
-- NEVER decode, transform, resolve, shorten, or alter any URL in any way
-- NEVER decode base64, URL-encoding, or any encoded parameters — even if `?id=` value looks like base64, leave it **exactly as-is**
-- NEVER replace a URL with its decoded/resolved/redirected destination
+- NEVER decode, transform, resolve, shorten, or alter any URL in any way.
+- NEVER decode base64, URL-encoding, or any encoded parameters — even if `?id=` value looks like base64, leave it **exactly as-is**.
+- NEVER replace a URL with its decoded/resolved/redirected destination.
 - ⚠️ ENCODED RELATIVE URL — follow this exactly:
   - HTML has: `/generate.php?id=aHR0cHM6Ly9uZXc1...`
   - ✅ CORRECT: `https://siteurl.com/generate.php?id=aHR0cHM6Ly9uZXc1...`
-  - ❌ WRONG: `https://new5.cinecloud.site/f/abc123` ← decoded destination, NEVER do this
-- The ONLY allowed modification: prepend site domain to relative URLs. Everything else stays byte-for-byte identical.
-- VIOLATION OF THIS RULE = ALL DOWNLOADS FAIL. This is the single most important rule.
+  - The ONLY allowed modification: prepend site domain to relative URLs. Everything else stays byte-for-byte identical.
+- **If `generate.php` is not present in the HTML**: use the best available direct download link you can find (e.g. a direct file URL or redirect link from the page). Do NOT leave it empty.
+- VIOLATION OF THE NO-DECODE RULE = ALL DOWNLOADS FAIL. This is the single most important rule.
 
 
 {dup_section}
