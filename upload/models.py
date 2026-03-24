@@ -40,6 +40,12 @@ class MediaTask(models.Model):
     result = models.JSONField(null=True, blank=True)
     task_id = models.CharField(max_length=100, blank=True, default='')
     error_message = models.TextField(blank=True, default='')
+    site_content_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="ID of the published content on the target site (FlixBD). Null means not yet published."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

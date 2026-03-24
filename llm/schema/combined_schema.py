@@ -1,10 +1,11 @@
 import json
-from .blocked_names import BLOCKED_SITE_NAMES
+from .blocked_names import BLOCKED_SITE_NAMES, SITE_NAME
 from .movie_schema import movie_schema
 from .tvshow_schema import tvshow_schema
 from .duplicate_schema import duplicate_schema
 
 _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
+
 
 # ───────────────────────────────────────────────
 # Combined Schema: Auto-detect + Extract in ONE call
@@ -52,19 +53,34 @@ def _build_resolution_note(extra_below: bool = False, extra_above: bool = False,
     return "".join(parts)
 
 
-def _build_duplicate_section(db_match_info: dict) -> str:
-    """Build the duplicate check section for combined prompt."""
-    if not db_match_info:
+def _build_duplicate_section(db_match_info: dict, flixbd_results: list = None) -> str:
+    """Build the duplicate check section for combined prompt.
+    Includes both DB match info and FlixBD search results as context.
+    """
+    if not db_match_info and not flixbd_results:
         return ""
+
+    flixbd_section = ""
+    if flixbd_results:
+        flixbd_section = f"""
+### FlixBD Site Match (top {len(flixbd_results)} results from target site):
+```json
+{json.dumps(flixbd_results, indent=2, ensure_ascii=False)}
+```
+(These are titles already published on the target site. Use this to understand if the content already exists there.)
+"""
+
+    db_section = ""
+    if db_match_info:
+        db_section = f"""
+### Existing DB Match (our database):
+```json
+{json.dumps(db_match_info, indent=2, ensure_ascii=False)}
+```"""
 
     return f"""## ADDITIONAL TASK: Duplicate Check
 You ALSO need to decide if this content is a duplicate of an existing database entry.
-
-### Existing DB Match:
-```json
-{json.dumps(db_match_info, indent=2, ensure_ascii=False)}
-```
-
+{db_section}{flixbd_section}
 ### Duplicate Check Rules:
 Compare the EXTRACTED data (not just the title) against the existing DB entry.
 
@@ -91,13 +107,21 @@ Add a `duplicate_check` field to your response:
 """
 
 
-def get_combined_system_prompt(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0, db_match_info: dict = None) -> str:
+
+def get_combined_system_prompt(
+    extra_below: bool = False,
+    extra_above: bool = False,
+    max_extra: int = 0,
+    db_match_info: dict = None,
+    flixbd_results: list = None,
+) -> str:
     """
     Generate the combined system prompt based on resolution settings.
-    If db_match_info is provided, adds duplicate check section.
+    If db_match_info or flixbd_results provided, adds duplicate check section.
     """
     res_note = _build_resolution_note(extra_below, extra_above, max_extra)
-    dup_section = _build_duplicate_section(db_match_info) if db_match_info else ""
+    has_dup = bool(db_match_info or flixbd_results)
+    dup_section = _build_duplicate_section(db_match_info, flixbd_results) if has_dup else ""
 
     return f"""You are an expert web scraping assistant that can detect content type AND extract structured data in a single step.
 
@@ -163,8 +187,22 @@ Each download item belongs to exactly ONE of these types. Classification is base
 - Extract ALL image URLs for screenshots
 - Remove ALL references to these site names from ALL fields (including website_movie_title and website_tvshow_title): {_blocked_names_str}
 - Always prefer x264 encodes when available
+- **languages**: extract as array of strings e.g. ["Hindi", "English"]. Omit if not found.
+- **countries**: extract as array of strings e.g. ["USA"]. Omit if not found.
+- **cast** (movie) / **cast_info** (tvshow): comma-separated actors list. Omit if not found.
 
-## SEO Meta Fields (MUST generate for both movie & tvshow — do NOT skip):
+## IMPORTANT - website_movie_title / website_tvshow_title (MUST generate in this exact format):
+`Title Year Source Language - {SITE_NAME}`
+- **Title**: clean content title (no year/quality/language)
+- **Year**: 4-digit year
+- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS, etc. — detect from page. Do NOT use resolution (1080p/720p).
+- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali + Tamil]`
+- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
+Examples:
+  - movie: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+  - tvshow: `Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}`
+
+
 - **meta_title**: Natural, human-like SEO title (50-60 chars). Place main keyword early. Vary structure — no repetitive patterns.
 - **meta_description**: Compelling meta description (140-160 chars). Natural language with a CTA. Include content name, year, quality, language.
 - **meta_keywords**: 10-15 comma-separated relevant keywords. Include name variations, year, quality variants, language, "download", "watch online", genre.
@@ -186,7 +224,7 @@ Each download item belongs to exactly ONE of these types. Classification is base
 ## Response Format:
 {{
   "content_type": "movie" or "tvshow",
-  "data": {{ ... extracted data ... }}{',"duplicate_check": {{ ... }}' if db_match_info else ''}
+  "data": {{ ... extracted data ... }}{',"duplicate_check": {{ ... }}' if has_dup else ''}
 }}
 
 

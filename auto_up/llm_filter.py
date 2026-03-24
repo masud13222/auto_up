@@ -82,7 +82,9 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
     payload = []
     for item in items:
         db_results = item.get("db_results", {})
-        payload.append({
+        flixbd_results = item.get("flixbd_results", [])
+
+        entry = {
             "raw_title": item["raw_title"],
             "clean_name": item["clean_name"],
             "year": item.get("year"),
@@ -95,7 +97,13 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
                 ],
                 "has_matches": db_results.get("has_matches", False),
             },
-        })
+        }
+
+        # Only include flixbd_results if FlixBD returned something
+        if flixbd_results:
+            entry["flixbd_results"] = flixbd_results
+
+        payload.append(entry)
 
     prompt = json.dumps(payload, ensure_ascii=False)
 

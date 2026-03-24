@@ -34,6 +34,68 @@ DAILY_PROCESS_LIMIT = 2
 LOG_RETENTION_DAYS = 7
 
 
+def _fetch_flixbd_top(name: str, max_results: int = 2) -> list:
+    """
+    Search FlixBD for existing content by name.
+    Returns top `max_results` hits scored with rapidfuzz, sorted best first.
+    Returns [] if FlixBD is not configured, disabled, or no results found.
+
+    Used by auto_up to pass site context to LLM for smarter filtering.
+    """
+    try:
+        from upload.service import flixbd_client as fx
+        import httpx
+        import re
+        from rapidfuzz import fuzz
+
+        fx._get_config()  # Raises RuntimeError if not configured/disabled
+
+        api_url, api_key = fx._get_config()
+        params = {"q": name, "type": "all", "per_page": 5, "page": 1}
+
+        with httpx.Client(timeout=fx._TIMEOUT) as client:
+            resp = client.get(
+                f"{api_url}/api/v1/search",
+                params=params,
+                headers=fx._headers(api_key),
+            )
+
+        if resp.status_code != 200:
+            return []
+
+        raw = resp.json().get("data", [])
+        if not raw:
+            return []
+
+        _year_re = re.compile(r'\b(19|20)\d{2}\b')
+        name_lower = name.lower().strip()
+
+        scored = []
+        for item in raw:
+            item_title = item.get("title", "")
+            year_match = _year_re.search(item_title)
+            clean = item_title[:year_match.start()].strip() if year_match else item_title
+            score = fuzz.ratio(name_lower, clean.lower())
+            scored.append({"id": item["id"], "title": item_title, "match_score": score})
+
+        # Sort best first, return top N
+        scored.sort(key=lambda x: x["match_score"], reverse=True)
+        top = scored[:max_results]
+
+        if top:
+            logger.debug(
+                f"FlixBD auto_up search '{name}': top {len(top)} results "
+                f"(scores: {[r['match_score'] for r in top]})"
+            )
+        return top
+
+    except RuntimeError:
+        return []
+    except Exception as e:
+        logger.warning(f"FlixBD auto_up search error for '{name}': {e}")
+        return []
+
+
 def _cleanup_old_logs():
     """Delete ScrapeRun (and cascading ScrapeItem) older than LOG_RETENTION_DAYS."""
     cutoff = timezone.now() - timedelta(days=LOG_RETENTION_DAYS)
@@ -155,7 +217,7 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "All entries already in DB")
             return "All entries already in DB."
 
-        # ── Step 3: Extract names + search DB ──
+        # ── Step 3: Extract names + search DB + FlixBD ──
         enriched_items = []
 
         for entry in url_filtered:
@@ -176,8 +238,11 @@ def auto_scrape_and_queue() -> str:
                 )
                 continue
 
-            # Search DB
+            # Search our DB
             db_results = search_existing(title_info.title, title_info.year)
+
+            # Search FlixBD (top 2 per title — enough context for LLM, limits API load)
+            flixbd_results = _fetch_flixbd_top(title_info.title, max_results=2)
 
             enriched_items.append({
                 "raw_title": raw_title,
@@ -186,9 +251,10 @@ def auto_scrape_and_queue() -> str:
                 "season_tag": title_info.season_tag,
                 "url": url,
                 "db_results": db_results,
+                "flixbd_results": flixbd_results,
             })
 
-        logger.info(f"Enriched {len(enriched_items)} items with DB search results")
+        logger.info(f"Enriched {len(enriched_items)} items with DB + FlixBD search results")
 
         if not enriched_items:
             _finish_run(scrape_run, run_start, "No valid items after name extraction")

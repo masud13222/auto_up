@@ -15,6 +15,67 @@ from .tvshow_pipeline import process_tvshow_pipeline
 logger = logging.getLogger(__name__)
 
 
+def _fetch_flixbd_results(name: str) -> list:
+    """
+    Search FlixBD for existing content by name.
+    Returns max 5 results as a list of {id, title} dicts.
+    Never raises — returns [] on any error or if FlixBD is not configured.
+
+    Results are passed to LLM as context so it can make better duplicate decisions.
+    We do NOT save site_content_id here — that happens only after pipeline creates content.
+    """
+    try:
+        from upload.service import flixbd_client as fx
+        import httpx
+        import re
+        from rapidfuzz import fuzz
+
+        fx._get_config()  # Raises RuntimeError if not configured/disabled
+
+        api_url, api_key = fx._get_config()
+        endpoint = f"{api_url}/api/v1/search"
+        params = {"q": name, "type": "all", "per_page": 5, "page": 1}
+
+        with httpx.Client(timeout=fx._TIMEOUT) as client:
+            resp = client.get(endpoint, params=params, headers=fx._headers(api_key))
+
+        if resp.status_code != 200:
+            logger.debug(f"FlixBD search: HTTP {resp.status_code} for '{name}'")
+            return []
+
+        raw_results = resp.json().get("data", [])
+        if not raw_results:
+            logger.info(f"FlixBD search: no results for '{name}'")
+            return []
+
+        _year_re = re.compile(r'\b(19|20)\d{2}\b')
+        name_lower = name.lower().strip()
+
+        results = []
+        for item in raw_results:
+            item_title = item.get("title", "")
+            year_match = _year_re.search(item_title)
+            clean = item_title[:year_match.start()].strip() if year_match else item_title
+            score = fuzz.ratio(name_lower, clean.lower())
+            results.append({
+                "id": item["id"],
+                "title": item_title,
+                "match_score": score,
+            })
+
+        # Sort by score so LLM sees best matches first
+        results.sort(key=lambda x: x["match_score"], reverse=True)
+        logger.info(f"FlixBD search: {len(results)} result(s) for '{name}' (top score={results[0]['match_score'] if results else 0})")
+        return results
+
+    except RuntimeError as e:
+        logger.debug(f"FlixBD search skipped: {e}")
+        return []
+    except Exception as e:
+        logger.warning(f"FlixBD search error for '{name}': {e}")
+        return []
+
+
 def _merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
     """
     Merge new TV show episodes from new_data INTO existing_result.
@@ -238,12 +299,12 @@ def process_media_task(task_pk: int) -> str:
         # ── Step 0: Title fetch + DB search (no LLM call) ──
         website_title = WebScrapeService.cinefreak_title(url)
         db_match_info = None
+        flixbd_results = []
         existing_task = None
         existing_result = {}
         resume_result_raw = _clean_result_keep_drive_links(media_task.result or {})
         has_existing_drive = _has_drive_links(resume_result_raw)
         resume_result = resume_result_raw if has_existing_drive else {}
-
 
 
         if website_title:
@@ -259,12 +320,13 @@ def process_media_task(task_pk: int) -> str:
                     logger.info(f"Found existing match: [{existing_task.pk}] {existing_task.title}")
                     db_match_info = _build_db_match_info(existing_task)
                 elif resume_result:
-                    # Reused task: no OTHER match found, but this task has its own
-                    # previous result — use it for LLM duplicate comparison
                     logger.info(f"No other match, but task has existing result (reused task). Using self for dup check.")
                     db_match_info = _build_db_match_info(media_task)
                 else:
                     logger.info(f"No existing match for '{name}'. New content.")
+
+                # ── FlixBD search (pre-LLM, results passed to LLM as context) ──
+                flixbd_results = _fetch_flixbd_results(name)
 
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
@@ -276,7 +338,10 @@ def process_media_task(task_pk: int) -> str:
                 save_task(media_task, result=data)
 
         content_type, data, dup_result = get_content_info(
-            url, on_progress=_on_progress, db_match_info=db_match_info,
+            url,
+            on_progress=_on_progress,
+            db_match_info=db_match_info,
+            flixbd_results=flixbd_results if flixbd_results else None,
             existing_result=resume_result if resume_result else None,
         )
         title = data.get("title", "Unknown")

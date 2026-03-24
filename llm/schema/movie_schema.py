@@ -11,15 +11,25 @@ _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 movie_schema = {
     "type": "object",
     "properties": {
-        "website_movie_title": {"type": "string", "description": "Full title from site with blocked site names removed. E.g., 'With Love (2026) [Hindi-Tamil] 1080p 720p 480p Netflix WEBRip ESub'"},
-        "title": {"type": "string", "description": "The title of the movie"},
+        "website_movie_title": {
+            "type": "string",
+            "description": (
+                f"Formatted display title in this exact format: "
+                f"'Title Year Source Language - {SITE_NAME}'. "
+                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution). "
+                f"Language like 'Dual Audio [Hindi ORG. + English]' or 'Bengali'. "
+                f"Remove ALL blocked site names. "
+                f"Example: 'Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}'"
+            )
+        },
+        "title": {"type": "string", "description": "The clean movie name only (no year, quality, language)"},
         "year": {"type": "integer", "description": "The year of the movie"},
         "genre": {"type": "string", "description": "The genre of the movie"},
         "director": {"type": "string", "description": "The director of the movie"},
-        "rating": {"type": "number", "description": "The rating of the movie"},
+        "rating": {"type": "number", "description": "Numeric rating only (e.g. 7.5)"},
         "plot": {"type": "string", "description": "The plot of the movie"},
         "poster_url": {"type": "string", "description": "The poster url of the movie"},
-        "screen_shots_url": {"type": "array", "items": {"type": "string"}, "description": "The screen shots url of the movie"},
+        "screen_shots_url": {"type": "array", "items": {"type": "string"}, "description": "All screenshot image URLs from the page"},
         "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern across pages."},
         "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with a click-worthy CTA. Include movie name, year, quality, language naturally."},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, year, quality variants, language, dubbed, genre, 'download', 'watch online'."},
@@ -27,6 +37,28 @@ movie_schema = {
             "type": "object",
             "additionalProperties": {"type": "string"},
             "description": "Download links keyed by resolution (e.g. '480p', '720p', '1080p'). Keys are dynamic — any resolution is allowed. Values are download URLs. Prefer x264 encodes."
+        },
+        "cast": {
+            "type": "string",
+            "description": "Comma-separated cast/actors list. E.g. 'Leonardo DiCaprio, Joseph Gordon-Levitt'"
+        },
+        "languages": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of audio languages available. E.g. ['Hindi', 'English'] or ['Bengali']"
+        },
+        "countries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of production countries. E.g. ['USA', 'UK']"
+        },
+        "imdb_id": {
+            "type": "string",
+            "description": "IMDb ID if found on the page (e.g. 'tt1375666'). Omit if not present."
+        },
+        "tmdb_id": {
+            "type": "string",
+            "description": "TMDB ID if found on the page (e.g. '27205'). Omit if not present."
         }
     },
     "required": ["website_movie_title", "title", "year"]
@@ -46,8 +78,19 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - For poster_url: find the main/primary movie poster image
 - For rating: extract numeric value only (e.g. 7.5, not "7.5/10")
 - For year: integer only (e.g. 2026, not "2026")
-- website_movie_title: extract the full title from the site, with blocked site names removed (keep quality, language tags etc.)
 - title: extract the CLEAN movie name only (without year, quality, language info)
+- cast: comma-separated actors if listed on page
+- languages: array of audio languages found on page (e.g. ["Hindi", "English"])
+- countries: array of production countries from the page (e.g. ["USA"])
+
+## IMPORTANT - website_movie_title field (MUST generate in this exact format):
+`Title Year Source Language - {SITE_NAME}`
+- **Title**: clean movie title
+- **Year**: 4-digit year
+- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS, or similar — detect from page content. Do NOT use resolution (1080p/720p) here.
+- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali + Tamil]`. Extract from the page.
+- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
+Example: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
 
 ## IMPORTANT - Clean Site Names:
 - Remove ALL references to these site names from ALL fields (title, website_movie_title, etc.): {_blocked_names_str}

@@ -12,7 +12,14 @@ tvshow_schema = {
     "properties": {
         "website_tvshow_title": {
             "type": "string",
-            "description": "Full title from site with blocked site names removed. E.g., 'Money Heist (Season 1-5) [Hindi] 1080p 720p 480p Netflix WEBRip'"
+            "description": (
+                f"Formatted display title in this exact format: "
+                f"'Title Year Source Language - {SITE_NAME}'. "
+                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution). "
+                f"Language like 'Dual Audio [Hindi ORG. + English]' or 'Bengali'. "
+                f"Remove ALL blocked site names. "
+                f"Example: 'Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}'"
+            )
         },
         "title": {
             "type": "string",
@@ -33,6 +40,28 @@ tvshow_schema = {
         "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with CTA. Include show name, year/season, quality, language."},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, season info, quality variants, language, 'download', 'watch online'."},
         "total_seasons": {"type": "integer"},
+        "cast_info": {
+            "type": "string",
+            "description": "Comma-separated cast/actors list from the page."
+        },
+        "languages": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of audio languages available. E.g. ['Hindi', 'English'] or ['Bengali']"
+        },
+        "countries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of production countries. E.g. ['USA', 'UK']"
+        },
+        "imdb_id": {
+            "type": "string",
+            "description": "IMDb ID if found on the page (e.g. 'tt0903747'). Omit if not present."
+        },
+        "tmdb_id": {
+            "type": "string",
+            "description": "TMDB ID if found on the page (e.g. '1396'). Omit if not present."
+        },
         "seasons": {
             "type": "array",
             "items": {
@@ -79,6 +108,19 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 - Strip these site names from ALL fields (including website_tvshow_title): {_blocked_names_str}
 - Prefer x264 encodes when multiple encode options exist
 - rating: numeric only (e.g. 7.5) | year: integer only (e.g. 2024)
+- cast_info: comma-separated actors if listed on page
+- languages: array of audio languages found on page (e.g. ["Hindi", "English"] or ["Bengali"])
+- countries: array of production countries from page (e.g. ["USA"])
+
+## IMPORTANT - website_tvshow_title field (MUST generate in this exact format):
+`Title Year Source Language - {SITE_NAME}`
+- **Title**: clean show title
+- **Year**: 4-digit year
+- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS (NOT resolution like 1080p)
+- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali]`
+- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
+Example: `Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}`
+
 
 ## SEO Meta Fields (MUST generate — do NOT skip):
 - **meta_title**: Create a natural, human-like SEO title (50-60 chars). Place the show name early. Vary structure across pages. Include season info if applicable.

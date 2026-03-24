@@ -49,3 +49,36 @@ class UploadSettings(models.Model):
 
     def __str__(self):
         return f"Upload Settings (Workers: {self.worker_count}, Folder: {self.upload_folder_id})"
+
+
+class FlixBDSettings(models.Model):
+    """
+    Singleton config for the FlixBD target site API.
+    Set API URL and API Key from Admin → Settings → FlixBD Settings.
+    """
+    api_url = models.URLField(
+        max_length=500,
+        help_text="Base URL of the FlixBD site (e.g. https://flixbd.test)"
+    )
+    api_key = models.CharField(
+        max_length=255,
+        help_text="API key from Admin → Settings → Integrations on the FlixBD site"
+    )
+    is_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable or disable auto-publishing to FlixBD"
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "FlixBD Settings"
+        verbose_name_plural = "FlixBD Settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"FlixBD Settings ({'enabled' if self.is_enabled else 'disabled'}) — {self.api_url}"
+

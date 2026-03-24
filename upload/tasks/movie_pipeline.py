@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
     """
-    Movie pipeline: Generate filenames → Parallel Download+Upload → Cleanup
+    Movie pipeline: Generate filenames -> Parallel Download+Upload -> FlixBD Publish -> Cleanup
     Each quality downloads in parallel, and uploads as soon as download finishes.
-    Supports resume — skips qualities already uploaded to Drive.
+    Supports resume -- skips qualities already uploaded to Drive.
+    File size is captured from the local file after download (before deletion).
     """
     title = movie_data.get("title", "Unknown")
 
@@ -61,9 +62,12 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
     drive_links = {}
+    # {quality: "2.15 GB"} -- populated from actual local file before deletion
+    file_sizes = {}
 
     def _process_one_quality(quality, urls, fname):
-        """Download → Clean → Upload → Delete one quality (runs in thread)."""
+        """Download -> Capture Size -> Clean -> Upload -> Delete one quality (runs in thread)."""
+        from upload.service.flixbd_client import format_file_size
         url_list = urls if isinstance(urls, list) else [urls]
 
         # Download
@@ -75,14 +79,22 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
         if not file_path:
             logger.warning(f"Could not download {quality}")
-            return quality, None
+            return quality, None, None
+
+        # Capture file size BEFORE any processing/deletion
+        try:
+            raw_size = os.path.getsize(file_path)
+            size_str = format_file_size(raw_size)
+            logger.debug(f"File size for {quality}: {size_str}")
+        except OSError:
+            size_str = None
 
         # Clean subtitles
         logger.info(f"Cleaning subtitles for {quality}")
         cleaned = process_downloaded_files({quality: file_path})
         file_path = cleaned.get(quality, file_path)
 
-        # Upload to Drive (each thread gets its OWN service — NOT thread-safe)
+        # Upload to Drive (each thread gets its OWN service -- NOT thread-safe)
         logger.info(f"Uploading {quality} to Drive")
         try:
             thread_service = DriveUploader._get_drive_service()
@@ -96,7 +108,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
 
-        return quality, link
+        return quality, link, size_str
 
     # Collect downloadable qualities (skip already-uploaded ones)
     to_process = []
@@ -115,10 +127,11 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     if not to_process:
         if drive_links:
-            # All already uploaded — mark as complete
+            # All already uploaded -- mark as complete and try FlixBD publish
             movie_data["download_links"] = drive_links
             save_task(media_task, status='completed', result=movie_data, error_message='')
             logger.info(f"Movie already fully uploaded: {title}")
+            _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes)
             return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
         logger.warning(f"No valid download links found for: {title}")
@@ -134,9 +147,11 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         }
 
         for future in as_completed(futures):
-            quality, link = future.result()
+            quality, link, size_str = future.result()
             if link:
                 drive_links[quality] = link
+                if size_str:
+                    file_sizes[quality] = size_str
                 # Save progress after each quality
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)
@@ -156,6 +171,54 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         return json.dumps({"status": "error", "message": "Pipeline failed"})
 
     save_task(media_task, status='completed', result=movie_data, error_message='')
-
     logger.info(f"Movie pipeline complete for: {title}")
+
+    # Step 5: Publish to FlixBD
+    _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes)
+
     return json.dumps({"status": "success", "type": "movie", "data": movie_data})
+
+
+def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
+    """
+    Add Drive links to FlixBD after upload completes.
+    - If site_content_id already set (from dup check): just add download links
+    - If not set: create movie on FlixBD first, then add download links
+    Never raises -- errors are logged only.
+    """
+    from upload.service import flixbd_client as fx
+
+    title = movie_data.get("title", "Unknown")
+
+    try:
+        fx._get_config()
+    except RuntimeError as e:
+        logger.info(f"FlixBD publish skipped: {e}")
+        return
+
+    try:
+        if media_task.site_content_id:
+            # Already found during dup check — skip search+create
+            content_id = media_task.site_content_id
+            logger.info(f"FlixBD: using pre-found id={content_id} for '{title}' (from dup check)")
+        else:
+            # Not found yet — create new
+            content_id = fx.create_movie(movie_data)
+
+        # Add download links with actual file sizes
+        fx.add_movie_download_links(
+            content_id=content_id,
+            drive_links=drive_links,
+            file_sizes=file_sizes,
+            movie_data=movie_data,
+        )
+
+        # Save site_content_id if it wasn't already
+        if not media_task.site_content_id:
+            media_task.site_content_id = content_id
+            media_task.save(update_fields=["site_content_id", "updated_at"])
+        logger.info(f"FlixBD: movie published -- site_content_id={content_id} title='{title}'")
+
+    except Exception as e:
+        logger.error(f"FlixBD publish failed for movie '{title}': {e}", exc_info=True)
+

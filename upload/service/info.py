@@ -16,10 +16,10 @@ def get_structured_output(llm_response: str) -> dict:
     return repair_json(llm_response)
 
 
-def detect_and_extract(html_content: str, db_match_info: dict = None) -> tuple:
+def detect_and_extract(html_content: str, db_match_info: dict = None, flixbd_results: list = None) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
-    If db_match_info provided, also performs duplicate check in same call.
+    If db_match_info or flixbd_results provided, also performs duplicate check in same call.
     Reads resolution settings from UploadSettings.
     Returns: (content_type, data, duplicate_check_or_None)
     """
@@ -34,14 +34,16 @@ def detect_and_extract(html_content: str, db_match_info: dict = None) -> tuple:
         extra_above=extra_above,
         max_extra=max_extra,
         db_match_info=db_match_info,
+        flixbd_results=flixbd_results,
     )
-    dup_tag = " + duplicate check" if db_match_info else ""
+    has_dup_ctx = bool(db_match_info or flixbd_results)
+    dup_tag = " + duplicate check" if has_dup_ctx else ""
     logger.info(f"Detecting + extracting{dup_tag} (res: below={extra_below}, above={extra_above}, max={max_extra})...")
 
     llm_response = LLMService.generate_completion(
         prompt=html_content,
         system_prompt=system_prompt,
-        purpose='extract+dup_check' if db_match_info else 'extract',
+        purpose='extract+dup_check' if has_dup_ctx else 'extract',
     )
 
     result = get_structured_output(llm_response)
@@ -181,19 +183,20 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
     return tvshow_data
 
 
-def get_content_info(url, on_progress=None, db_match_info=None, existing_result=None):
+def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=None, existing_result=None):
     """
     Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
     then resolves URLs. Scrapes only ONCE, then reuses the HTML.
-    
+
     Args:
         url: Page URL to scrape
-        on_progress: Optional callback(data) for incremental DB saves during 
+        on_progress: Optional callback(data) for incremental DB saves during
                      URL resolution. Called after each download item is resolved.
         db_match_info: Optional dict with existing DB match info for duplicate check.
+        flixbd_results: Optional list of FlixBD search results (max 5) for duplicate check.
         existing_result: Optional dict with previous task result containing
                          Drive links — used to skip resolving already-uploaded items.
-    
+
     Returns: (content_type, data, dup_result_or_None)
     """
     # Step 1: Scrape page content (only once)
@@ -204,7 +207,11 @@ def get_content_info(url, on_progress=None, db_match_info=None, existing_result=
         raise Exception("Failed to scrape page content from the given URL.")
 
     # Step 2: Single LLM call — detect type + extract data + optional duplicate check
-    content_type, data, dup_result = detect_and_extract(html_content, db_match_info=db_match_info)
+    content_type, data, dup_result = detect_and_extract(
+        html_content,
+        db_match_info=db_match_info,
+        flixbd_results=flixbd_results,
+    )
 
     # Save immediately after LLM extraction (before URL resolution)
     if on_progress:
@@ -223,4 +230,4 @@ def get_content_info(url, on_progress=None, db_match_info=None, existing_result=
         data = resolve_movie_links(data, existing_result=existing_result)
         logger.info("Movie info extraction complete.")
 
-    return content_type, data, dup_result
+    return content_type, data, dup_result
