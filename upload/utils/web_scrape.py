@@ -1,14 +1,21 @@
 """
 Web scraping service using pydoll (headless Chromium + Cloudflare auto-solve).
 
-Exact same logic as the old httpx version — only the HTTP client changed to pydoll.
+Browser Singleton Strategy (Approach 3 — Per-Worker Persistent Browser):
+  - One persistent asyncio event loop runs in a background daemon thread per worker.
+  - One Chrome instance is kept alive for the entire worker lifetime.
+  - Every fetch opens a NEW TAB, does the work, then closes that tab.
+  - Cloudflare cf_clearance cookie is solved ONCE and reused across all tabs/requests.
+  - On browser crash, it auto-restarts transparently (one retry).
+
+Public API is unchanged — all callers (WebScrapeService.*) work as before.
 """
 
 import asyncio
 import io
 import logging
 import re
-import sys
+import threading
 
 from markitdown import MarkItDown
 from selectolax.lexbor import LexborHTMLParser
@@ -48,27 +55,123 @@ def _chrome_options():
     return opts
 
 
-def _run(coro):
-    """Run async coroutine safely from sync Django/Django-Q context."""
-    if sys.platform == "win32":
-        loop = asyncio.ProactorEventLoop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-    else:
-        return asyncio.run(coro)
+# ── Per-Worker Browser Singleton ──────────────────────────────────────────────
+#
+# Architecture:
+#   One background daemon thread runs a persistent asyncio event loop.
+#   All async operations are submitted to that loop via run_coroutine_threadsafe().
+#   The Chrome browser is started once inside that loop and stays alive.
+#   Every fetch call:  new_tab() → navigate → get HTML → tab.close()
+#
+# Why this works across Django-Q tasks:
+#   Django-Q runs each task in the same worker process (ORM connection reuse etc.)
+#   Module-level globals persist for the worker's lifetime → browser stays alive.
+#   CF clearance cookie is in the browser's cookie store → no re-solve needed.
+
+_event_loop: asyncio.AbstractEventLoop | None = None
+_loop_thread: threading.Thread | None = None
+_browser = None                     # pydoll Chrome instance (shared)
+_browser_lock: asyncio.Lock | None = None   # async lock for init
 
 
-async def _fetch_html(url: str, settle: float = 2.0) -> str:
-    """Open Chrome, navigate to url, return page HTML."""
+def _get_persistent_loop() -> asyncio.AbstractEventLoop:
+    """Return (or create) the per-worker persistent asyncio event loop."""
+    global _event_loop, _loop_thread
+    if _event_loop is None or _event_loop.is_closed():
+        _event_loop = asyncio.new_event_loop()
+        _loop_thread = threading.Thread(
+            target=_event_loop.run_forever,
+            name="pydoll-worker-loop",
+            daemon=True,        # dies automatically when worker process exits
+        )
+        _loop_thread.start()
+        logger.info("[Browser] Persistent asyncio event loop started")
+    return _event_loop
+
+
+def _submit(coro, timeout: int = 180):
+    """Submit an async coroutine to the persistent loop and block until done."""
+    loop = _get_persistent_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
+
+
+async def _get_browser_lock() -> asyncio.Lock:
+    """Return (or create) the asyncio.Lock used to guard browser init."""
+    global _browser_lock
+    if _browser_lock is None:
+        _browser_lock = asyncio.Lock()
+    return _browser_lock
+
+
+async def _launch_browser():
+    """Start Chrome singleton and enable CF auto-solve on the warmup tab."""
+    global _browser
     from pydoll.browser.chromium import Chrome
-    async with Chrome(options=_chrome_options()) as browser:
-        tab = await browser.start()
-        await tab.enable_auto_solve_cloudflare_captcha()
-        await asyncio.wait_for(tab.go_to(url), timeout=30)
-        await asyncio.sleep(settle)
-        return await tab.page_source
+    b = Chrome(options=_chrome_options())
+    await b.__aenter__()                            # start Chrome process
+    warmup = await b.start()                        # open 1st (warmup) tab
+    await warmup.enable_auto_solve_cloudflare_captcha()
+    _browser = b
+    logger.info("[Browser] Chrome singleton started — CF auto-solve active on warmup tab")
+
+
+async def _ensure_browser():
+    """Start browser if not already running. Safe for concurrent callers."""
+    if _browser is not None:
+        return
+    lock = await _get_browser_lock()
+    async with lock:
+        if _browser is None:
+            await _launch_browser()
+
+
+async def _restart_browser():
+    """Kill crashed browser and restart cleanly."""
+    global _browser
+    logger.warning("[Browser] Restarting Chrome singleton after crash...")
+    if _browser is not None:
+        try:
+            await _browser.__aexit__(None, None, None)
+        except Exception:
+            pass
+        _browser = None
+    await _launch_browser()
+
+
+async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
+    """
+    Fetch HTML using the singleton browser.
+    Opens a new tab, navigates, waits, returns HTML, closes tab.
+    Auto-restarts browser once on crash.
+    """
+    await _ensure_browser()
+
+    for attempt in range(2):
+        try:
+            tab = await _browser.new_tab()
+            try:
+                await tab.enable_auto_solve_cloudflare_captcha()
+                await asyncio.wait_for(tab.go_to(url), timeout=30)
+                await asyncio.sleep(settle)
+                return await tab.page_source
+            finally:
+                try:
+                    await tab.close()
+                except Exception:
+                    pass
+
+        except Exception as exc:
+            if attempt == 0:
+                logger.warning(f"[Browser] Fetch failed: {exc} — restarting browser, retrying...")
+                await _restart_browser()
+            else:
+                raise
+
+
+def _fetch_html(url: str, settle: float = 2.0) -> str:
+    """Sync entry point: fetch HTML via singleton browser (blocks until done)."""
+    return _submit(_fetch_html_async(url, settle))
 
 
 # ── Public scraping service ───────────────────────────────────────────────────
@@ -89,7 +192,7 @@ class WebScrapeService:
         """Fetch page, extract selector block, return Markdown."""
         try:
             logger.info(f"[Scrape] get_page_content → {url}")
-            html = _run(_fetch_html(url, settle=3.0))
+            html = _fetch_html(url, settle=3.0)
             node = LexborHTMLParser(html).css_first(selector)
             if node:
                 raw_html = node.html
@@ -112,7 +215,7 @@ class WebScrapeService:
         """Fetch page, return h1 title text."""
         try:
             logger.info(f"[Scrape] cinefreak_title → {url}")
-            html = _run(_fetch_html(url, settle=3.0))
+            html = _fetch_html(url, settle=3.0)
             node = LexborHTMLParser(html).css_first("div.content-grid.container h1")
             if node:
                 title = node.text(strip=True)
@@ -130,14 +233,12 @@ class WebScrapeService:
     def get_url(url: str):
         """
         Follows window.location.href redirects and extracts R2/video links.
-        Exact same logic as the old httpx version.
 
         1. Navigate to url → find window.location.href → follow redirect
         2. Scan page for R2 links
         3. Scan page for video links
         4. Fallback: try /w/ and /gp/ variants
         """
-        # Reusable patterns (same as old code)
         pattern_r2    = r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
         pattern_video = r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
         pattern_loc   = r'window\.location\.href\s*=\s*["\'](.+?)["\']'
@@ -146,33 +247,31 @@ class WebScrapeService:
             logger.info(f"[Scrape] get_url → {url}")
 
             # 1. Initial request
-            html = _run(_fetch_html(url, settle=2.0))
+            html = _fetch_html(url, settle=2.0)
 
-            # Find window.location.href redirect (same as old code)
             match_loc = re.search(pattern_loc, html)
             target_url = url
 
             if match_loc:
                 target_url = match_loc.group(1)
                 logger.debug(f"[Scrape] Found redirect URL: {target_url}")
-                # Follow the redirect — give page more time to fully render R2 links
-                html = _run(_fetch_html(target_url, settle=4))
+                html = _fetch_html(target_url, settle=4)
             else:
                 logger.debug(f"[Scrape] No redirect found, checking current page: {url}")
 
-            # 2. Check for R2 links
+            # 2. R2 links
             matches = re.findall(pattern_r2, html)
             if matches:
                 logger.info(f"[Scrape] Found {len(matches)} R2 link(s)")
                 return matches
 
-            # 3. Check for video links
+            # 3. Video links
             video_matches = re.findall(pattern_video, html)
             if video_matches:
                 logger.info(f"[Scrape] Found {len(video_matches)} video link(s)")
                 return video_matches
 
-            # 4. Fallback: try /w/ and /gp/ variants (only when URL has /f/)
+            # 4. Fallback: /w/ and /gp/ variants
             logger.info(f"[Scrape] No R2/video links found. Trying fallback for: {target_url}")
             if "/f/" in target_url:
                 for fb_url in (
@@ -181,7 +280,7 @@ class WebScrapeService:
                 ):
                     try:
                         logger.debug(f"[Scrape] Checking fallback: {fb_url}")
-                        fb_html = _run(_fetch_html(fb_url, settle=5.0))
+                        fb_html = _fetch_html(fb_url, settle=5.0)
                         fb_matches = re.findall(pattern_video, fb_html)
                         if fb_matches:
                             logger.info(f"[Scrape] Found {len(fb_matches)} video link(s) in {fb_url}")
@@ -189,8 +288,7 @@ class WebScrapeService:
                     except Exception as ve:
                         logger.warning(f"[Scrape] Fallback failed for {fb_url}: {ve}")
 
-            # 5. Fallback: try domain/instant_{id} (for URLs without /f/)
-            #    e.g. https://example.com/abc123 → https://example.com/instant_abc123
+            # 5. Fallback: instant_{id}
             else:
                 from urllib.parse import urlparse
                 parsed = urlparse(target_url)
@@ -200,7 +298,7 @@ class WebScrapeService:
                     instant_url = f"{parsed.scheme}://{parsed.netloc}/instant_{last_id}"
                     try:
                         logger.debug(f"[Scrape] Checking instant fallback: {instant_url}")
-                        instant_html = _run(_fetch_html(instant_url, settle=5.0))
+                        instant_html = _fetch_html(instant_url, settle=5.0)
                         instant_matches = re.findall(pattern_video, instant_html)
                         if instant_matches:
                             logger.info(f"[Scrape] Found {len(instant_matches)} video link(s) via instant fallback: {instant_url}")
