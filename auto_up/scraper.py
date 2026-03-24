@@ -1,16 +1,116 @@
 """
 Scraper module for CineFreak homepage.
 
-Scrapes the homepage listing and returns structured data about each entry,
-including the raw title, cleaned name/year, and article URL.
+Uses pydoll (headless Chromium + Cloudflare auto-solve) to scrape the
+homepage listing and return structured data about each entry.
+
+HTML structure (confirmed):
+  <div class="card-grid">
+    <a href="URL" class="movie-card" aria-label="...">
+      ...
+      <div class="movie-card-content">
+        <h3 class="movie-card-title">Title text here</h3>
+      </div>
+    </a>
+  </div>
 """
 
+import asyncio
 import logging
-import httpx
+import sys
+
 from selectolax.lexbor import LexborHTMLParser
-from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+# Suppress pydoll internal CDP/websocket logs
+logging.getLogger("pydoll").setLevel(logging.WARNING)
+
+
+# ── Chrome options (shared with web_scrape.py) ────────────────────────────────
+
+def _chrome_options():
+    from pydoll.browser.options import ChromiumOptions
+    opts = ChromiumOptions()
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--headless=new")
+    opts.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+    )
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-translate")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--window-size=1280,720")
+    opts.start_timeout = 30
+    opts.block_notifications = True
+    opts.block_popups = True
+    opts.password_manager_enabled = False
+    return opts
+
+
+def _run(coro):
+    """Run async coroutine safely from sync Django/Django-Q context."""
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    else:
+        return asyncio.run(coro)
+
+
+async def _scrape_homepage_async(url: str, settle: float = 4.0) -> list[dict]:
+    """
+    Open Chrome, navigate to homepage, parse card-grid, return entries.
+
+    Selectors (from live HTML):
+      Container : div.card-grid
+      Each card : a.movie-card          (also has href + aria-label)
+      Title     : h3.movie-card-title   (inside each a.movie-card)
+    """
+    from pydoll.browser.chromium import Chrome
+
+    async with Chrome(options=_chrome_options()) as browser:
+        tab = await browser.start()
+        await tab.enable_auto_solve_cloudflare_captcha()
+        await asyncio.wait_for(tab.go_to(url), timeout=30)
+        await asyncio.sleep(settle)
+
+        html = await tab.page_source
+
+    # Parse with selectolax (fast, no JS needed at this point)
+    parser = LexborHTMLParser(html)
+
+    entries = []
+    for card in parser.css("div.card-grid a.movie-card"):
+        href = card.attrs.get("href", "").strip()
+        if not href:
+            continue
+
+        title_node = card.css_first("h3.movie-card-title")
+        if not title_node:
+            # Fallback: use aria-label (also contains full title)
+            aria = card.attrs.get("aria-label", "").strip()
+            raw_title = aria if aria else ""
+        else:
+            raw_title = title_node.text(strip=True)
+
+        if not raw_title:
+            continue
+
+        entries.append({
+            "raw_title": raw_title,
+            "url": href,
+        })
+
+    return entries
 
 
 class CineFreakScraper:
@@ -18,28 +118,13 @@ class CineFreakScraper:
 
     HOMEPAGE_URL = "https://cinefreak.net/"
 
-    DEFAULT_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/134.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-
-    # Retry config — escalating delays
-    MAX_RETRIES = 3
-    RETRY_DELAYS = [3, 8, 15]
-
-    # CSS selectors
-    ARTICLE_SELECTOR = "section.site-main div.container article"
-    TITLE_SELECTOR = "h3.entry-title a"
-
     @classmethod
     def scrape_homepage(cls) -> list[dict]:
         """
         Scrape the CineFreak homepage and return a list of entries.
+
+        Uses pydoll (headless Chromium + Cloudflare auto-solve) so that
+        Cloudflare JS challenges are handled automatically.
 
         Returns:
             List of dicts:
@@ -48,86 +133,11 @@ class CineFreakScraper:
                     "url": "https://cinefreak.net/some-movie/",
                 }
         """
-        proxy = getattr(settings, "SCRAPE_PROXY", None) or None
-
+        logger.info(f"Scraping CineFreak homepage: {cls.HOMEPAGE_URL}")
         try:
-            logger.info(f"Scraping CineFreak homepage: {cls.HOMEPAGE_URL}")
-
-            with httpx.Client(
-                headers=cls.DEFAULT_HEADERS,
-                proxy=proxy,
-                timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=10.0),
-                follow_redirects=True,
-            ) as client:
-                response = cls._request_with_retry(client, cls.HOMEPAGE_URL)
-                response.raise_for_status()
-
-                parser = LexborHTMLParser(response.text)
-                articles = parser.css(cls.ARTICLE_SELECTOR)
-
-                if not articles:
-                    logger.warning("No articles found on CineFreak homepage")
-                    return []
-
-                entries = []
-                for article in articles:
-                    link = article.css_first(cls.TITLE_SELECTOR)
-                    if not link:
-                        continue
-
-                    raw_title = link.text(strip=True)
-                    url = link.attrs.get("href", "")
-
-                    if not raw_title or not url:
-                        continue
-
-                    entries.append({
-                        "raw_title": raw_title,
-                        "url": url,
-                    })
-
-                logger.info(f"Scraped {len(entries)} entries from CineFreak homepage")
-                return entries
-
+            entries = _run(_scrape_homepage_async(cls.HOMEPAGE_URL))
+            logger.info(f"Scraped {len(entries)} entries from CineFreak homepage")
+            return entries
         except Exception as e:
             logger.error(f"Failed to scrape CineFreak homepage: {e}", exc_info=True)
             return []
-
-    @classmethod
-    def _request_with_retry(cls, client, url):
-        """HTTP request with automatic retries on transient failures."""
-        import time
-
-        last_error = None
-        for attempt in range(cls.MAX_RETRIES + 1):
-            try:
-                r = client.get(url)
-                if r.status_code >= 500:
-                    raise httpx.HTTPStatusError(
-                        f"Server error {r.status_code}",
-                        request=r.request,
-                        response=r,
-                    )
-                return r
-            except (
-                httpx.ConnectError,
-                httpx.TimeoutException,
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.CloseError,
-                httpx.ProxyError,
-                httpx.HTTPStatusError,
-            ) as e:
-                last_error = e
-                if attempt < cls.MAX_RETRIES:
-                    delay = cls.RETRY_DELAYS[attempt]
-                    logger.warning(
-                        f"Scrape request failed (attempt {attempt + 1}/{cls.MAX_RETRIES + 1}): {e}. "
-                        f"Retrying in {delay}s..."
-                    )
-                    time.sleep(delay)
-                else:
-                    logger.error(
-                        f"Scrape request failed after {cls.MAX_RETRIES + 1} attempts: {e}"
-                    )
-        raise last_error
