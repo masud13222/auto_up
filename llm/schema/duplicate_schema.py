@@ -19,7 +19,7 @@ duplicate_schema = {
         },
         "reason": {
             "type": "string",
-            "description": "Short explanation for the decision"
+            "description": "MUST follow this format exactly: 'Extracted: [480p, 720p, 1080p]. Existing: [720p]. Missing: [480p, 1080p]. Action: update because 480p and 1080p are not on the site yet.' Always list all three sets before stating your action."
         },
         "detected_new_type": {
             "type": "string",
@@ -52,68 +52,84 @@ You will receive JSON with:
 - `existing_type`: "movie" or "tvshow"
 - `existing_episode_count`: Number of download items in existing (TV shows only)
 - `existing_episodes`: Per-episode resolution info like ["Episode 01: 480p,720p,1080p", "Season 5 Episode 73-80: 720p,1080p"] (TV shows only)
-  → This tells you EXACTLY which episodes have which resolutions. Null/empty resolution values are already filtered.
 
 ## STEP 1: Detect New Content Type
-First, from `new_website_title`, detect if the new content is a **movie** or **tvshow**.
+From `new_website_title`, detect if the new content is a **movie** or **tvshow**.
 - TV show signs: "Season", "Episode", "S01", "E01", "Complete Season", "Web Series", "Series"
 - Movie signs: "Full Movie", "Movie", "Film", no season/episode references
 - Set `detected_new_type` accordingly
 
 ## STEP 2: Type Mismatch Check
-If `detected_new_type` ≠ `existing_type`:
+If `detected_new_type` is different from `existing_type`:
 - If SAME title/name → the existing entry was MISCLASSIFIED → action="replace"
-  - Example: existing="Sa Re Ga Ma Pa Legends" (movie) vs new="Sa Re Ga Ma Pa Legends Season 22" (tvshow) → REPLACE (same content, wrong classification)
 - If DIFFERENT title/name → genuinely different content → action="process"
 
-## STEP 3: Same-Type Comparison (only if types match OR already decided)
+## STEP 3: Resolution Comparison — FOLLOW ALL 4 SUB-STEPS EXACTLY
 
-### → "skip" (is_duplicate=true)
-- SAME media, SAME quality, and NO missing resolutions AND NO new episodes
-- Existing already has all resolutions AND all episode labels mentioned in new title
-- Nothing new to download
+**Step 3a — List EXTRACTED resolutions:**
+From `new_website_title`, identify all resolutions mentioned (e.g. "480p, 720p & 1080p").
+Write them out explicitly: Extracted = [480p, 720p, 1080p]
 
-### → "update" (is_duplicate=true)
-- SAME media BUT has improvements that can be ADDED WITHOUT replacing existing data:
-  - Missing resolutions (e.g. existing has ["720p","1080p"], new title mentions 480p too → missing_resolutions=["480p"])
-  - NEW episode labels NOT found in existing_episodes → has_new_episodes=true
-- **IMPORTANT for TV shows**: When a new URL contains a DIFFERENT episode batch (e.g. existing has ep 1-72, new URL has ep 73-80), this is ALWAYS "update" with has_new_episodes=true.
-  - The new episodes will be APPENDED to the existing ones — existing Drive links are NEVER touched.
-  - NEVER use "replace" for this case.
+**Step 3b — List EXISTING resolutions:**
+Copy `existing_resolutions` from the input JSON exactly.
+Write them out explicitly: Existing = [720p]
 
-### → "replace" (is_duplicate=true)
-- SAME media BUT quality is UPGRADED:
-  - Existing is low quality (CAM, HDCAM, HDTS, DVDRip, DVDScr, HC-HDRip) and new is better (WEB-DL, BluRay, WEBRip)
-  - Complete re-download is needed because old quality is unacceptable
-- This replaces the ENTIRE existing entry
-- ALSO use "replace" when existing_type ≠ detected_new_type BUT same title/year (misclassification)
+**Step 3c — Check EACH extracted resolution ONE BY ONE:**
+For every item in Extracted, ask: "Is this in Existing?"
+Write out each check explicitly:
+- 480p in Existing? NO → MISSING
+- 720p in Existing? YES → already there
+- 1080p in Existing? NO → MISSING
+Missing = [480p, 1080p]
 
-### → "process" (is_duplicate=false)
-- DIFFERENT media entirely
-- Different movie/show name
-- Different season of the same show (e.g. Season 4 vs Season 5)
-- Year mismatch → usually different content
+**Step 3d — Decision:**
+- If Missing is EMPTY → action = "skip"
+- If Missing has ANY items → action = "update", missing_resolutions = Missing list
+- NEVER return "skip" if Missing is not empty
+
+## STEP 4: Episode Comparison (TV shows only)
+- Compare episode labels in existing_episodes vs what the new title suggests
+- New episode batch (e.g. existing ep 1-72, new ep 73-80) → has_new_episodes=true, action="update"
+- Same episode range → has_new_episodes=false
+- If you can't tell, default has_new_episodes=true for safety
+- NEVER use "replace" for new episode batches
+
+## Action Definitions:
+
+**"skip"** — Nothing new. Same title+year AND every resolution in Extracted already exists in Existing. Even ONE missing resolution = NOT a skip.
+
+**"update"** — Same title+year but at least one resolution is missing OR new episodes found. Set missing_resolutions to the missing list.
+
+**"replace"** — Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay). OR type mismatch with same title.
+
+**"process"** — Completely different content (different title, year, or season).
 
 ## Quality Hierarchy (lowest to highest):
 CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX
 
-## How to detect missing resolutions from title:
-- If new_website_title mentions "480p, 720p & 1080p" and existing_resolutions=["720p","1080p"]
-  → missing_resolutions=["480p"]
-- If new_website_title mentions "720p & 1080p" and existing_resolutions=["720p","1080p"]
-  → no missing, likely "skip"
+## COMMON WRONG REASONING (never do this):
+WRONG: "Existing has 720p, new title also has 720p → resolutions match → skip"
+WHY WRONG: Ignores 480p and 1080p that are also in the new title. You MUST check ALL extracted resolutions individually.
 
-## How to detect new episodes:
-- Compare episode labels in existing_episodes vs what the new title suggests.
-- If existing has "Season 5 Episode 1-72" but new title mentions "Season 5 Episode 73-80" → has_new_episodes=true, action="update"
-- If existing episodes and new title describe the SAME episode range → has_new_episodes=false
-- If you can't tell from the title alone, default has_new_episodes=true for safety.
-- NEVER use "replace" when the only difference is a new episode batch.
+WRONG: "Content already exists with the same resolutions → skip"
+WHY WRONG: Database may only have 720p while the new title lists 480p+720p+1080p. Any resolution in the new title that is not in existing_resolutions is missing → "update".
+
+## CORRECT EXAMPLE:
+Input: new_website_title has "480p, 720p & 1080p", existing_resolutions = ["720p"]
+Step 3a: Extracted = [480p, 720p, 1080p]
+Step 3b: Existing = [720p]
+Step 3c: 480p in Existing? NO → MISSING. 720p in Existing? YES. 1080p in Existing? NO → MISSING. Missing = [480p, 1080p]
+Step 3d: Missing is NOT empty → action = "update", missing_resolutions = ["480p", "1080p"]
+Reason: "Extracted: [480p, 720p, 1080p]. Existing: [720p]. Missing: [480p, 1080p]. Action: update because 480p and 1080p are not on the site yet."
+
+## The `reason` field MUST follow this format exactly:
+"Extracted: [list]. Existing: [list]. Missing: [list]. Action: [action] because [explanation]."
+Always show all three lists. Never write a vague sentence.
 
 ## Important:
 - Be STRICT about name matching
 - Year mismatch = different content → "process"
-- Same show, same season, new episode batch = "update" with has_new_episodes=true (NEVER "replace")
+- SAME movie with more resolutions than the database = "update", NOT "process", NOT "skip"
 - Return ONLY valid JSON — no markdown, no backticks
 
 ## JSON Schema:

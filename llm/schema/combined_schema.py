@@ -81,40 +81,71 @@ If the Existing DB Match section is missing, you should treat FlixBD download_li
 ```"""
 
     return f"""## ADDITIONAL TASK: Duplicate Check
-Decide if this URL is already fully covered — using **Existing DB Match** (our MediaTask) and/or **FlixBD Site Match** (published on the target site). Treat them as two independent signals; either can mean "already there".
+Decide if this URL is already fully covered by existing content.
 {db_section}{flixbd_section}
-### Duplicate Check Rules:
-- If **only** FlixBD Site Match is present (no Existing DB Match JSON block): compare ONLY to FlixBD.
-  Use each FlixBD row's **`resolution_keys`** (canonical: 480p, 720p, 1080p, …) as what the site **already publishes as download entries**. Ignore marketing text in the scraped page title — it often lists qualities that are **not** yet on FlixBD.
-  Do **not** write "database" in `reason` unless the Existing DB Match section is actually present.
-- If **only** Existing DB Match is present: use `existing_resolutions` from that JSON.
-- If **both** are present: require BOTH to be satisfied before **skip** (nothing new for either).
+### Which existing source to compare against:
+- If **only** FlixBD Site Match is present (no Existing DB Match block): compare ONLY to FlixBD `resolution_keys`.
+- If **only** Existing DB Match is present: compare to `existing_resolutions`.
+- If **both** are present: both must be fully covered before you can say "skip".
+- Do NOT look at the scraped page title to determine what the site already has. The page title lists what the SOURCE offers, not what is already on FlixBD/DB.
+- Do NOT write "database" in `reason` unless the Existing DB Match section is actually present above.
 
-### Movie — FlixBD and/or DB: use this decision procedure (mandatory)
-Let **E** = set of keys in your extracted `data.download_links` where the value is a **non-empty** URL (string or list of URLs).
-Let **S** = for each existing source in context, the set of resolution keys already stored:
-  - From DB: `existing_resolutions` entries.
-  - From FlixBD: **`resolution_keys` only** from the FlixBD JSON (not title, not `qualities` free text unless it parses to the same keys — prefer `resolution_keys`).
+### MOVIE — Step-by-step resolution comparison (YOU MUST FOLLOW ALL 4 STEPS):
 
-For **one** existing movie match (same title+year, same content):
-- If **E ⊆ S** (every extracted quality already exists on the site/DB) → **skip**.
-- If **E - S** is non-empty (at least one extracted quality is missing from the site/DB) → **update**, `is_duplicate`: true, fill **`missing_resolutions`** with those keys (e.g. `["480p","1080p"]`). **Never skip** in this case.
-- Same movie with missing qualities is **not** **process** (process = different title/year or unrelated content).
+**Step 1 — List your EXTRACTED resolutions:**
+Look at the `download_links` you extracted. Write down every resolution key that has a real, non-empty download URL.
+Example: Extracted = [480p, 720p, 1080p]
 
-**Worked example (FlixBD-only):** FlixBD top row has `"resolution_keys": ["720p"]`. You extracted `download_links` with URLs for `480p`, `720p`, `1080p`. Then **E** = {{480p,720p,1080p}}, **S** = {{720p}} → missing on site = {{480p,1080p}} → **update**, `missing_resolutions`: ["480p","1080p"], reason must mention FlixBD only lists 720p.
+**Step 2 — List the EXISTING resolutions on the site/DB:**
+- From FlixBD: copy the `resolution_keys` array from the JSON above.
+- From DB: copy `existing_resolutions`.
+Example: Existing = [720p]
 
-**"skip"** — Nothing useful left to upload.
-  - For movies: same title+year AND **E ⊆ S** for all relevant existing sources per rules above.
-  - For TV shows: same title+year AND no new episodes AND no missing per-episode resolutions vs existing.
+**Step 3 — Check each extracted resolution one by one:**
+Go through your Extracted list. For each one, ask: "Is this resolution already in the Existing list?"
+- 480p in Existing? NO — this is MISSING
+- 720p in Existing? YES — already there
+- 1080p in Existing? NO — this is MISSING
+Write down the missing ones. Example: Missing = [480p, 1080p]
 
-**"update"** — Same title/year (same film/show) BUT **E - S** is non-empty: at least one extracted resolution with a real URL is missing from DB and/or FlixBD `resolution_keys`.
-  - Set `missing_resolutions` to the sorted list of missing keys.
-  - IMPORTANT: Only count resolutions that ACTUALLY have download link values in your extraction — NOT text in the page title alone.
+**Step 4 — Make your decision:**
+- If Missing list is EMPTY (every extracted resolution is already in Existing) → action = **"skip"**
+- If Missing list has ANY items → action = **"update"**, and set `missing_resolutions` to the Missing list
+- NEVER return "skip" when the Missing list is not empty. Even one missing resolution means "update".
 
-**"replace"** — SAME content BUT quality upgrade needed:
-  - Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay)
+### COMMON MISTAKES (DO NOT MAKE THESE):
 
-**"process"** — DIFFERENT content entirely (different title, year, or season). **Not** for "same movie, more resolutions on source page than on FlixBD" — that is **update**.
+WRONG: "FlixBD has 720p, page also has 720p, so resolutions are the same → skip"
+WHY WRONG: This ignores 480p and 1080p that were also extracted with URLs. You must check ALL extracted resolutions, not just the ones that match.
+
+WRONG: "Content already exists on the site with the same resolutions → skip"
+WHY WRONG: FlixBD only has 720p but you extracted 480p, 720p, and 1080p. Two resolutions are missing. This is "update", not "skip".
+
+### CORRECT EXAMPLE:
+FlixBD `resolution_keys`: ["720p"]. You extracted download_links with URLs for 480p, 720p, 1080p.
+Step 1: Extracted = [480p, 720p, 1080p]
+Step 2: Existing = [720p]
+Step 3: 480p missing? YES. 720p missing? NO. 1080p missing? YES. Missing = [480p, 1080p]
+Step 4: Missing is NOT empty → action = "update", missing_resolutions = ["480p", "1080p"]
+Reason: "Extracted: [480p, 720p, 1080p]. Existing: [720p]. Missing: [480p, 1080p]. Action: update because 480p and 1080p are not on the site yet."
+
+### TV SHOW duplicate rules:
+Same title+year, no new episodes, and no missing per-episode resolutions → "skip".
+New episodes or missing resolutions on any episode → "update".
+
+### Action definitions:
+
+**"skip"** — Nothing new to upload. Same movie with same title+year, AND every single extracted resolution already exists on the site/DB. Even ONE missing resolution means this is NOT a skip.
+
+**"update"** — Same movie/show, but at least one extracted resolution (with a real URL) is not yet on the site/DB. Set `missing_resolutions` to the list of resolutions that are missing. Only count resolutions that have actual download URLs in your extraction, not just text in the page title.
+
+**"replace"** — Same content but quality upgrade: existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new source is better quality (WEB-DL/BluRay). Full re-download needed.
+
+**"process"** — Different content entirely (different title, different year, different season). NOT for "same movie but more resolutions" — that is always "update".
+
+### The `reason` field MUST follow this format:
+"Extracted: [list]. Existing: [list]. Missing: [list]. Action: [action] because [explanation]."
+This is mandatory. Do not write a vague sentence. Always show the three lists first.
 
 ### Duplicate Check Output:
 Add a `duplicate_check` field to your response:
