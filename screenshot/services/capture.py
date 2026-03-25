@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 
 def capture_screenshots_for_publish(video_path: str, name_prefix: str) -> list[str]:
     """
-    From the largest downloaded (cleaned) video: ffmpeg grabs JPEG frames, Pillow compresses
-    so **all frames together ≤ 5 MiB**. Upload each via Telegram sendDocument, return Worker
+    From the largest downloaded (cleaned) video: ffmpeg writes JPEG frames (direct mjpeg,
+    optional hwaccel), Pillow only if re-encode needed so **all frames together ≤ 5 MiB**.
+    Upload each via Telegram sendDocument, return Worker
     URLs for FlixBD ``screen_shots_url``.
     """
     cfg = ScreenshotSettings.get_solo()
