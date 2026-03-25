@@ -81,24 +81,21 @@ If the Existing DB Match section is missing, you should treat FlixBD download_li
 ```"""
 
     return f"""## ADDITIONAL TASK: Duplicate Check
-You ALSO need to decide if this content is a duplicate of an existing database entry.
+Decide if this URL is already fully covered — using **Existing DB Match** (our MediaTask) and/or **FlixBD Site Match** (published on the target site). Treat them as two independent signals; either can mean "already there".
 {db_section}{flixbd_section}
 ### Duplicate Check Rules:
-Compare the EXTRACTED data (not just the title) against the existing DB entry if provided.
-If the Existing DB Match section is missing, use the FlixBD Site Match download_links as the existing source.
+- If **only** FlixBD Site Match is present (no Existing DB Match JSON block): compare ONLY to FlixBD.
+  Use each FlixBD row's **`resolution_keys`** (canonical: 480p, 720p, 1080p, …) as what the site already publishes.
+  Do **not** write "database" in `reason` unless the Existing DB Match section is actually present.
+- If **only** Existing DB Match is present: use `existing_resolutions` from that JSON.
+- If **both** are present: require BOTH to be satisfied before **skip** (nothing new for either).
 
-**"skip"** — SAME content, SAME or fewer resolutions/episodes. Nothing new to add.
-  - For movies: same title+year AND extracted download_links has NO resolutions missing from existing
-    (existing resolutions come from Existing DB Match OR, if missing, from FlixBD download_links.qualities)
-  - For TV shows: same title+year AND no new episodes AND no missing per-episode resolutions
-    (existing episode/season ranges come from Existing DB Match OR, if missing, from FlixBD download_links)
+**"skip"** — Nothing useful left to upload.
+  - For movies: same title+year AND every resolution key in **extracted** `download_links` that has a **non-empty** URL is already present in the existing source (`existing_resolutions` and/or FlixBD `resolution_keys`).
+  - For TV shows: same title+year AND no new episodes AND no missing per-episode resolutions vs existing.
 
-**"update"** — SAME content BUT has NEW data to add:
-  - Missing resolutions: your extracted data has resolutions the existing entry lacks
-    (existing resolutions come from Existing DB Match OR, if missing, from FlixBD download_links.qualities)
-  - New episodes: your extracted data has episodes not in existing
-    (existing episode ranges come from Existing DB Match OR, if missing, from FlixBD download_links)
-  - IMPORTANT: Only report resolutions that ACTUALLY have download links in your extraction, NOT just mentioned in the title
+**"update"** — Same title/year (same film/show) BUT the page has at least one **extracted** resolution (real URL in `download_links`) that the existing source does **not** have (DB and/or FlixBD `resolution_keys`).
+  - IMPORTANT: Only count resolutions that ACTUALLY have download link values in your extraction — NOT text in the page title alone.
 
 **"replace"** — SAME content BUT quality upgrade needed:
   - Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay)

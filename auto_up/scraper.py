@@ -31,8 +31,8 @@ class CineFreakScraper:
         """
         Scrape the CineFreak homepage and return a list of entries.
 
-        Reuses the shared browser singleton (web_scrape._fetch_html).
-        CF session is already solved from previous requests — no re-challenge.
+        Reuses the shared browser singleton via ``web_scrape._fetch_html`` (Turnstile handling
+        is pydoll's ``expect_and_bypass_cloudflare_captcha`` around each navigation — same as upload pipeline).
 
         Returns:
             List of dicts:
@@ -41,7 +41,8 @@ class CineFreakScraper:
                     "url": "https://cinefreak.net/some-movie/",
                 }
         """
-        # Import here to reuse the singleton browser — no separate Chrome launch
+        # Import here to reuse the singleton browser — same path as all other scrapes:
+        # web_scrape._fetch_html uses pydoll's expect_and_bypass_cloudflare_captcha + go_to.
         from upload.utils.web_scrape import _fetch_html
 
         logger.info(f"Scraping CineFreak homepage: {cls.HOMEPAGE_URL}")

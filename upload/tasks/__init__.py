@@ -20,6 +20,39 @@ logger = logging.getLogger(__name__)
 _FLIXBD_LLM_MAX_RESULTS = 3
 
 
+def _normalize_flixbd_resolution_keys(qualities: list) -> list[str]:
+    """
+    Map API strings like 'HD 720p, HD 1080p' to canonical keys ['720p', '1080p'] for LLM comparison
+    against extracted download_links keys (480p, 720p, 1080p).
+    """
+    if not qualities:
+        return []
+    blob = " ".join(str(q) for q in qualities)
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in re.finditer(r"\b(480|720|1080|1440|2160)\s*p\b", blob, re.I):
+        key = f"{m.group(1)}p"
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    if re.search(r"\b4\s*k\b", blob, re.I) and "2160p" not in seen:
+        seen.add("2160p")
+        out.append("2160p")
+    order = {"480p": 0, "720p": 1, "1080p": 2, "1440p": 3, "2160p": 4}
+    return sorted(out, key=lambda k: order.get(k, 99))
+
+
+def _result_strip_non_drive_download_links(data: dict) -> dict:
+    """For skip-without-upload rows: do not persist generate.php / host links as if final."""
+    if not data:
+        return data
+    out = dict(data)
+    dl = out.get("download_links")
+    if isinstance(dl, dict):
+        out["download_links"] = {k: v for k, v in dl.items() if is_drive_link(v)}
+    return out
+
+
 def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
     """
     Search FlixBD for existing content by name.
@@ -72,12 +105,15 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
                 elif isinstance(qualities_raw, list):
                     qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
 
+                resolution_keys = _normalize_flixbd_resolution_keys(qualities)
+
                 results.append({
                     "id": item["id"],
                     "title": item_title,
                     "match_score": score,
                     "download_links": download_links,
                     "qualities": qualities,
+                    "resolution_keys": resolution_keys,
                 })
 
         # Sort by score so LLM sees best matches first; cap count for token budget
@@ -388,7 +424,26 @@ def process_media_task(task_pk: int) -> str:
 
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
 
-            if action == "skip":
+            # LLM often writes "database" while only FlixBD context existed — enforce coverage in code.
+            if (
+                action == "skip"
+                and not existing_task
+                and not resume_result
+                and flixbd_results
+                and content_type == "movie"
+            ):
+                top = flixbd_results[0] or {}
+                ext_keys = [k for k, v in (data.get("download_links") or {}).items() if v]
+                site_keys = set(top.get("resolution_keys") or [])
+                if ext_keys and not all(k in site_keys for k in ext_keys):
+                    logger.warning(
+                        f"Overriding LLM skip: FlixBD site resolutions {sorted(site_keys)} "
+                        f"do not cover extracted {ext_keys} — continuing full pipeline"
+                    )
+                    action = "process"
+                    dup_result = None
+
+            if dup_result and action == "skip":
                 if resume_result:
                     # Reused task — restore to completed with the merged data (preserving Drive links)
                     logger.info(f"DUPLICATE SKIP: {reason} — restoring reused task to completed (pk={media_task.pk})")
@@ -410,19 +465,28 @@ def process_media_task(task_pk: int) -> str:
                                     cand_id = None
 
                         if cand_id is not None:
-                            media_task.site_content_id = int(cand_id)
+                            sid = int(cand_id)
                             web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
+                            # Do not store generate.php etc. as final artifacts; keep metadata + FlixBD id on row.
+                            result_skip = _result_strip_non_drive_download_links(data)
+                            result_skip = {
+                                **result_skip,
+                                "skipped_without_upload": True,
+                                "skipped_duplicate_source": "flixbd",
+                                "flixbd_site_content_id": sid,
+                            }
                             save_task(
                                 media_task,
                                 status="completed",
                                 content_type=content_type,
                                 title=title,
                                 website_title=web_title,
-                                result=data,
+                                result=result_skip,
                                 error_message="",
+                                site_content_id=sid,
                             )
                             logger.info(
-                                f"DUPLICATE SKIP: {reason} — saved FlixBD id={media_task.site_content_id} to DB (pk={media_task.pk})"
+                                f"DUPLICATE SKIP: {reason} — saved FlixBD id={sid} to DB (pk={media_task.pk})"
                             )
                         else:
                             # New task — safe to delete
