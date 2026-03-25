@@ -297,6 +297,13 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                                 best_q,
                                 bsz,
                             )
+                        else:
+                            logger.warning(
+                                "No screen_shots_url from S%s %s — keyframes failed or "
+                                "Telegram/Worker settings incomplete (see screenshot logs).",
+                                season_num,
+                                item_label,
+                            )
                 elif cleaned_batch and is_dup_update:
                     logger.debug(
                         "Duplicate update: skipping screenshot capture for S%s %s",

@@ -179,6 +179,12 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             movie_data["screen_shots_url"] = ss_urls
             save_task(media_task, result=movie_data)
             logger.info(f"Set {len(ss_urls)} screenshot URL(s) from largest local file")
+        else:
+            logger.warning(
+                "No screen_shots_url for %s — keyframes failed, screenshots disabled, "
+                "or Telegram/Worker settings incomplete (check logs above).",
+                title,
+            )
     elif paths_ok and is_dup_update:
         logger.info("Duplicate update: skipping screenshot capture (keeping existing screen_shots_url)")
 

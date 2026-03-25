@@ -18,12 +18,13 @@ logger = logging.getLogger(__name__)
 
 def capture_screenshots_for_publish(video_path: str, name_prefix: str) -> list[str]:
     """
-    From the largest downloaded (cleaned) video: extract 6 WebP frames (total ≤ 5 MiB),
-    upload each to Telegram, return public Worker URLs for FlixBD screen_shots_url.
+    From the largest downloaded (cleaned) video: ffmpeg grabs JPEG frames, Pillow compresses
+    so **all frames together ≤ 5 MiB**. Upload each via Telegram sendDocument, return Worker
+    URLs for FlixBD ``screen_shots_url``.
     """
     cfg = ScreenshotSettings.get_solo()
     if not cfg.is_enabled:
-        logger.info("Screenshot capture skipped (disabled in admin).")
+        logger.info("Screenshot capture skipped (disabled in Screenshot settings).")
         return []
     if not (
         cfg.worker_base_url
@@ -31,7 +32,10 @@ def capture_screenshots_for_publish(video_path: str, name_prefix: str) -> list[s
         and cfg.telegram_chat_id
         and cfg.crypto_phrase
     ):
-        logger.warning("Screenshot capture skipped: incomplete ScreenshotSettings.")
+        logger.warning(
+            "Screenshot capture skipped: set worker_base_url, telegram_bot_token, "
+            "telegram_chat_id, and crypto_phrase in Admin → Screenshot settings."
+        )
         return []
 
     if not video_path or not os.path.isfile(video_path):

@@ -89,7 +89,10 @@ def upload_document_get_file_path(
     except Exception as e:
         logger.error("Telegram getFile failed: %s", e)
         return None
-    return finfo.get("file_path")
+    tpath = finfo.get("file_path")
+    if tpath:
+        logger.info("Telegram sendDocument ok: %s (%d bytes)", filename, len(raw))
+    return tpath
 
 
 def worker_image_url(

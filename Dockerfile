@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DJANGO_SETTINGS_MODULE=config.settings
 
-# Step 1: aria2 + ffmpeg + Chrome prerequisites
+# Step 1: aria2 + ffmpeg (JPEG screenshots) + Chrome prerequisites; Pillow compresses frames in-app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     aria2 ffmpeg wget gnupg ca-certificates \
     libx11-xcb1 libdbus-glib-1-2 \
