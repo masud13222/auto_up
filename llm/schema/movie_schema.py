@@ -29,7 +29,6 @@ movie_schema = {
         "rating": {"type": "number", "description": "Numeric rating only (e.g. 7.5)"},
         "plot": {"type": "string", "description": "The plot of the movie"},
         "poster_url": {"type": "string", "description": "The poster url of the movie"},
-        "screen_shots_url": {"type": "array", "items": {"type": "string"}, "description": "All screenshot image URLs from the page"},
         "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern across pages."},
         "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with a click-worthy CTA. Include movie name, year, quality, language naturally."},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, year, quality variants, language, dubbed, genre, 'download', 'watch online'."},
@@ -74,7 +73,6 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - Return ONLY a valid JSON object — no markdown, no backticks, no extra text
 - Follow the JSON schema strictly
 - For missing fields, omit them entirely (do not return null or empty strings)
-- Extract ALL image URLs for screenshots (look for img tags, data-src, lazy-load attributes etc.)
 - For poster_url: find the main/primary movie poster image
 - For rating: extract numeric value only (e.g. 7.5, not "7.5/10")
 - For year: integer only (e.g. 2026, not "2026")

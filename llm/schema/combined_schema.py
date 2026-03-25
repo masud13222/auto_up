@@ -233,7 +233,6 @@ Each download item belongs to exactly ONE of these types. Classification is base
 ## COMMON RULES (both movie and tvshow):
 - Return ONLY a valid JSON object — NO markdown, NO backticks, NO extra text
 - For missing fields, omit them entirely (do not return null or empty strings)
-- Extract ALL image URLs for screenshots
 - Remove ALL references to these site names from ALL fields (including website_movie_title and website_tvshow_title): {_blocked_names_str}
 - Always prefer x264 encodes when available
 - **languages**: extract as array of strings e.g. ["Hindi", "English"]. Omit if not found.
@@ -256,18 +255,18 @@ Examples:
 - **meta_description**: Compelling meta description (140-160 chars). Natural language with a CTA. Include content name, year, quality, language.
 - **meta_keywords**: 10-15 comma-separated relevant keywords. Include name variations, year, quality variants, language, "download", "watch online", genre.
 
-- ALL download URLs MUST be ABSOLUTE (start with https://).
-- **HOW to make a relative URL absolute**: ONLY prepend the site domain. NOTHING else changes.
-- NEVER decode, transform, resolve, shorten, or alter any URL in any way.
-- NEVER decode base64, URL-encoding, or any encoded parameters — even if `?id=` value looks like base64, leave it **exactly as-is**.
-- NEVER replace a URL with its decoded/resolved/redirected destination.
-- ⚠️ ENCODED RELATIVE URL — follow this exactly:
-  - HTML has: `/generate.php?id=aHR0cHM6Ly9uZXc1...`
-  - ✅ CORRECT: `https://siteurl.com/generate.php?id=aHR0cHM6Ly9uZXc1...`
-  - The ONLY allowed modification: prepend site domain to relative URLs. Everything else stays byte-for-byte identical.
-- **If `generate.php` is not present in the HTML**: use the best available direct download link you can find (e.g. a direct file URL or redirect link from the page). Do NOT leave it empty.
-- VIOLATION OF THE NO-DECODE RULE = ALL DOWNLOADS FAIL. This is the single most important rule.
 
+- ALL download URLs MUST be ABSOLUTE (start with https://).
+- Relative URL → prepend source domain only. Nothing else changes.
+
+### ⚠️ URL COPY RULE — NEVER decode, resolve, or alter any URL.
+Ask: "Does this URL stay on the source site with an encoded parameter?"
+- YES (gateway) → copy intact. Never decode the parameter value.
+  ✅ `/generate.php?id=aHR0cHM6...` → `https://source.com/generate.php?id=aHR0cHM6...`
+  ❌ WRONG: `https://actualdomain.com/file/abc123` (this is the decoded destination)
+- NO (direct link) → copy exactly as-is.
+Encoded parameters are server-side tokens — decoding them breaks the link.
+If no gateway URL exists: use the best direct download link found on the page.
 
 {dup_section}
 ## Response Format:

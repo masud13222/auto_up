@@ -8,6 +8,7 @@ from upload.service.info import get_structured_output
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
+from screenshot.services.capture import capture_screenshots_for_publish
 from llm.services import LLMService
 from llm.schema import FILENAME_SYSTEM_PROMPT
 from django.conf import settings
@@ -19,10 +20,9 @@ logger = logging.getLogger(__name__)
 
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
     """
-    Movie pipeline: Generate filenames -> Parallel Download+Upload -> FlixBD Publish -> Cleanup
-    Each quality downloads in parallel, and uploads as soon as download finishes.
-    Supports resume -- skips qualities already uploaded to Drive.
-    File size is captured from the local file after download (before deletion).
+    Movie pipeline: filenames (LLM) -> parallel download+subtitle clean -> optional keyframe
+    screenshots (skipped on duplicate update) -> parallel Drive upload -> FlixBD publish.
+    Skips qualities already on Drive; duplicate update only downloads missing_resolutions.
     """
     title = movie_data.get("title", "Unknown")
 
@@ -36,6 +36,11 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     # Save: LLM extraction complete + resolved links
     save_task(media_task, result=movie_data)
     logger.info(f"Saved LLM extraction result for: {title}")
+
+    # Screenshots: keyframes on first publish; duplicate **update** keeps merged URLs (see _merge_drive_links)
+    is_dup_update = bool(dup_info and dup_info.get("action") == "update")
+    if not is_dup_update:
+        movie_data.pop("screen_shots_url", None)
 
     # Step 2: Generate filenames via LLM
     logger.info(f"Generating filenames for movie: {title}")
@@ -76,12 +81,11 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 f"(others already on target site)"
             )
 
-    def _process_one_quality(quality, urls, fname):
-        """Download -> Capture Size -> Clean -> Upload -> Delete one quality (runs in thread)."""
+    def _download_and_clean(quality, urls, fname):
+        """Download + subtitle clean only (runs in thread)."""
         from upload.service.flixbd_client import format_file_size
         url_list = urls if isinstance(urls, list) else [urls]
 
-        # Download
         file_path = None
         for url in url_list:
             file_path = Downloader.download(url, fname, sub_folder=safe_title)
@@ -92,7 +96,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             logger.warning(f"Could not download {quality}")
             return quality, None, None
 
-        # Capture file size BEFORE any processing/deletion
         try:
             raw_size = os.path.getsize(file_path)
             size_str = format_file_size(raw_size)
@@ -100,12 +103,15 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         except OSError:
             size_str = None
 
-        # Clean subtitles
         logger.info(f"Cleaning subtitles for {quality}")
         cleaned = process_downloaded_files({quality: file_path})
         file_path = cleaned.get(quality, file_path)
+        return quality, file_path, size_str
 
-        # Upload to Drive (each thread gets its OWN service -- NOT thread-safe)
+    def _upload_and_delete(quality, file_path):
+        """Upload to Drive + delete local (runs in thread)."""
+        if not file_path or not os.path.exists(file_path):
+            return quality, None
         logger.info(f"Uploading {quality} to Drive")
         try:
             thread_service = DriveUploader._get_drive_service()
@@ -113,13 +119,10 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         except Exception as e:
             logger.error(f"Upload failed for {quality}: {e}")
             link = None
-
-        # Delete local file
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
-
-        return quality, link, size_str
+        return quality, link
 
     # Collect downloadable qualities (skip already-uploaded ones)
     to_process = []
@@ -157,21 +160,44 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No valid download links found (after link resolution)')
         return json.dumps({"status": "error", "message": "No valid links found"})
 
-    # Step 4: Parallel download + upload
-    logger.info(f"Starting parallel processing: {[q for q, _, _ in to_process]}")
+    # Step 4a: Parallel download + subtitle clean
+    logger.info(f"Starting parallel download+clean: {[q for q, _, _ in to_process]}")
     with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
         futures = {
-            executor.submit(_process_one_quality, q, u, f): q
+            executor.submit(_download_and_clean, q, u, f): q
             for q, u, f in to_process
+        }
+        results = []
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    paths_ok = [(q, p, s) for q, p, s in results if p]
+    if paths_ok and not is_dup_update:
+        _, best_path, _ = max(paths_ok, key=lambda x: os.path.getsize(x[1]))
+        ss_urls = capture_screenshots_for_publish(best_path, f"{safe_title}-ss")
+        if ss_urls:
+            movie_data["screen_shots_url"] = ss_urls
+            save_task(media_task, result=movie_data)
+            logger.info(f"Set {len(ss_urls)} screenshot URL(s) from largest local file")
+    elif paths_ok and is_dup_update:
+        logger.info("Duplicate update: skipping screenshot capture (keeping existing screen_shots_url)")
+
+    # Step 4b: Parallel upload + delete
+    logger.info(f"Starting parallel upload: {[q for q, _, _ in to_process]}")
+    with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
+        futures = {
+            executor.submit(_upload_and_delete, q, p): q
+            for q, p, s in results
+            if p
         }
 
         for future in as_completed(futures):
-            quality, link, size_str = future.result()
+            quality, link = future.result()
+            size_str = next((s for q, p, s in results if q == quality), None)
             if link:
                 drive_links[quality] = link
                 if size_str:
                     file_sizes[quality] = size_str
-                # Save progress after each quality
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)
                 logger.info(f"Saved Drive link for {quality}")

@@ -31,11 +31,6 @@ tvshow_schema = {
         "rating":      {"type": "number", "description": "Numeric only, e.g. 7.5"},
         "plot":        {"type": "string"},
         "poster_url":  {"type": "string", "description": "Main poster image URL"},
-        "screen_shots_url": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "All screenshot image URLs found on page"
-        },
         "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern."},
         "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with CTA. Include show name, year/season, quality, language."},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, season info, quality variants, language, 'download', 'watch online'."},
@@ -104,7 +99,6 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 
 ## GENERAL RULES:
 - Omit missing fields entirely (no null, no empty strings)
-- Extract ALL screenshot image URLs from the page
 - Strip these site names from ALL fields (including website_tvshow_title): {_blocked_names_str}
 - Prefer x264 encodes when multiple encode options exist
 - rating: numeric only (e.g. 7.5) | year: integer only (e.g. 2024)

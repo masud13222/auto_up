@@ -15,6 +15,7 @@ HTML structure (confirmed from live page):
 """
 
 import logging
+from urllib.parse import urljoin
 
 from selectolax.lexbor import LexborHTMLParser
 
@@ -43,7 +44,7 @@ class CineFreakScraper:
         """
         # Import here to reuse the singleton browser — same path as all other scrapes:
         # web_scrape._fetch_html uses pydoll's expect_and_bypass_cloudflare_captcha + go_to.
-        from upload.utils.web_scrape import _fetch_html
+        from upload.utils.web_scrape import _fetch_html, normalize_http_url
 
         logger.info(f"Scraping CineFreak homepage: {cls.HOMEPAGE_URL}")
         try:
@@ -57,8 +58,13 @@ class CineFreakScraper:
 
         for card in parser.css("div.card-grid a.movie-card"):
             href = card.attrs.get("href", "").strip()
-            if not href:
+            if not href or href.startswith("#"):
                 continue
+            low = href.lower()
+            if low.startswith(("javascript:", "mailto:", "tel:", "data:")):
+                continue
+            # Relative paths → absolute (MediaTask / pydoll expect navigable URLs)
+            full_url = normalize_http_url(urljoin(cls.HOMEPAGE_URL, href))
 
             title_node = card.css_first("h3.movie-card-title")
             if title_node:
@@ -72,7 +78,7 @@ class CineFreakScraper:
 
             entries.append({
                 "raw_title": raw_title,
-                "url": href,
+                "url": full_url,
             })
 
         logger.info(f"Scraped {len(entries)} entries from CineFreak homepage")

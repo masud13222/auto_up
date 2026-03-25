@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'upload',
     'auto_up',
     'settings',
+    'screenshot',
     'admin_panel',
     'credentials',
 

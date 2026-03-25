@@ -14,3 +14,5 @@ downloads/
 staticfiles/
 .vscode/
 .cursor/
+**/.dev.vars
+node_modules/

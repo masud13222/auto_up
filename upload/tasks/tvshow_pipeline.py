@@ -8,6 +8,7 @@ from upload.service.info import get_structured_output
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
+from screenshot.services.capture import capture_screenshots_for_publish
 from llm.services import LLMService
 from llm.schema import TVSHOW_FILENAME_SYSTEM_PROMPT, tvshow_filename_schema
 from django.conf import settings
@@ -50,6 +51,10 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     # Save: LLM extraction complete
     save_task(media_task, result=tvshow_data)
     logger.info(f"Saved LLM extraction result for TV show: {title}")
+
+    is_dup_update = bool(dup_info and dup_info.get("action") == "update")
+    if not is_dup_update:
+        tvshow_data.pop("screen_shots_url", None)
 
     # Step 2: Generate filenames via LLM
     logger.info(f"Generating filenames for TV show: {title}")
@@ -177,6 +182,9 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     uploaded_count = 0
     total_items = len(all_items)
 
+    # Largest video seen so far (bytes) — refresh series screenshots from bigger files only
+    tvshow_ss_best_size = 0
+
     # {(season_num, label, quality): "2.1 GB"} -- collected across all items
     file_sizes_map = {}
 
@@ -250,6 +258,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                 # -- Phase 2: As each download completes --
                 #   FFmpeg: SEQUENTIAL (blocks in main thread)
                 #   Upload: PARALLEL (fire to background thread)
+                cleaned_batch = []
                 for future in as_completed(download_futures):
                     try:
                         quality, file_path, size_str = future.result()
@@ -260,14 +269,42 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                     if not file_path:
                         continue
 
-                    # Store size before ffmpeg touches the file
                     if size_str:
                         size_staging[quality] = size_str
 
-                    # FFmpeg -- SEQUENTIAL (one at a time)
                     file_path = _clean_one(quality, file_path)
+                    cleaned_batch.append((quality, file_path, size_str))
 
-                    # Upload -- PARALLEL (background thread)
+                if cleaned_batch and not is_dup_update:
+                    best_q, best_path, _ = max(
+                        cleaned_batch, key=lambda x: os.path.getsize(x[1])
+                    )
+                    bsz = os.path.getsize(best_path)
+                    if bsz > tvshow_ss_best_size:
+                        tvshow_ss_best_size = bsz
+                        ss_urls = capture_screenshots_for_publish(
+                            best_path,
+                            f"{safe_title}-S{season_num}-ss",
+                        )
+                        if ss_urls:
+                            tvshow_data["screen_shots_url"] = ss_urls
+                            save_task(media_task, result=tvshow_data)
+                            logger.info(
+                                "Updated series screenshots (%d URLs) from S%s %s %s (%s bytes)",
+                                len(ss_urls),
+                                season_num,
+                                item_label,
+                                best_q,
+                                bsz,
+                            )
+                elif cleaned_batch and is_dup_update:
+                    logger.debug(
+                        "Duplicate update: skipping screenshot capture for S%s %s",
+                        season_num,
+                        item_label,
+                    )
+
+                for quality, file_path, size_str in cleaned_batch:
                     uf = upload_executor.submit(
                         _upload_one, quality, file_path,
                         season_folder_id, season_num, item_label
@@ -283,9 +320,9 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                     continue
                 if link:
                     uploaded_resolutions[quality] = link
-                    # Save size for FlixBD payload
-                    if size_staging.get(quality):
-                        file_sizes_map[(season_num, item_label, quality)] = size_staging[quality]
+                    # Use q from submit (source of truth) — matches size_staging keys
+                    if size_staging.get(q):
+                        file_sizes_map[(season_num, item_label, q)] = size_staging[q]
 
         if uploaded_resolutions:
             uploaded_count += 1

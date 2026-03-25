@@ -5,7 +5,7 @@ import re
 from upload.models import MediaTask
 from upload.service.info import get_content_info
 from upload.service.duplicate_checker import _search_db, _get_existing_resolutions
-from upload.utils.web_scrape import WebScrapeService
+from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from upload.utils.drive_file_delete import cleanup_old_drive_files
 from llm.utils.name_extractor import extract_title_info
 
@@ -81,7 +81,16 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
             logger.debug(f"FlixBD search: HTTP {resp.status_code} for '{name}'")
             return []
 
-        raw_results = resp.json().get("data", [])
+        try:
+            payload = resp.json()
+        except ValueError:
+            snippet = (resp.text or "")[:300].replace("\n", " ")
+            logger.warning(
+                f"FlixBD search: invalid JSON for '{name}' (HTTP {resp.status_code}): {snippet!r}"
+            )
+            return []
+
+        raw_results = payload.get("data", [])
         if not raw_results:
             logger.info(f"FlixBD search: no results for '{name}'")
             return []
@@ -208,6 +217,14 @@ def _merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
         if k not in ("seasons",)      # don't overwrite seasons with new_data's seasons
     })
     result["seasons"] = merged_season_list
+
+    # Same as _merge_drive_links: new scrape must not wipe Telegram/Worker screenshot URLs
+    old_ss = existing_result.get("screen_shots_url")
+    if isinstance(old_ss, list) and old_ss:
+        cur = result.get("screen_shots_url")
+        if not isinstance(cur, list) or not cur:
+            result["screen_shots_url"] = list(old_ss)
+
     return result
 
 
@@ -253,6 +270,13 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
                     logger.debug(f"Preserved existing drive link for S{snum} {label} {res}")
 
             new_item["resolutions"] = new_res
+
+    # Preserve Telegram/Worker screenshot URLs — no re-capture on duplicate update
+    old_ss = old_result.get("screen_shots_url")
+    if isinstance(old_ss, list) and old_ss:
+        cur = new_data.get("screen_shots_url")
+        if not isinstance(cur, list) or not cur:
+            new_data["screen_shots_url"] = list(old_ss)
 
     return new_data
 
@@ -352,7 +376,12 @@ def process_media_task(task_pk: int) -> str:
     save_task(media_task, status='processing')
 
     try:
-        url = media_task.url
+        url = normalize_http_url((media_task.url or "").strip())
+        if url != (media_task.url or "").strip():
+            media_task.url = url
+            media_task.save(update_fields=["url", "updated_at"])
+            logger.info(f"Normalized task URL saved: {url}")
+
         logger.info(f"Task started for URL: {url}")
 
         # ── Step 0: Title fetch + DB search (no LLM call) ──

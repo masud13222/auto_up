@@ -10,9 +10,10 @@ Browser Singleton Strategy (Approach 3 — Per-Worker Persistent Browser):
 Cloudflare Turnstile (pydoll docs — Behavioral Captcha Bypass, recommended pattern):
   Each navigation uses ``async with tab.expect_and_bypass_cloudflare_captcha(...): await tab.go_to(url)``.
   If Turnstile appears, pydoll waits (up to ``time_to_wait_captcha``) and performs the checkbox
-  interaction; if no Turnstile shadow root appears in time, pydoll skips — no custom site logic here.
-  We do not use per-tab ``enable_auto_solve_cloudflare_captcha()`` (that caused WebSocket HTTP 500
-  noise on some hosts in practice).
+  interaction; if no Turnstile shadow root appears in time, pydoll logs an ERROR and continues —
+  the page often still loads (no challenge, or challenge not in shadow DOM). This is expected noise,
+  not necessarily a failed scrape. We do not use per-tab ``enable_auto_solve_cloudflare_captcha()``
+  (that caused WebSocket HTTP 500 noise on some hosts in practice).
 
 Public API is unchanged — all callers (WebScrapeService.*) work as before.
 """
@@ -25,6 +26,12 @@ import threading
 
 from markitdown import MarkItDown
 from selectolax.lexbor import LexborHTMLParser
+
+from upload.utils.web_scrape_html import (
+    absolutize_resource_urls,
+    normalize_http_url,
+    truncate_markdown_for_llm,
+)
 
 logger = logging.getLogger(__name__)
 _markitdown = MarkItDown()
@@ -190,19 +197,24 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
 
 def _fetch_html(url: str, settle: float = 2.0) -> str:
     """Sync entry point: fetch HTML via singleton browser (blocks until done)."""
-    return _submit(_fetch_html_async(url, settle))
+    normalized = normalize_http_url(url)
+    if normalized != url:
+        logger.info(f"[Browser] Normalized URL for navigation: {url!r} -> {normalized!r}")
+    return _submit(_fetch_html_async(normalized, settle))
 
 
 # ── Public scraping service ───────────────────────────────────────────────────
 
 class WebScrapeService:
+    normalize_http_url = staticmethod(normalize_http_url)
 
     @staticmethod
     def clean_html(html: str) -> str:
         """Converts HTML to LLM-friendly Markdown. Collapses blank lines."""
         buf = io.BytesIO(html.encode("utf-8"))
         md = _markitdown.convert_stream(buf, file_extension=".html").text_content
-        return re.sub(r"\n{3,}", "\n\n", md).strip()
+        md = re.sub(r"\n{3,}", "\n\n", md).strip()
+        return truncate_markdown_for_llm(md)
 
     # ── 1. get_page_content ───────────────────────────────────────────────────
 
@@ -215,6 +227,7 @@ class WebScrapeService:
             node = LexborHTMLParser(html).css_first(selector)
             if node:
                 raw_html = node.html
+                raw_html = absolutize_resource_urls(raw_html, url)
                 cleaned = WebScrapeService.clean_html(raw_html)
                 logger.info(
                     f"[Scrape] Extracted {len(raw_html):,} → {len(cleaned):,} chars "

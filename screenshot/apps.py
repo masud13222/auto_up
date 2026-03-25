@@ -1,0 +1,7 @@
+from django.apps import AppConfig
+
+
+class ScreenshotConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "screenshot"
+    verbose_name = "Screenshot (Telegram host)"
