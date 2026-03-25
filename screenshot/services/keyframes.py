@@ -2,8 +2,9 @@
 Movie / video screenshots: ffmpeg extracts JPEG frames; Pillow re-compresses so the **bundle
 total stays ≤ 5 MiB** (simple quality + optional resize loop).
 
-FFmpeg: fast seek with ``-ss`` before ``-i``, ``-vframes 1``, ``scale`` + ``-q:v`` (mjpeg).
-Pillow: ``JPEG`` save with ``quality`` + ``optimize=True`` until under cap.
+FFmpeg: ``-ss`` before ``-i``, one frame; mjpeg with ``-strict -1``, ``-threads 1``, and
+``format=yuv420p`` after scale (fixes limited-range YUV + encoder init on some 1080p MKV).
+Fallback: PNG frame then Pillow writes JPEG if mjpeg still fails.
 """
 
 from __future__ import annotations
@@ -59,12 +60,21 @@ def _ffmpeg_jpeg_frame(
     max_width: int = 1280,
     q_v: int = 6,
 ) -> bool:
-    """One JPEG still; ``-ss`` before ``-i`` for faster seek."""
-    cmd = [
+    """
+    One JPEG still. mjpeg can fail on limited-range YUV / threaded init; we relax strictness
+    and normalize pixels; PNG+Pillow fallback matches what works in practice for NF WEB-DL MKV.
+    """
+    mw = max_width
+    q = str(max(2, min(q_v, 31)))
+    vf = f"scale='min({mw},iw)':-1,setsar=1,format=yuv420p"
+
+    cmd_mjpeg = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        "1",
         "-ss",
         f"{t_sec:.3f}",
         "-i",
@@ -75,17 +85,63 @@ def _ffmpeg_jpeg_frame(
         "-vframes",
         "1",
         "-vf",
-        f"scale='min({max_width},iw)':-1",
+        vf,
+        "-c:v",
+        "mjpeg",
         "-q:v",
-        str(max(2, min(q_v, 31))),
+        q,
+        "-strict",
+        "-1",
         "-y",
         out_path,
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        r = subprocess.run(cmd_mjpeg, capture_output=True, text=True, timeout=180)
+        if r.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            return True
         if r.returncode != 0:
-            logger.warning("ffmpeg jpeg frame failed: %s", r.stderr[:300])
+            logger.debug("ffmpeg mjpeg frame fallback (stderr): %s", r.stderr[:400])
+
+        tmp_png = out_path + ".frame.png"
+        cmd_png = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            "1",
+            "-ss",
+            f"{t_sec:.3f}",
+            "-i",
+            video_path,
+            "-an",
+            "-sn",
+            "-dn",
+            "-vframes",
+            "1",
+            "-vf",
+            f"scale='min({mw},iw)':-1",
+            "-c:v",
+            "png",
+            "-y",
+            tmp_png,
+        ]
+        r2 = subprocess.run(cmd_png, capture_output=True, text=True, timeout=180)
+        if r2.returncode != 0 or not os.path.isfile(tmp_png):
+            logger.warning("ffmpeg jpeg+png frame failed: %s", (r2.stderr or r.stderr)[:400])
             return False
+        try:
+            with Image.open(tmp_png) as im:
+                im.convert("RGB").save(out_path, format="JPEG", quality=92, optimize=True)
+            logger.info(
+                "Keyframe at %.2fs: mjpeg failed (YUV/encoder); used PNG extract → JPEG (Pillow)",
+                t_sec,
+            )
+        finally:
+            try:
+                os.unlink(tmp_png)
+            except OSError:
+                pass
         return os.path.isfile(out_path) and os.path.getsize(out_path) > 0
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         logger.error("ffmpeg error: %s", e)
