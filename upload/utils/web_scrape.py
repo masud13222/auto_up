@@ -225,7 +225,7 @@ class WebScrapeService:
         """Fetch page, extract selector block, return Markdown."""
         try:
             logger.info(f"[Scrape] get_page_content → {url}")
-            html = _fetch_html(url, settle=3.0)
+            html = _fetch_html(url, settle=5.0)
             node = LexborHTMLParser(html).css_first(selector)
             if node:
                 raw_html = node.html
@@ -281,7 +281,7 @@ class WebScrapeService:
             logger.info(f"[Scrape] get_url → {url}")
 
             # 1. Initial request
-            html = _fetch_html(url, settle=2.0)
+            html = _fetch_html(url, settle=4.0)
 
             match_loc = re.search(pattern_loc, html)
             target_url = url
@@ -289,7 +289,7 @@ class WebScrapeService:
             if match_loc:
                 target_url = match_loc.group(1)
                 logger.debug(f"[Scrape] Found redirect URL: {target_url}")
-                html = _fetch_html(target_url, settle=4)
+                html = _fetch_html(target_url, settle=4.0)
             else:
                 logger.debug(f"[Scrape] No redirect found, checking current page: {url}")
 
@@ -314,7 +314,7 @@ class WebScrapeService:
                 ):
                     try:
                         logger.debug(f"[Scrape] Checking fallback: {fb_url}")
-                        fb_html = _fetch_html(fb_url, settle=5.0)
+                        fb_html = _fetch_html(fb_url, settle=6.0)
                         fb_matches = re.findall(pattern_video, fb_html)
                         if fb_matches:
                             logger.info(f"[Scrape] Found {len(fb_matches)} video link(s) in {fb_url}")
