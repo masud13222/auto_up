@@ -545,7 +545,15 @@ def process_media_task(task_pk: int) -> str:
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
         # ── Step 2: Route to appropriate pipeline ──
-        dup_info = {"action": action, "existing_task": existing_task if action != "process" else None}
+        dup_info = {
+            "action": action,
+            "existing_task": existing_task if action != "process" else None,
+        }
+        if dup_result:
+            mr = dup_result.get("missing_resolutions")
+            if isinstance(mr, list) and mr:
+                dup_info["missing_resolutions"] = mr
+
         if content_type == "tvshow":
             return process_tvshow_pipeline(media_task, data, dup_info=dup_info)
         else:

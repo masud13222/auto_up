@@ -65,6 +65,17 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     # {quality: "2.15 GB"} -- populated from actual local file before deletion
     file_sizes = {}
 
+    # Duplicate "update": LLM lists only qualities missing on FlixBD/DB — skip re-downloading the rest.
+    missing_only: set[str] | None = None
+    if dup_info and dup_info.get("action") == "update":
+        mr = dup_info.get("missing_resolutions")
+        if isinstance(mr, list) and mr:
+            missing_only = {str(x).strip().lower() for x in mr if x is not None and str(x).strip()}
+            logger.info(
+                f"Duplicate update mode: will only download/upload resolutions {sorted(missing_only)} "
+                f"(others already on target site)"
+            )
+
     def _process_one_quality(quality, urls, fname):
         """Download -> Capture Size -> Clean -> Upload -> Delete one quality (runs in thread)."""
         from upload.service.flixbd_client import format_file_size
@@ -115,11 +126,19 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     for quality in download_links:
         urls = download_links.get(quality)
         fname = filenames.get(quality)
+        qkey = str(quality)
 
         # Skip if already uploaded to Drive (resume support)
         if is_drive_link(urls):
             logger.info(f"Skipping {quality}: already uploaded to Drive")
             drive_links[quality] = urls
+            continue
+
+        if missing_only is not None and qkey.lower() not in missing_only:
+            logger.info(
+                f"Skipping {quality}: duplicate update — not in missing_resolutions "
+                f"(already published on target site)"
+            )
             continue
 
         if urls and fname:
