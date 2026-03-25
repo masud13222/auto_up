@@ -175,6 +175,9 @@ Q_CLUSTER = {
     'ack_failures': True,  # Mark failed tasks as done (don't auto-retry)
     'max_attempts': 1,     # Don't retry failed tasks
     'orm': 'default',      # Use Django ORM as broker (no Redis needed)
+    # Successful task rows: keep at most this many (oldest dropped). 0 = keep all, -1 = keep none.
+    # Failed tasks are NOT pruned by this setting; clear those from admin or a custom job if needed.
+    'save_limit': 250,
 }
 
 # ───────────────────────────────────────────────

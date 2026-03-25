@@ -5,7 +5,7 @@ class ScrapeRun(models.Model):
     """
     Tracks each auto-scrape execution.
     One record per scheduled/manual run.
-    Auto-cleaned after 7 days.
+    Auto-cleaned after a few days (see ``LOG_RETENTION_DAYS`` in ``auto_up.tasks``).
     """
     STATUS_CHOICES = [
         ('running', 'Running'),
@@ -40,7 +40,7 @@ class ScrapeItem(models.Model):
     Used for:
     - Daily limit enforcement (max 2 process per URL per day)
     - Audit trail / debugging
-    - Auto-cleaned after 7 days.
+    - Auto-cleaned after a few days (see ``LOG_RETENTION_DAYS`` in ``auto_up.tasks``).
     """
     ACTION_CHOICES = [
         ('process', 'Queued for Processing'),

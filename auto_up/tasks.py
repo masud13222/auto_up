@@ -9,7 +9,7 @@ Main entry point: auto_scrape_and_queue()
 - Sends everything to LLM for filtering
 - Queues approved items via process_media_task
 - Logs everything to ScrapeRun + ScrapeItem models
-- Auto-cleans logs older than 7 days
+- Auto-cleans logs older than LOG_RETENTION_DAYS (see below)
 """
 
 import logging
@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 # Maximum times the same URL can be sent to process in a single day
 DAILY_PROCESS_LIMIT = 2
 
-# Days to keep scrape logs
-LOG_RETENTION_DAYS = 7
+# Days to keep ScrapeRun / ScrapeItem logs in admin
+LOG_RETENTION_DAYS = 3
 
 
 # Match upload pipeline: cap FlixBD rows in auto_up LLM payload (token savings).
@@ -142,7 +142,7 @@ def _get_daily_process_count(url: str) -> int:
 def auto_scrape_and_queue() -> str:
     """
     Full auto-scrape pipeline:
-    1. Cleanup old logs (>7 days)
+    1. Cleanup old logs (older than ``LOG_RETENTION_DAYS``)
     2. Scrape CineFreak homepage
     3. Daily limit check: max 2 process per URL per day
     4. For each remaining entry: extract clean name + year
