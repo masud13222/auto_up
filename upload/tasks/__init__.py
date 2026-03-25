@@ -424,25 +424,6 @@ def process_media_task(task_pk: int) -> str:
 
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
 
-            # LLM often writes "database" while only FlixBD context existed — enforce coverage in code.
-            if (
-                action == "skip"
-                and not existing_task
-                and not resume_result
-                and flixbd_results
-                and content_type == "movie"
-            ):
-                top = flixbd_results[0] or {}
-                ext_keys = [k for k, v in (data.get("download_links") or {}).items() if v]
-                site_keys = set(top.get("resolution_keys") or [])
-                if ext_keys and not all(k in site_keys for k in ext_keys):
-                    logger.warning(
-                        f"Overriding LLM skip: FlixBD site resolutions {sorted(site_keys)} "
-                        f"do not cover extracted {ext_keys} — continuing full pipeline"
-                    )
-                    action = "process"
-                    dup_result = None
-
             if dup_result and action == "skip":
                 if resume_result:
                     # Reused task — restore to completed with the merged data (preserving Drive links)
