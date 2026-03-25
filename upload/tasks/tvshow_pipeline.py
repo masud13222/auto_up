@@ -195,7 +195,16 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         to_process = []
         already_uploaded = {}
         # size_staging: {quality: size_str} -- sizes captured during download
-        size_staging = {}
+        # Pre-populate from persisted item["sizes"] so already-uploaded resolutions
+        # carry their sizes forward into file_sizes_map and the merged item["sizes"].
+        item_in_data = next(
+            (i for s in tvshow_data.get("seasons", [])
+             if s.get("season_number") == season_num
+             for i in s.get("download_items", [])
+             if i.get("type") == item_type and i.get("label") == item_label),
+            {}
+        )
+        size_staging = dict(item_in_data.get("sizes", {}))  # pre-load persisted sizes
 
         for quality in resolutions:
             urls = resolutions.get(quality)
@@ -213,9 +222,14 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             if already_uploaded:
                 logger.info(f"Skipping S{season_num} {item_label}: already uploaded to Drive")
                 uploaded_count += 1
+                # Still populate file_sizes_map so FlixBD publish has sizes
+                for q, size in size_staging.items():
+                    if size:
+                        file_sizes_map[(season_num, item_label, q)] = size
             else:
                 logger.warning(f"No downloadable resolutions for S{season_num} {item_label}")
             continue
+
 
         logger.info(f"[{idx}/{total_items}] Processing S{season_num} {item_label}: {[q for q, _, _ in to_process]}")
 
@@ -276,12 +290,17 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         if uploaded_resolutions:
             uploaded_count += 1
 
-            # Update tvshow_data with drive links
+            # Update tvshow_data with drive links + sizes
             for season in tvshow_data.get("seasons", []):
                 if season.get("season_number") == season_num:
                     for item in season.get("download_items", []):
                         if item.get("type") == item_type and item.get("label") == item_label:
                             item["resolutions"] = uploaded_resolutions
+                            # Persist sizes into result JSON
+                            if size_staging:
+                                existing_sizes = item.get("sizes", {})
+                                existing_sizes.update(size_staging)
+                                item["sizes"] = existing_sizes
                             break
 
             save_task(media_task, result=tvshow_data)
@@ -334,6 +353,9 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
         else:
             # Not found yet — create new series
             content_id = fx.create_series(tvshow_data)
+            if not content_id:
+                logger.error(f"FlixBD: create_series returned None for '{title}' — skipping publish")
+                return
 
         # Add download links
         fx.add_series_download_links(
@@ -348,6 +370,7 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
             media_task.site_content_id = content_id
             media_task.save(update_fields=["site_content_id", "updated_at"])
         logger.info(f"FlixBD: series published -- site_content_id={content_id} title='{title}'")
+
 
     except Exception as e:
         logger.error(f"FlixBD publish failed for series '{title}': {e}", exc_info=True)

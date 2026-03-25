@@ -15,14 +15,14 @@ from .tvshow_pipeline import process_tvshow_pipeline
 logger = logging.getLogger(__name__)
 
 
-def _fetch_flixbd_results(name: str) -> list:
+def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
     """
     Search FlixBD for existing content by name.
-    Returns max 5 results as a list of {id, title} dicts.
+    Returns max 5 results (score >= min_score) as {id, title, match_score} dicts.
     Never raises — returns [] on any error or if FlixBD is not configured.
 
     Results are passed to LLM as context so it can make better duplicate decisions.
-    We do NOT save site_content_id here — that happens only after pipeline creates content.
+    We do NOT save site_content_id here — that happens only after pipeline completes.
     """
     try:
         from upload.service import flixbd_client as fx
@@ -30,9 +30,7 @@ def _fetch_flixbd_results(name: str) -> list:
         import re
         from rapidfuzz import fuzz
 
-        fx._get_config()  # Raises RuntimeError if not configured/disabled
-
-        api_url, api_key = fx._get_config()
+        api_url, api_key = fx._get_config()  # single call — raises RuntimeError if disabled
         endpoint = f"{api_url}/api/v1/search"
         params = {"q": name, "type": "all", "per_page": 5, "page": 1}
 
@@ -57,15 +55,17 @@ def _fetch_flixbd_results(name: str) -> list:
             year_match = _year_re.search(item_title)
             clean = item_title[:year_match.start()].strip() if year_match else item_title
             score = fuzz.ratio(name_lower, clean.lower())
-            results.append({
-                "id": item["id"],
-                "title": item_title,
-                "match_score": score,
-            })
+            if score >= min_score:  # skip low-relevance results — don't confuse LLM
+                results.append({
+                    "id": item["id"],
+                    "title": item_title,
+                    "match_score": score,
+                })
 
         # Sort by score so LLM sees best matches first
         results.sort(key=lambda x: x["match_score"], reverse=True)
-        logger.info(f"FlixBD search: {len(results)} result(s) for '{name}' (top score={results[0]['match_score'] if results else 0})")
+        top = results[0]["match_score"] if results else 0
+        logger.info(f"FlixBD search: {len(results)} result(s) (score>={min_score}) for '{name}' (top={top})")
         return results
 
     except RuntimeError as e:
@@ -74,6 +74,7 @@ def _fetch_flixbd_results(name: str) -> list:
     except Exception as e:
         logger.warning(f"FlixBD search error for '{name}': {e}")
         return []
+
 
 
 def _merge_new_episodes(existing_result: dict, new_data: dict) -> dict:

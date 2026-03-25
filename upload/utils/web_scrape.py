@@ -25,6 +25,8 @@ _markitdown = MarkItDown()
 
 # Suppress pydoll internal CDP/websocket logs
 logging.getLogger("pydoll").setLevel(logging.WARNING)
+logging.getLogger("pydoll.browser.tab").setLevel(logging.ERROR)  # CF bypass WebSocket noise
+logging.getLogger("pydoll.connection.connection_handler").setLevel(logging.ERROR)
 
 
 # ── Chrome options ────────────────────────────────────────────────────────────
@@ -144,6 +146,11 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
     Fetch HTML using the singleton browser.
     Opens a new tab, navigates, waits, returns HTML, closes tab.
     Auto-restarts browser once on crash.
+
+    NOTE: enable_auto_solve_cloudflare_captcha() is NOT called per-tab.
+    It was called once on the warmup tab during browser startup, which stores
+    the cf_clearance cookie browser-wide. Calling it per-tab causes
+    WebSocket HTTP 500 errors on non-CF sites (e.g. new5.cinecloud.site).
     """
     await _ensure_browser()
 

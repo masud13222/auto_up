@@ -13,6 +13,7 @@ All methods raise on fatal errors. Callers should catch and log.
 """
 
 import logging
+import re
 import httpx
 from llm.schema.blocked_names import SITE_NAME
 
@@ -96,7 +97,6 @@ def search(title: str, content_type: str = "all") -> dict | None:
         # 1st pass: exact title match
         # Site titles are stored as "Inception 2010 WEB-DL Hindi - {SITE_NAME}"
         # We extract the title portion by finding a 4-digit year token
-        import re
         _year_re = re.compile(r'\b(19|20)\d{2}\b')
 
         for item in results:
@@ -328,30 +328,32 @@ def add_series_download_links(
                 }
 
                 # episode_number field (string, supports ranges):
-                #   single_episode  → "03" (zero-padded)
-                #   partial_combo   → "01-08" (range as-is from LLM)
-                #   combo_pack      → omit (null = full-season pack)
+                #   single_episode → extract from label ("Episode 05" → "05")
+                #   partial_combo  → extract from label ("Episode 01-08" → "01-08")
+                #   combo_pack     → omit (null = full-season pack)
                 if item_type == "single_episode":
-                    ep_range = item.get("episode_range", "")
-                    if ep_range:
-                        # Use raw range value from LLM (e.g. "01" or "1")
-                        first = str(ep_range).strip().split("-")[0].strip()
-                        try:
-                            payload["episode_number"] = str(int(first)).zfill(2)
-                        except (ValueError, AttributeError):
-                            payload["episode_number"] = str(ep_range).strip()
+                    m = re.search(r"(\d+)", item_label)
+                    if m:
+                        payload["episode_number"] = str(int(m.group(1))).zfill(2)
                 elif item_type == "partial_combo":
-                    ep_range = item.get("episode_range", "")
-                    if ep_range:
-                        payload["episode_number"] = str(ep_range).strip()  # e.g. "01-08"
+                    nums = re.findall(r"\d+", item_label)
+                    if len(nums) >= 2:
+                        payload["episode_number"] = f"{int(nums[0]):02d}-{int(nums[-1]):02d}"
+                    elif len(nums) == 1:
+                        payload["episode_number"] = str(int(nums[0])).zfill(2)
                 # combo_pack: no episode_number — full-season pack
 
                 if language:
                     payload["language"] = language
 
-                size = file_sizes_map.get((season_num, item_label, quality))
+                # size: first from file_sizes_map (current run), then from item["sizes"] (persisted)
+                size = (
+                    file_sizes_map.get((season_num, item_label, quality))
+                    or item.get("sizes", {}).get(quality)
+                )
                 if size:
                     payload["size"] = size
+
 
                 try:
                     with httpx.Client(timeout=_TIMEOUT) as client:
