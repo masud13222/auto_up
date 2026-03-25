@@ -253,10 +253,28 @@ def extract_keyframes_webp(
         raw_paths: list[Path] = []
         for i, t in enumerate(times):
             outp = os.path.join(tmp, f"{prefix}_{i:02d}.jpg")
-            if not _ffmpeg_jpeg_frame(video_path, t, outp):
-                logger.warning("Failed extracting frame at t=%.2fs", t)
-                return []
-            raw_paths.append(Path(outp))
+            if _ffmpeg_jpeg_frame(video_path, t, outp):
+                raw_paths.append(Path(outp))
+                continue
+
+            # Retry with small offset shifts before giving up on this frame
+            extracted = False
+            for offset in (2.0, -2.0, 5.0):
+                retry_t = max(0.5, min(t + offset, duration - 0.5))
+                if retry_t == t:
+                    continue
+                logger.debug("Retrying frame %d at t=%.2fs (offset %+.1f)", i, retry_t, offset)
+                if _ffmpeg_jpeg_frame(video_path, retry_t, outp):
+                    raw_paths.append(Path(outp))
+                    extracted = True
+                    break
+
+            if not extracted:
+                logger.warning("Skipping frame %d: all attempts failed around t=%.2fs", i, t)
+
+        if not raw_paths:
+            logger.warning("All frame extractions failed for: %s", video_path)
+            return []
 
         images: list[Image.Image] = []
         try:

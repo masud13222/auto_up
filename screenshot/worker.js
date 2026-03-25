@@ -1,8 +1,11 @@
 /**
  * FLixBD Image Host — deploy with Wrangler from this folder.
  *
- * Secrets (must match Django Admin → Screenshot settings):
- *   wrangler secret put BOT_TOKEN
+ * BOT_TOKEN (same bot as Django → Screenshot settings → telegram_bot_token):
+ *   Preferred: wrangler secret put BOT_TOKEN
+ *   Or paste below in HARDCODED_BOT_TOKEN (do not commit real tokens to a public repo).
+ *
+ * Secrets:
  *   wrangler secret put CRYPTO_PHRASE   # same as ScreenshotSettings.crypto_phrase
  *
  * Routes:
@@ -10,12 +13,18 @@
  *   GET /image/{token}/{filename}  → proxy Telegram file (Content-Disposition filename)
  *   GET /image/{token}             → legacy token only
  */
+
+/** @type {string} Paste token here only if Worker secrets are not set, e.g. "123456789:AAH..." */
+const HARDCODED_BOT_TOKEN = "";
+
 export default {
   async fetch(request, env) {
-    const BOT_TOKEN = env.BOT_TOKEN;
+    const BOT_TOKEN = String(env.BOT_TOKEN || HARDCODED_BOT_TOKEN || "").trim();
     const CRYPTO_PHRASE = env.CRYPTO_PHRASE || "FLixBD-image-host-crypto-v1";
     if (!BOT_TOKEN) {
-      return new Response("Worker misconfigured: BOT_TOKEN", { status: 500 });
+      return new Response("Worker misconfigured: set BOT_TOKEN secret or HARDCODED_BOT_TOKEN", {
+        status: 500,
+      });
     }
 
     const url = new URL(request.url);
