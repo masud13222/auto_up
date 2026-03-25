@@ -34,14 +34,23 @@ DAILY_PROCESS_LIMIT = 2
 LOG_RETENTION_DAYS = 7
 
 
-def _fetch_flixbd_top(name: str, max_results: int = 2) -> list:
+# Match upload pipeline: cap FlixBD rows in auto_up LLM payload (token savings).
+_FLIXBD_AUTO_UP_MAX = 3
+
+
+def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
     """
     Search FlixBD for existing content by name.
-    Returns top `max_results` hits scored with rapidfuzz, sorted best first.
+    Returns up to `max_results` hits (default _FLIXBD_AUTO_UP_MAX), scored with rapidfuzz, sorted best first.
+    Each item includes download_links + parsed qualities when the API returns them (same shape as upload task).
     Returns [] if FlixBD is not configured, disabled, or no results found.
 
     Used by auto_up to pass site context to LLM for smarter filtering.
     """
+    if max_results is None:
+        max_results = _FLIXBD_AUTO_UP_MAX
+    max_results = min(int(max_results), _FLIXBD_AUTO_UP_MAX)
+
     try:
         from upload.service import flixbd_client as fx
         import httpx
@@ -51,7 +60,7 @@ def _fetch_flixbd_top(name: str, max_results: int = 2) -> list:
         fx._get_config()  # Raises RuntimeError if not configured/disabled
 
         api_url, api_key = fx._get_config()
-        params = {"q": name, "type": "all", "per_page": 5, "page": 1}
+        params = {"q": name, "type": "all", "per_page": max_results, "page": 1}
 
         with httpx.Client(timeout=fx._TIMEOUT) as client:
             resp = client.get(
@@ -76,7 +85,20 @@ def _fetch_flixbd_top(name: str, max_results: int = 2) -> list:
             year_match = _year_re.search(item_title)
             clean = item_title[:year_match.start()].strip() if year_match else item_title
             score = fuzz.ratio(name_lower, clean.lower())
-            scored.append({"id": item["id"], "title": item_title, "match_score": score})
+            download_links = item.get("download_links") or {}
+            qualities_raw = download_links.get("qualities")
+            qualities = []
+            if isinstance(qualities_raw, str):
+                qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
+            elif isinstance(qualities_raw, list):
+                qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+            scored.append({
+                "id": item["id"],
+                "title": item_title,
+                "match_score": score,
+                "download_links": download_links,
+                "qualities": qualities,
+            })
 
         # Sort best first, return top N
         scored.sort(key=lambda x: x["match_score"], reverse=True)
@@ -242,7 +264,7 @@ def auto_scrape_and_queue() -> str:
             db_results = search_existing(title_info.title, title_info.year)
 
             # Search FlixBD (top 2 per title — enough context for LLM, limits API load)
-            flixbd_results = _fetch_flixbd_top(title_info.title, max_results=2)
+            flixbd_results = _fetch_flixbd_top(title_info.title)
 
             enriched_items.append({
                 "raw_title": raw_title,

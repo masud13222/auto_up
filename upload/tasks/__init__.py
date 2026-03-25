@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
@@ -15,10 +16,17 @@ from .tvshow_pipeline import process_tvshow_pipeline
 logger = logging.getLogger(__name__)
 
 
+# Max FlixBD hits to fetch from API and pass to LLM (keeps prompt tokens lower).
+_FLIXBD_LLM_MAX_RESULTS = 3
+
+
 def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
     """
     Search FlixBD for existing content by name.
-    Returns max 5 results (score >= min_score) as {id, title, match_score} dicts.
+    Returns at most _FLIXBD_LLM_MAX_RESULTS items (score >= min_score), sorted best-first, as dicts with:
+      - id, title, match_score
+      - download_links (as returned by FlixBD search)
+      - qualities (optional, parsed list from download_links.qualities for movies)
     Never raises — returns [] on any error or if FlixBD is not configured.
 
     Results are passed to LLM as context so it can make better duplicate decisions.
@@ -27,12 +35,11 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
     try:
         from upload.service import flixbd_client as fx
         import httpx
-        import re
         from rapidfuzz import fuzz
 
         api_url, api_key = fx._get_config()  # single call — raises RuntimeError if disabled
         endpoint = f"{api_url}/api/v1/search"
-        params = {"q": name, "type": "all", "per_page": 5, "page": 1}
+        params = {"q": name, "type": "all", "per_page": _FLIXBD_LLM_MAX_RESULTS, "page": 1}
 
         with httpx.Client(timeout=fx._TIMEOUT) as client:
             resp = client.get(endpoint, params=params, headers=fx._headers(api_key))
@@ -56,16 +63,31 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
             clean = item_title[:year_match.start()].strip() if year_match else item_title
             score = fuzz.ratio(name_lower, clean.lower())
             if score >= min_score:  # skip low-relevance results — don't confuse LLM
+                download_links = item.get("download_links") or {}
+                qualities_raw = download_links.get("qualities")
+                qualities = []
+                if isinstance(qualities_raw, str):
+                    # Example: "1080p, 720p, 480p"
+                    qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
+                elif isinstance(qualities_raw, list):
+                    qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+
                 results.append({
                     "id": item["id"],
                     "title": item_title,
                     "match_score": score,
+                    "download_links": download_links,
+                    "qualities": qualities,
                 })
 
-        # Sort by score so LLM sees best matches first
+        # Sort by score so LLM sees best matches first; cap count for token budget
         results.sort(key=lambda x: x["match_score"], reverse=True)
+        results = results[:_FLIXBD_LLM_MAX_RESULTS]
         top = results[0]["match_score"] if results else 0
-        logger.info(f"FlixBD search: {len(results)} result(s) (score>={min_score}) for '{name}' (top={top})")
+        logger.info(
+            f"FlixBD search: {len(results)} result(s) (score>={min_score}, max={_FLIXBD_LLM_MAX_RESULTS}) "
+            f"for '{name}' (top={top})"
+        )
         return results
 
     except RuntimeError as e:
@@ -372,9 +394,44 @@ def process_media_task(task_pk: int) -> str:
                     logger.info(f"DUPLICATE SKIP: {reason} — restoring reused task to completed (pk={media_task.pk})")
                     save_task(media_task, status='completed', result=data)
                 else:
-                    # New task — safe to delete
-                    logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
-                    media_task.delete()
+                    # New task: if DB doesn't have existing entry but FlixBD has it,
+                    # keep the task as completed and save site_content_id.
+                    if not existing_task and flixbd_results:
+                        candidate = flixbd_results[0] or {}
+                        cand_id = candidate.get("id")
+                        cand_title = candidate.get("title", "") or ""
+
+                        extracted_year = data.get("year")
+                        if cand_id is not None:
+                            # Optional guard: if we extracted a year, ensure FlixBD title contains it.
+                            if isinstance(extracted_year, int) and extracted_year > 0:
+                                m = re.search(r"\b(19|20)\d{2}\b", cand_title)
+                                if not m or int(m.group(0)) != extracted_year:
+                                    cand_id = None
+
+                        if cand_id is not None:
+                            media_task.site_content_id = int(cand_id)
+                            web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
+                            save_task(
+                                media_task,
+                                status="completed",
+                                content_type=content_type,
+                                title=title,
+                                website_title=web_title,
+                                result=data,
+                                error_message="",
+                            )
+                            logger.info(
+                                f"DUPLICATE SKIP: {reason} — saved FlixBD id={media_task.site_content_id} to DB (pk={media_task.pk})"
+                            )
+                        else:
+                            # New task — safe to delete
+                            logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
+                            media_task.delete()
+                    else:
+                        # DB already has existing entry — safe to delete
+                        logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
+                        media_task.delete()
                 return json.dumps({"status": "skipped", "message": reason})
 
             if action in ("update", "replace") and existing_task:
@@ -397,6 +454,32 @@ def process_media_task(task_pk: int) -> str:
                 media_task.status = 'processing'
                 media_task.error_message = ''
                 media_task.save(update_fields=['status', 'error_message', 'updated_at'])
+
+        # If DB has no existing task but FlixBD already has the content,
+        # ensure we reuse FlixBD instead of creating a duplicate during publishing.
+        if (
+            action in ("process", "update", "replace")
+            and not existing_task
+            and not media_task.site_content_id
+            and flixbd_results
+        ):
+            candidate = flixbd_results[0] or {}
+            cand_id = candidate.get("id")
+            if cand_id is not None:
+                extracted_year = data.get("year")
+                cand_title = candidate.get("title", "") or ""
+                if isinstance(extracted_year, int) and extracted_year > 0:
+                    m = re.search(r"\b(19|20)\d{2}\b", cand_title)
+                    if m and int(m.group(0)) != extracted_year:
+                        cand_id = None
+
+            if cand_id is not None:
+                media_task.site_content_id = int(cand_id)
+                save_task(media_task, site_content_id=media_task.site_content_id)
+                logger.info(
+                    f"Pre-publishing FlixBD reuse: set site_content_id={media_task.site_content_id} "
+                    f"for '{title}' (pk={media_task.pk})"
+                )
 
         # ── Merge existing data for update action ──
         if action == "update" and existing_result:

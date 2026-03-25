@@ -67,7 +67,9 @@ def _build_duplicate_section(db_match_info: dict, flixbd_results: list = None) -
 ```json
 {json.dumps(flixbd_results, indent=2, ensure_ascii=False)}
 ```
-(These are titles already published on the target site. Use this to understand if the content already exists there.)
+(FlixBD match data. Use this to understand if the content already exists on the target site.
+If the Existing DB Match section is missing, you should treat FlixBD download_links as the only available
+"existing" source of resolutions/episode ranges.)
 """
 
     db_section = ""
@@ -82,15 +84,20 @@ def _build_duplicate_section(db_match_info: dict, flixbd_results: list = None) -
 You ALSO need to decide if this content is a duplicate of an existing database entry.
 {db_section}{flixbd_section}
 ### Duplicate Check Rules:
-Compare the EXTRACTED data (not just the title) against the existing DB entry.
+Compare the EXTRACTED data (not just the title) against the existing DB entry if provided.
+If the Existing DB Match section is missing, use the FlixBD Site Match download_links as the existing source.
 
 **"skip"** — SAME content, SAME or fewer resolutions/episodes. Nothing new to add.
   - For movies: same title+year AND extracted download_links has NO resolutions missing from existing
+    (existing resolutions come from Existing DB Match OR, if missing, from FlixBD download_links.qualities)
   - For TV shows: same title+year AND no new episodes AND no missing per-episode resolutions
+    (existing episode/season ranges come from Existing DB Match OR, if missing, from FlixBD download_links)
 
 **"update"** — SAME content BUT has NEW data to add:
   - Missing resolutions: your extracted data has resolutions the existing entry lacks
+    (existing resolutions come from Existing DB Match OR, if missing, from FlixBD download_links.qualities)
   - New episodes: your extracted data has episodes not in existing
+    (existing episode ranges come from Existing DB Match OR, if missing, from FlixBD download_links)
   - IMPORTANT: Only report resolutions that ACTUALLY have download links in your extraction, NOT just mentioned in the title
 
 **"replace"** — SAME content BUT quality upgrade needed:

@@ -13,3 +13,4 @@ media/
 downloads/
 staticfiles/
 .vscode/
+.cursor/

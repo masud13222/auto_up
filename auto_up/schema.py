@@ -81,8 +81,9 @@ You receive a JSON array of items. Each item has:
     → Episode 06 is missing 480p. This tells you EXACTLY which episodes have which resolutions.
 
 - `flixbd_results` (OPTIONAL — only present if {SITE_NAME} found matching titles):
-  Top 2 results from the target site ({SITE_NAME}), scored by fuzzy match.
-  Each entry: `{{id, title, match_score}}` where match_score is 0-100 (higher = better match).
+  Up to 3 results from the target site ({SITE_NAME}), scored by fuzzy match.
+  Each entry: `{{id, title, match_score, download_links, qualities}}` — match_score is 0-100 (higher = better).
+  `qualities` is parsed from `download_links.qualities` when present (movie rows).
   Use this to understand if the content already exists on the target site.
   NOTE: Even if {SITE_NAME} has it, we may still want to process to ADD new download links.
 

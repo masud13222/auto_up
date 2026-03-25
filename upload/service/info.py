@@ -193,7 +193,7 @@ def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=N
         on_progress: Optional callback(data) for incremental DB saves during
                      URL resolution. Called after each download item is resolved.
         db_match_info: Optional dict with existing DB match info for duplicate check.
-        flixbd_results: Optional list of FlixBD search results (max 5) for duplicate check.
+        flixbd_results: Optional list of FlixBD search results (typically max 3) for duplicate check.
         existing_result: Optional dict with previous task result containing
                          Drive links — used to skip resolving already-uploaded items.
 
