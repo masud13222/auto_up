@@ -19,6 +19,12 @@ Practices aligned with FFmpeg / community guidance:
 - **Extra demuxer flags**: ``SCREENSHOT_FFMPEG_EXTRA_FFLAGS`` — space-separated tokens appended
   to ``-fflags`` (e.g. ``+discardcorrupt`` for damaged streams; use sparingly).
 - **PNG + Pillow** only if all JPEG paths fail.
+- **Primary video stream**: Many MKVs put **cover art** as the first video stream
+  (``attached_pic``). Decoding that stream at ``t=250s`` yields **no frames** — empty JPEG
+  and exit code 0 matches FFmpeg’s “Output file is empty…” / stream-map guidance
+  (https://trac.ffmpeg.org/wiki/Errors). We ``ffprobe`` all video streams, skip
+  ``attached_pic``, skip **still-image** codecs (``png``, ``mjpeg``, …), then pick
+  **largest width×height** among real video tracks and ``-map 0:<index>``.
 
 Pillow is used only to enforce the **5 MiB** total bundle cap (re-encode / scale).
 
@@ -36,6 +42,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -47,6 +54,10 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_BYTES_DEFAULT = 5 * 1024 * 1024
 NUM_FRAMES_DEFAULT = 6
 EXTRACT_MAX_WIDTH = 854
+# MKV often has multiple “video” tracks: mjpeg cover, png poster, then h264/hevc episode.
+_STILL_IMAGE_CODECS = frozenset(
+    {"png", "mjpeg", "jpegls", "ljpeg", "gif", "bmp", "webp", "tiff", "jpeg2000", "pam", "pbm", "pgm", "ppm"},
+)
 # mjpeg quality 2–31 (lower = better). ~3 is high; Pillow may shrink further for 5 MiB cap.
 FFMPEG_JPEG_Q = 3
 # Seconds before target time for hybrid fast jump; bounds decode work after keyframe seek.
@@ -79,14 +90,15 @@ def _decoder_attempts() -> list[tuple[str | None, bool]]:
     """
     (hwaccel value for ``-hwaccel``, use_sw_threads).
 
-    When using HW, omit ``-threads 0`` (let device decode); CPU fallback uses all cores.
+    **CPU first**, then HW: in Docker, ``-hwaccel auto`` can misbehave on some builds;
+    cover-art / stream bugs are unrelated but CPU-first keeps logs cleaner.
     """
     raw = _env_hwaccel_raw()
     if raw in ("", "none", "off", "0", "false", "cpu"):
         return [(None, True)]
     if raw == "auto":
-        return [("auto", False), (None, True)]
-    return [(raw, False), (None, True)]
+        return [(None, True), ("auto", False)]
+    return [(None, True), (raw, False)]
 
 
 def _ffprobe_duration(path: str) -> float:
@@ -106,23 +118,82 @@ def _ffprobe_duration(path: str) -> float:
         return 0.0
 
 
-def _ffprobe_video_codec(path: str) -> str:
+@dataclass(frozen=True)
+class _PrimaryVideo:
+    """Absolute stream index in file (for ``-map 0:N``), plus probe metadata."""
+
+    stream_index: int
+    codec_name: str
+    width: int
+    height: int
+
+
+def _ffprobe_primary_video(path: str) -> _PrimaryVideo | None:
+    """
+    Pick the **episode** video stream:
+
+    1. Skip ``attached_pic``.
+    2. Prefer codecs that are normal **moving** video (drop ``png`` / ``mjpeg`` / ``gif``
+       etc. — often hi-res posters that are not the x264/hevc track).
+    3. Among those, take largest ``width * height``.
+    """
     cmd = [
         "ffprobe", "-v", "quiet",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
         "-print_format", "json",
+        "-show_streams",
         path,
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if r.returncode == 0:
-            streams = json.loads(r.stdout).get("streams", [])
-            if streams:
-                return streams[0].get("codec_name", "")
-    except Exception:
-        pass
-    return ""
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return None
+        streams = json.loads(r.stdout).get("streams", [])
+    except (json.JSONDecodeError, TypeError, subprocess.TimeoutExpired):
+        return None
+
+    videos: list[dict] = [s for s in streams if s.get("codec_type") == "video"]
+    if not videos:
+        return None
+
+    def area(s: dict) -> int:
+        try:
+            return int(s.get("width", 0) or 0) * int(s.get("height", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def is_attached(s: dict) -> bool:
+        disp = s.get("disposition") or {}
+        try:
+            return int(disp.get("attached_pic", 0) or 0) == 1
+        except (TypeError, ValueError):
+            return False
+
+    def codec_name(s: dict) -> str:
+        return str(s.get("codec_name", "") or "").lower()
+
+    def is_still_image_codec(s: dict) -> bool:
+        return codec_name(s) in _STILL_IMAGE_CODECS
+
+    candidates = [s for s in videos if not is_attached(s)]
+    pool = candidates if candidates else videos
+    movie_like = [s for s in pool if not is_still_image_codec(s)]
+    if movie_like:
+        pool = movie_like
+    best = max(pool, key=area)
+    if area(best) <= 0:
+        best = max(videos, key=area)
+
+    try:
+        idx = int(best["index"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    return _PrimaryVideo(
+        stream_index=idx,
+        codec_name=str(best.get("codec_name", "") or ""),
+        width=int(best.get("width", 0) or 0),
+        height=int(best.get("height", 0) or 0),
+    )
 
 
 def _safe_prefix(name: str) -> str:
@@ -176,6 +247,13 @@ def _video_filter_jpeg() -> str:
     )
 
 
+def _map_args(map_0_index: int | None) -> list[str]:
+    """``-map 0:N`` so we decode the feature track, not embedded cover (``v:0``)."""
+    if map_0_index is None:
+        return []
+    return ["-map", f"0:{map_0_index}"]
+
+
 def _run_ffmpeg_jpeg(
     video_path: str,
     t_sec: float,
@@ -185,6 +263,7 @@ def _run_ffmpeg_jpeg(
     mode: SeekMode,
     hwaccel: str | None,
     sw_threads: bool,
+    video_stream_index: int | None,
 ) -> tuple[bool, str]:
     hybrid = _hybrid_seek_pair(t_sec, duration) if mode == "hybrid" else None
     if mode == "hybrid" and hybrid is None:
@@ -203,7 +282,7 @@ def _run_ffmpeg_jpeg(
         "-q:v", str(FFMPEG_JPEG_Q),
         "-y", out_jpg,
     ]
-    cmd = _lead(hwaccel, sw_threads) + mid + tail
+    cmd = _lead(hwaccel, sw_threads) + mid + _map_args(video_stream_index) + tail
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -228,6 +307,7 @@ def _run_ffmpeg_png_fallback(
     mode: SeekMode,
     hwaccel: str | None,
     sw_threads: bool,
+    video_stream_index: int | None,
 ) -> tuple[bool, str]:
     hybrid = _hybrid_seek_pair(t_sec, duration) if mode == "hybrid" else None
     if mode == "hybrid" and hybrid is None:
@@ -245,7 +325,7 @@ def _run_ffmpeg_png_fallback(
         "-c:v", "png",
         "-y", out_png,
     ]
-    cmd = _lead(hwaccel, sw_threads) + mid + tail
+    cmd = _lead(hwaccel, sw_threads) + mid + _map_args(video_stream_index) + tail
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         stderr = (r.stderr or "").strip()
@@ -274,18 +354,26 @@ def _extract_one_frame_jpeg(
     out_jpg: str,
     *,
     duration: float,
+    video_stream_index: int | None,
 ) -> bool:
+    last_err = ""
     for mode in _jpeg_seek_modes(duration, t_sec):
         for hwaccel, sw_threads in _decoder_attempts():
             ok, err = _run_ffmpeg_jpeg(
                 video_path, t_sec, out_jpg,
                 duration=duration, mode=mode, hwaccel=hwaccel, sw_threads=sw_threads,
+                video_stream_index=video_stream_index,
             )
             if ok:
                 return True
+            last_err = err
             logger.debug(
-                "ffmpeg JPEG mode=%s hw=%s t=%.2fs: %s",
-                mode, hwaccel or "cpu", t_sec, err,
+                "ffmpeg JPEG mode=%s hw=%s map=0:%s t=%.2fs: %s",
+                mode,
+                hwaccel or "cpu",
+                video_stream_index if video_stream_index is not None else "def",
+                t_sec,
+                err,
             )
 
     tmp_png = out_jpg + ".fallback.png"
@@ -294,11 +382,17 @@ def _extract_one_frame_jpeg(
             ok, err = _run_ffmpeg_png_fallback(
                 video_path, t_sec, tmp_png,
                 duration=duration, mode=mode, hwaccel=hwaccel, sw_threads=sw_threads,
+                video_stream_index=video_stream_index,
             )
             if not ok:
+                last_err = err
                 logger.debug(
-                    "ffmpeg PNG mode=%s hw=%s t=%.2fs: %s",
-                    mode, hwaccel or "cpu", t_sec, err,
+                    "ffmpeg PNG mode=%s hw=%s map=0:%s t=%.2fs: %s",
+                    mode,
+                    hwaccel or "cpu",
+                    video_stream_index if video_stream_index is not None else "def",
+                    t_sec,
+                    err,
                 )
                 continue
             try:
@@ -316,7 +410,12 @@ def _extract_one_frame_jpeg(
                 except OSError:
                     pass
 
-    logger.warning("All ffmpeg paths failed at t=%.2fs for JPEG output", t_sec)
+    logger.warning(
+        "All ffmpeg paths failed at t=%.2fs (map=0:%s): %s",
+        t_sec,
+        video_stream_index if video_stream_index is not None else "default",
+        (last_err or "no detail")[:1200],
+    )
     return False
 
 
@@ -388,11 +487,15 @@ def extract_keyframes_webp(
         logger.warning("Duration too short or unknown: %s", video_path)
         return []
 
-    codec = _ffprobe_video_codec(video_path)
+    primary = _ffprobe_primary_video(video_path)
+    vidx = primary.stream_index if primary else None
     logger.info(
-        "Screenshot: %s | codec=%s | duration=%.1fs | hybrid_lead=%.0fs | genpts mjpeg | hw=%s",
+        "Screenshot: %s | video_stream=0:%s %s %dx%d | duration=%.1fs | hybrid=%.0fs | hw=%s",
         os.path.basename(video_path),
-        codec or "unknown",
+        vidx if vidx is not None else "?",
+        primary.codec_name if primary else "?",
+        primary.width if primary else 0,
+        primary.height if primary else 0,
         duration,
         HYBRID_LEAD_SEC,
         _env_hwaccel_raw() or "auto",
@@ -407,14 +510,18 @@ def extract_keyframes_webp(
         for i, t in enumerate(times):
             jpg_p = os.path.join(tmp, f"{prefix}_{i:02d}.jpg")
 
-            ok = _extract_one_frame_jpeg(video_path, t, jpg_p, duration=duration)
+            ok = _extract_one_frame_jpeg(
+                video_path, t, jpg_p, duration=duration, video_stream_index=vidx,
+            )
             if not ok:
                 for offset in (3.0, -3.0, 8.0, -8.0, 15.0):
                     retry_t = max(0.5, min(t + offset, duration - 0.5))
                     if abs(retry_t - t) < 0.05:
                         continue
                     logger.info("Retrying frame %d at t=%.2fs (offset %+.1f)", i, retry_t, offset)
-                    ok = _extract_one_frame_jpeg(video_path, retry_t, jpg_p, duration=duration)
+                    ok = _extract_one_frame_jpeg(
+                        video_path, retry_t, jpg_p, duration=duration, video_stream_index=vidx,
+                    )
                     if ok:
                         break
 
@@ -425,7 +532,11 @@ def extract_keyframes_webp(
             jpg_paths.append(Path(jpg_p))
 
         if not jpg_paths:
-            logger.warning("All frame extractions failed for %s (codec=%s)", video_path, codec)
+            logger.warning(
+                "All frame extractions failed for %s (stream 0:%s)",
+                video_path,
+                vidx if vidx is not None else "?",
+            )
             return []
 
         logger.info("Extracted %d/%d frames from %s", len(jpg_paths), num_frames, os.path.basename(video_path))
