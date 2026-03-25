@@ -1,12 +1,18 @@
 """
-Web scraping service using pydoll (headless Chromium + Cloudflare auto-solve).
+Web scraping service using pydoll (headless Chromium).
 
 Browser Singleton Strategy (Approach 3 — Per-Worker Persistent Browser):
   - One persistent asyncio event loop runs in a background daemon thread per worker.
   - One Chrome instance is kept alive for the entire worker lifetime.
   - Every fetch opens a NEW TAB, does the work, then closes that tab.
-  - Cloudflare cf_clearance cookie is solved ONCE and reused across all tabs/requests.
   - On browser crash, it auto-restarts transparently (one retry).
+
+Cloudflare Turnstile (pydoll docs — Behavioral Captcha Bypass, recommended pattern):
+  Each navigation uses ``async with tab.expect_and_bypass_cloudflare_captcha(...): await tab.go_to(url)``.
+  If Turnstile appears, pydoll waits (up to ``time_to_wait_captcha``) and performs the checkbox
+  interaction; if no Turnstile shadow root appears in time, pydoll skips — no custom site logic here.
+  We do not use per-tab ``enable_auto_solve_cloudflare_captcha()`` (that caused WebSocket HTTP 500
+  noise on some hosts in practice).
 
 Public API is unchanged — all callers (WebScrapeService.*) work as before.
 """
@@ -107,15 +113,14 @@ async def _get_browser_lock() -> asyncio.Lock:
 
 
 async def _launch_browser():
-    """Start Chrome singleton and enable CF auto-solve on the warmup tab."""
+    """Start Chrome singleton (warmup tab only; Turnstile handling is per-navigation via pydoll CM)."""
     global _browser
     from pydoll.browser.chromium import Chrome
     b = Chrome(options=_chrome_options())
     await b.__aenter__()                            # start Chrome process
-    warmup = await b.start()                        # open 1st (warmup) tab
-    await warmup.enable_auto_solve_cloudflare_captcha()
+    await b.start()                                 # open 1st (warmup) tab
     _browser = b
-    logger.info("[Browser] Chrome singleton started — CF auto-solve active on warmup tab")
+    logger.info("[Browser] Chrome singleton started")
 
 
 async def _ensure_browser():
@@ -147,10 +152,7 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
     Opens a new tab, navigates, waits, returns HTML, closes tab.
     Auto-restarts browser once on crash.
 
-    NOTE: enable_auto_solve_cloudflare_captcha() is NOT called per-tab.
-    It was called once on the warmup tab during browser startup, which stores
-    the cf_clearance cookie browser-wide. Calling it per-tab causes
-    WebSocket HTTP 500 errors on non-CF sites (e.g. new5.cinecloud.site).
+    Turnstile: pydoll-recommended ``expect_and_bypass_cloudflare_captcha`` around ``go_to`` only.
     """
     await _ensure_browser()
 
@@ -158,8 +160,18 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
         try:
             tab = await _browser.new_tab()
             try:
-                await tab.enable_auto_solve_cloudflare_captcha()
-                await asyncio.wait_for(tab.go_to(url), timeout=30)
+                cm = getattr(tab, "expect_and_bypass_cloudflare_captcha", None)
+                nav_timeout = 45.0
+                if cm is not None:
+                    # Docs: if shadow root does not appear within time_to_wait_captcha, interaction is skipped.
+                    async with cm(time_to_wait_captcha=10):
+                        await asyncio.wait_for(tab.go_to(url), timeout=nav_timeout)
+                else:
+                    logger.warning(
+                        "[Browser] expect_and_bypass_cloudflare_captcha missing on this pydoll version; "
+                        "plain navigation (no Turnstile helper)"
+                    )
+                    await asyncio.wait_for(tab.go_to(url), timeout=30)
                 await asyncio.sleep(settle)
                 return await tab.page_source
             finally:
