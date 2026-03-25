@@ -190,7 +190,7 @@ Based on your detection, extract the full structured data.
 {json.dumps(movie_schema, indent=2)}
 
 ### Movie Rules:
-- website_movie_title: Full title from site, with blocked site names removed
+- website_movie_title: Full title from site, with blocked site names removed (`Title Year Source Language - {SITE_NAME}`)
 - title: CLEAN movie name only (no year, quality, language)
 - rating: numeric only (e.g. 7.5)
 - year: integer only
@@ -201,6 +201,9 @@ Based on your detection, extract the full structured data.
 
 ## IF content_type = "tvshow", extract data following this schema:
 {json.dumps(tvshow_schema, indent=2)}
+
+### TV Show Rules:
+- website_tvshow_title: Series format with `Season NN`, episode scope `EPxx` or `EPxx-yy`, or `Season NN Complete` for full-season combo — then Source, Language, ` - {SITE_NAME}` (see tvshow schema)
 
 ### TV Show Download Structure:
 Each download item belongs to exactly ONE of these types. Classification is based ENTIRELY on the HTML/page structure — not the episode number or resolution count.
@@ -239,22 +242,14 @@ Each download item belongs to exactly ONE of these types. Classification is base
 - **countries**: extract as array of strings e.g. ["USA"]. Omit if not found.
 - **cast** (movie) / **cast_info** (tvshow): comma-separated actors list. Omit if not found.
 
-## IMPORTANT - website_movie_title / website_tvshow_title (MUST generate in this exact format):
-`Title Year Source Language - {SITE_NAME}`
-- **Title**: clean content title (no year/quality/language)
-- **Year**: 4-digit year
-- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS, etc. — detect from page. Do NOT use resolution (1080p/720p).
-- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali + Tamil]`
-- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
-Examples:
-  - movie: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
-  - tvshow: `Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}`
-
+## IMPORTANT - website_movie_title vs website_tvshow_title:
+- **Movie** → `Title Year Source Language - {SITE_NAME}` (no Season/EP). Example: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+- **TV show** → `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}` or `... Season NN Complete ...` for full-season pack. Example: `Single Papa 2025 Season 01 EP01-06 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+- **Source** (both): WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS — not resolution (1080p/720p). **Language** from page. Always end with ` - {SITE_NAME}`.
 
 - **meta_title**: Natural, human-like SEO title (50-60 chars). Place main keyword early. Vary structure — no repetitive patterns.
-- **meta_description**: Compelling meta description (140-160 chars). Natural language with a CTA. Include content name, year, quality, language.
+- **meta_description**: Compelling meta description (140-160 chars). Natural language with a CTA. Include content name, year, quality, language (and season for TV when relevant).
 - **meta_keywords**: 10-15 comma-separated relevant keywords. Include name variations, year, quality variants, language, "download", "watch online", genre.
-
 
 - ALL download URLs MUST be ABSOLUTE (start with https://).
 - Relative URL → prepend source domain only. Nothing else changes.

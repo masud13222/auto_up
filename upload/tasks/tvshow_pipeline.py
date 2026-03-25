@@ -375,8 +375,11 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
     """
     Add Drive links to FlixBD after upload completes.
-    - If site_content_id already set (from dup check): just add download links
-    - If not set: create series on FlixBD first, then add download links
+
+    **Update path:** same as movie — ``site_content_id`` on the task (from DB row or
+    pre-publish FlixBD reuse) triggers ``patch_series_title`` with latest
+    ``website_tvshow_title``. Without id, POST ``create_series`` only.
+
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
@@ -390,12 +393,30 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
         return
 
     try:
-        if media_task.site_content_id:
-            # Already found during dup check — skip search+create
-            content_id = media_task.site_content_id
-            logger.info(f"FlixBD: using pre-found id={content_id} for '{title}' (from dup check)")
+        if getattr(media_task, "pk", None):
+            try:
+                media_task.refresh_from_db(fields=["site_content_id"])
+            except Exception:
+                pass
+
+        web_t = fx.series_website_title(tvshow_data)
+        cid = media_task.site_content_id
+        logger.info(
+            "FlixBD publish (series): task_pk=%s site_content_id=%s website_tvshow_title=%r",
+            getattr(media_task, "pk", None),
+            cid,
+            web_t[:120] + ("…" if len(web_t) > 120 else ""),
+        )
+
+        if cid:
+            logger.info(f"FlixBD: existing series id={cid} — PATCH title then add links")
+            fx.patch_series_title(int(cid), tvshow_data)
+            content_id = int(cid)
         else:
-            # Not found yet — create new series
+            logger.warning(
+                "FlixBD: no site_content_id on task pk=%s — POST create_series (existing row title not updated)",
+                getattr(media_task, "pk", None),
+            )
             content_id = fx.create_series(tvshow_data)
             if not content_id:
                 logger.error(f"FlixBD: create_series returned None for '{title}' — skipping publish")
@@ -409,11 +430,10 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
             tvshow_data=tvshow_data,
         )
 
-        # Save site_content_id if it wasn't already
         if not media_task.site_content_id:
             media_task.site_content_id = content_id
             media_task.save(update_fields=["site_content_id", "updated_at"])
-        logger.info(f"FlixBD: series published -- site_content_id={content_id} title='{title}'")
+        logger.info(f"FlixBD: series done -- site_content_id={content_id} clean_title='{title}'")
 
 
     except Exception as e:

@@ -530,7 +530,7 @@ def process_media_task(task_pk: int) -> str:
                 media_task.save(update_fields=['status', 'error_message', 'updated_at'])
 
         # If DB has no existing task but FlixBD already has the content,
-        # ensure we reuse FlixBD instead of creating a duplicate during publishing.
+        # set site_content_id so the pipeline can PATCH title + add links to the existing row.
         if (
             action in ("process", "update", "replace")
             and not existing_task

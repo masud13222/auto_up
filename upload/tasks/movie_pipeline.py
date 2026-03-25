@@ -233,8 +233,14 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
     """
     Add Drive links to FlixBD after upload completes.
-    - If site_content_id already set (from dup check): just add download links
-    - If not set: create movie on FlixBD first, then add download links
+
+    **Duplicate / update path (main process):** ``process_media_task`` sets
+    ``media_task.site_content_id`` from the existing DB row or from FlixBD search
+    (``Pre-publishing FlixBD reuse``). Then this function runs ``patch_movie_title`` so
+    ``website_movie_title`` from the **latest** LLM merge hits FlixBD. If
+    ``site_content_id`` is still null, we **create** a new movie (no PATCH) — title
+    will not update an existing row.
+
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
@@ -248,12 +254,31 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
         return
 
     try:
-        if media_task.site_content_id:
-            # Already found during dup check — skip search+create
-            content_id = media_task.site_content_id
-            logger.info(f"FlixBD: using pre-found id={content_id} for '{title}' (from dup check)")
+        if getattr(media_task, "pk", None):
+            try:
+                media_task.refresh_from_db(fields=["site_content_id"])
+            except Exception:
+                pass
+
+        web_t = fx.movie_website_title(movie_data)
+        cid = media_task.site_content_id
+        logger.info(
+            "FlixBD publish (movie): task_pk=%s site_content_id=%s website_movie_title=%r",
+            getattr(media_task, "pk", None),
+            cid,
+            web_t[:120] + ("…" if len(web_t) > 120 else ""),
+        )
+
+        if cid:
+            logger.info(f"FlixBD: existing row id={cid} — PATCH title then add links")
+            fx.patch_movie_title(int(cid), movie_data)
+            content_id = int(cid)
         else:
-            # Not found yet — create new
+            logger.warning(
+                "FlixBD: no site_content_id on task pk=%s — POST create_movie (title will be set on new row only; "
+                "existing FlixBD row will NOT get a title update)",
+                getattr(media_task, "pk", None),
+            )
             content_id = fx.create_movie(movie_data)
 
         # Add download links with actual file sizes
@@ -264,11 +289,10 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
             movie_data=movie_data,
         )
 
-        # Save site_content_id if it wasn't already
         if not media_task.site_content_id:
             media_task.site_content_id = content_id
             media_task.save(update_fields=["site_content_id", "updated_at"])
-        logger.info(f"FlixBD: movie published -- site_content_id={content_id} title='{title}'")
+        logger.info(f"FlixBD: movie done -- site_content_id={content_id} clean_title='{title}'")
 
     except Exception as e:
         logger.error(f"FlixBD publish failed for movie '{title}': {e}", exc_info=True)

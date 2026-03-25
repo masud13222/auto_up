@@ -13,12 +13,14 @@ tvshow_schema = {
         "website_tvshow_title": {
             "type": "string",
             "description": (
-                f"Formatted display title in this exact format: "
-                f"'Title Year Source Language - {SITE_NAME}'. "
-                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution). "
-                f"Language like 'Dual Audio [Hindi ORG. + English]' or 'Bengali'. "
-                f"Remove ALL blocked site names. "
-                f"Example: 'Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}'"
+                f"Series display title — must include Season and episode scope (movie titles do not use Season/EP). "
+                f"Exact format: 'Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}'. "
+                f"NN = zero-padded season (01, 02, …). "
+                f"EP: single episode → 'EP05'; range → 'EP01-03' (always zero-pad). "
+                f"Whole season one pack (combo_pack) with no episode split → use 'Season NN Complete' instead of EP… "
+                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT 480p/720p/1080p). "
+                f"Strip blocked site names. "
+                f"Example: 'Single Papa 2025 Season 01 EP01-06 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}'"
             )
         },
         "title": {
@@ -106,15 +108,30 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 - languages: array of audio languages found on page (e.g. ["Hindi", "English"] or ["Bengali"])
 - countries: array of production countries from page (e.g. ["USA"])
 
-## IMPORTANT - website_tvshow_title field (MUST generate in this exact format):
-`Title Year Source Language - {SITE_NAME}`
-- **Title**: clean show title
-- **Year**: 4-digit year
-- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS (NOT resolution like 1080p)
-- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali]`
-- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
-Example: `Breaking Bad 2008 WEB-DL Bengali - {SITE_NAME}`
+## IMPORTANT - website_tvshow_title (series — different format from movies, includes Season + EP):
+**Must** include **Season** and **episode scope** before Source (movies do not use Season/EP):
 
+**Format:**
+`Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
+
+Rules:
+- **Title**: clean series name (no year/quality in title part — year follows separately)
+- **Year**: 4-digit (series/first air or page year)
+- **Season NN**: zero-padded, e.g. `Season 01`, `Season 02` (same style for all seasons)
+- **Episode scope** (pick one):
+  - **Range** (partial_combo or page says Ep 1–3): `EP01-03` (zero-pad both ends)
+  - **Single episode**: `EP05` only
+  - **Full season one block** (combo_pack, no per-episode split): use **`Season NN Complete`** and **omit** the EP segment — e.g. `Show 2020 Season 01 Complete WEB-DL Bengali - {SITE_NAME}`
+- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS — **not** 1080p/720p
+- **Language**: e.g. `Dual Audio [Hindi ORG. + English]`, `Bengali`
+- **{SITE_NAME}**: always ` - {SITE_NAME}` at the end
+
+Derive NN and EP from your `seasons[].season_number` and `download_items[].episode_range` / labels. If several items in the **same** season, mirror the **page’s main** batch; do not invent ranges.
+
+Examples:
+- `Single Papa 2025 Season 01 EP01-03 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+- `Breaking Bad 2008 Season 01 Complete WEB-DL Bengali - {SITE_NAME}`
+- `Daredevil Born Again 2026 Season 02 EP01 WEB-DL English - {SITE_NAME}`
 
 ## SEO Meta Fields (MUST generate — do NOT skip):
 - **meta_title**: Create a natural, human-like SEO title (50-60 chars). Place the show name early. Vary structure across pages. Include season info if applicable.

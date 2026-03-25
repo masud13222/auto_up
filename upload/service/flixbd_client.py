@@ -5,11 +5,13 @@ Handles all communication with the target site REST API.
 
 Flow for publishing:
   1. search() -- check if content already exists (max 5 results)
-  2. If found -> return existing site_content_id (just add new download links)
+  2. If found -> return existing site_content_id
   3. If not found -> create_movie() / create_series() -> get new site_content_id
-  4. add_download_links() -- attach Drive links with quality, language, size
+  4. If content already existed -> patch_movie_title / patch_series_title (PATCH body: ``title`` only)
+  5. add_download_links() -- attach Drive links with quality, language, size
 
 All methods raise on fatal errors. Callers should catch and log.
+Title-only PATCH failures are logged; download links are still added.
 """
 
 import logging
@@ -202,6 +204,90 @@ def create_series(tvshow_data: dict) -> int:
     except Exception as e:
         logger.error(f"FlixBD create_series failed: {e}")
         raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Patch title only (existing movie / series on FlixBD)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _display_movie_title(movie_data: dict) -> str:
+    return movie_data.get("website_movie_title") or movie_data.get("title", "Unknown")
+
+
+def _display_series_title(tvshow_data: dict) -> str:
+    return tvshow_data.get("website_tvshow_title") or tvshow_data.get("title", "Unknown")
+
+
+def movie_website_title(movie_data: dict) -> str:
+    """Public alias for logging / UI — same string sent to FlixBD as movie ``title``."""
+    return _display_movie_title(movie_data)
+
+
+def series_website_title(tvshow_data: dict) -> str:
+    """Public alias — same string sent to FlixBD as series ``title``."""
+    return _display_series_title(tvshow_data)
+
+
+def patch_movie_title(content_id: int, movie_data: dict) -> bool:
+    """
+    PATCH ``/api/v1/movies/{id}`` with ``{"title": ...}`` only — sync display title when
+    re-processing an item that already has ``site_content_id``. Does not change meta, plot, poster, etc.
+    """
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/movies/{content_id}"
+    display = _display_movie_title(movie_data)
+    payload = {"title": display}
+    logger.info(f"FlixBD: PATCH movie id={content_id} title-only -> {display[:100]!r}")
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+
+        if resp.status_code in (404, 405):
+            logger.warning(
+                f"FlixBD: movie title PATCH not available (HTTP {resp.status_code}) id={content_id}"
+            )
+            return False
+        if resp.status_code in (400, 422):
+            logger.warning(f"FlixBD: patch_movie_title id={content_id}: {resp.text[:500]}")
+            return False
+
+        resp.raise_for_status()
+        logger.info(f"FlixBD: movie id={content_id} title updated")
+        return True
+    except Exception as e:
+        logger.warning(f"FlixBD: patch_movie_title failed id={content_id}: {e}")
+        return False
+
+
+def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
+    """PATCH ``/api/v1/series/{id}`` with ``{"title": ...}`` only."""
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/series/{content_id}"
+    display = _display_series_title(tvshow_data)
+    payload = {"title": display}
+    logger.info(f"FlixBD: PATCH series id={content_id} title-only -> {display[:100]!r}")
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+
+        if resp.status_code in (404, 405):
+            logger.warning(
+                f"FlixBD: series title PATCH not available (HTTP {resp.status_code}) id={content_id}"
+            )
+            return False
+        if resp.status_code in (400, 422):
+            logger.warning(f"FlixBD: patch_series_title id={content_id}: {resp.text[:500]}")
+            return False
+
+        resp.raise_for_status()
+        logger.info(f"FlixBD: series id={content_id} title updated")
+        return True
+    except Exception as e:
+        logger.warning(f"FlixBD: patch_series_title failed id={content_id}: {e}")
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -403,8 +489,7 @@ def _build_movie_payload(movie_data: dict) -> dict:
     Map LLM-extracted movie_data fields to FlixBD API create-movie payload.
     website_movie_title (LLM-generated formatted title) is used as the FlixBD title.
     """
-    # LLM already formats website_movie_title as: 'Title Year WEB-DL Language - SiteName'
-    display_title = movie_data.get("website_movie_title") or movie_data.get("title", "Unknown")
+    display_title = _display_movie_title(movie_data)
 
     payload: dict = {
         "title": display_title,
@@ -453,7 +538,7 @@ def _build_series_payload(tvshow_data: dict) -> dict:
     Map LLM-extracted tvshow_data fields to FlixBD API create-series payload.
     website_tvshow_title (LLM-generated formatted title) is used as the FlixBD title.
     """
-    display_title = tvshow_data.get("website_tvshow_title") or tvshow_data.get("title", "Unknown")
+    display_title = _display_series_title(tvshow_data)
 
     payload: dict = {
         "title": display_title,

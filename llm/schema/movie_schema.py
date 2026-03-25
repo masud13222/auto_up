@@ -16,7 +16,7 @@ movie_schema = {
             "description": (
                 f"Formatted display title in this exact format: "
                 f"'Title Year Source Language - {SITE_NAME}'. "
-                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution). "
+                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution) etc. "
                 f"Language like 'Dual Audio [Hindi ORG. + English]' or 'Bengali'. "
                 f"Remove ALL blocked site names. "
                 f"Example: 'Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}'"
