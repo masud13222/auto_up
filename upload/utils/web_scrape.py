@@ -30,6 +30,7 @@ from selectolax.lexbor import LexborHTMLParser
 from upload.utils.web_scrape_html import (
     absolutize_resource_urls,
     normalize_http_url,
+    sanitize_markdown_for_llm,
     truncate_markdown_for_llm,
 )
 
@@ -214,7 +215,8 @@ class WebScrapeService:
         buf = io.BytesIO(html.encode("utf-8"))
         md = _markitdown.convert_stream(buf, file_extension=".html").text_content
         md = re.sub(r"\n{3,}", "\n\n", md).strip()
-        return truncate_markdown_for_llm(md)
+        md = truncate_markdown_for_llm(md)
+        return sanitize_markdown_for_llm(md)
 
     # ── 1. get_page_content ───────────────────────────────────────────────────
 

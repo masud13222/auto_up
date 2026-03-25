@@ -32,6 +32,67 @@ def truncate_markdown_for_llm(md: str) -> str:
     return md
 
 
+_IMAGE_EXT = (".jpg", ".jpeg", ".webp")
+
+
+def _url_path_looks_like_raster_image(url: str) -> bool:
+    if not url:
+        return False
+    path = url.split("?", 1)[0].split("#", 1)[0].strip().lower()
+    return path.endswith(_IMAGE_EXT)
+
+
+def sanitize_markdown_for_llm(md: str) -> str:
+    """
+    After HTML→markdown: drop screenshot sections, strip raster image links, shrink noise for LLM.
+
+    - Removes any full line containing the word "Screenshot" (case-insensitive).
+    - Removes markdown images ``![...](...)``.
+    - Replaces ``[text](url)`` with ``text`` when url is .jpg/.jpeg/.webp (query string allowed).
+    - Removes bare/autolink URLs that end with those extensions.
+    """
+    if not md:
+        return md
+
+    lines_out: list[str] = []
+    for line in md.split("\n"):
+        if "screenshot" in line.casefold():
+            continue
+        lines_out.append(line)
+    text = "\n".join(lines_out)
+
+    # Markdown images
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+
+    def _link_repl(m: re.Match) -> str:
+        label, url = m.group(1), m.group(2).strip()
+        if _url_path_looks_like_raster_image(url):
+            return label.strip()
+        return m.group(0)
+
+    text = re.sub(r"\[([^\]]*)\]\(([^)]+)\)", _link_repl, text)
+
+    # Angle-bracket autolinks to raster images
+    text = re.sub(
+        r"<https?://[^>\s]+>",
+        lambda m: "" if _url_path_looks_like_raster_image(m.group(0)[1:-1]) else m.group(0),
+        text,
+        flags=re.I,
+    )
+
+    # Bare http(s) URLs ending in image extensions
+    text = re.sub(
+        r"https?://[^\s\[\]()<>\"']+?(?:\.jpe?g|\.webp)(?:\?[^\s\[\]()<>\"']*)?",
+        "",
+        text,
+        flags=re.I,
+    )
+
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def normalize_http_url(url: str) -> str:
     """
     Ensure the URL has a scheme so Chromium can navigate.
