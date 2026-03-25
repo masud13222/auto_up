@@ -1761,7 +1761,7 @@ requires-dist = [
     { name = "markitdown", specifier = ">=0.1.5" },
     { name = "mistralai", specifier = ">=1.12.4" },
     { name = "openai", specifier = ">=2.26.0" },
-    { name = "pillow", specifier = ">=11.0.0" },
+    { name = "pillow", specifier = ">=11.0.0,<13" },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
     { name = "pydoll-python", specifier = ">=2.21.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
