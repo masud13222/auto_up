@@ -79,7 +79,11 @@ tvshow_schema = {
                                 "resolutions": {
                                     "type": "object",
                                     "additionalProperties": {"type": "string"},
-                                    "description": "Download URLs keyed by resolution: '480p', '720p', '1080p', etc."
+                                    "description": (
+                                        "File DOWNLOAD URLs per resolution only ('480p', '720p', …). "
+                                        "Real download/generate.php/Download-button targets. "
+                                        "Never watch/stream/player URLs — omit resolution if only streaming exists."
+                                    ),
                                 }
                             },
                             "required": ["type", "label", "resolutions"]

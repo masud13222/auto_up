@@ -35,7 +35,11 @@ movie_schema = {
         "download_links": {
             "type": "object",
             "additionalProperties": {"type": "string"},
-            "description": "Download links keyed by resolution (e.g. '480p', '720p', '1080p'). Keys are dynamic — any resolution is allowed. Values are download URLs. Prefer x264 encodes."
+            "description": (
+                "File DOWNLOAD URLs only per resolution (e.g. '480p', '720p'). "
+                "Must be links that fetch the release file (e.g. generate.php gateways, real Download buttons, etc). "
+                "Never watch/stream/play/player/watch-online URLs — omit a resolution if only streaming exists."
+            ),
         },
         "cast": {
             "type": "string",

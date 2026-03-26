@@ -254,6 +254,11 @@ Each download item belongs to exactly ONE of these types. Classification is base
 - ALL download URLs MUST be ABSOLUTE (start with https://).
 - Relative URL → prepend source domain only. Nothing else changes.
 
+### ⚠️ DOWNLOAD vs WATCH — ONLY DOWNLOAD URLs IN `download_links` / `resolutions`:
+- Use URLs whose purpose is **downloading the release file** (generate.php-style gateways, **Download** / **720p Download** buttons, direct file or host links for the full movie/episode pack).
+- **Never** put **watch / stream / play** links there: "Watch Now", "Watch Online", "Stream", "Play", video player pages (`/watch/`, `/play/`, `/player/`), trailers/teasers only, YouTube/Vimeo, `.m3u8` / HLS for in-browser playback, or iframe embed sources.
+- If the HTML only exposes a streaming URL for a resolution and no real download → **omit that resolution** (do not fill with a watch URL).
+
 ### ⚠️ URL COPY RULE — NEVER decode, resolve, or alter any URL.
 Ask: "Does this URL stay on the source site with an encoded parameter?"
 - YES (gateway) → copy intact. Never decode the parameter value.
@@ -261,7 +266,7 @@ Ask: "Does this URL stay on the source site with an encoded parameter?"
   ❌ WRONG: `https://actualdomain.com/file/abc123` (this is the decoded destination)
 - NO (direct link) → copy exactly as-is.
 Encoded parameters are server-side tokens — decoding them breaks the link.
-If no gateway URL exists: use the best direct download link found on the page.
+If no gateway URL exists: use the best **direct download** link found on the page (still not a watch-only URL).
 
 {dup_section}
 ## Response Format:
