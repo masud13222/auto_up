@@ -28,8 +28,6 @@ from llm.models import LLMConfig
 from llm.services import LLMService, _try_one_config, _get_ordered_configs
 from llm.json_repair import repair_json
 from llm.schema import COMBINED_SYSTEM_PROMPT
-from llm.schema import FILENAME_SYSTEM_PROMPT
-from llm.schema import TVSHOW_FILENAME_SYSTEM_PROMPT
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(name)s: %(message)s')
 
@@ -144,6 +142,9 @@ def main():
     else:
         links = list(data.get("download_links", {}).keys())
         print(f"  Links: {links}")
+        dfn = data.get("download_filenames") or {}
+        if isinstance(dfn, dict) and dfn:
+            print(f"  download_filenames keys: {list(dfn.keys())}")
 
     # Full JSON
     print(f"\n{G}═══ Full Data ═══{X}")

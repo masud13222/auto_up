@@ -3,6 +3,7 @@ from .blocked_names import SITE_NAME, BLOCKED_SITE_NAMES
 
 _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
 
+_COMPACT = {"separators": (",", ":")}
 
 # ───────────────────────────────────────────────
 # Movie Info Schema
@@ -13,163 +14,54 @@ movie_schema = {
     "properties": {
         "website_movie_title": {
             "type": "string",
-            "description": (
-                f"Formatted display title in this exact format: "
-                f"'Title Year Source Language - {SITE_NAME}'. "
-                f"Source = WEB-DL / CAMRip / HDRip / BluRay / WEBRip / HDTS (NOT resolution) etc. "
-                f"Language like 'Dual Audio [Hindi ORG. + English]' or 'Bengali'. "
-                f"Remove ALL blocked site names. "
-                f"Example: 'Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}'"
-            )
+            "description": f"'Title Year Source Language - {SITE_NAME}'. Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution). Strip blocked names.",
         },
-        "title": {"type": "string", "description": "The clean movie name only (no year, quality, language)"},
-        "year": {"type": "integer", "description": "The year of the movie"},
-        "genre": {"type": "string", "description": "The genre of the movie"},
-        "director": {"type": "string", "description": "The director of the movie"},
-        "rating": {"type": "number", "description": "Numeric rating only (e.g. 7.5)"},
-        "plot": {"type": "string", "description": "The plot of the movie"},
-        "poster_url": {"type": "string", "description": "The poster url of the movie"},
-        "meta_title": {"type": "string", "description": "Natural SEO title (50-60 chars). Place main keyword early. Vary structure — avoid repeating the same pattern across pages."},
-        "meta_description": {"type": "string", "description": "Compelling meta description (140-160 chars). Natural language with a click-worthy CTA. Include movie name, year, quality, language naturally."},
-        "meta_keywords": {"type": "string", "description": "10-15 comma-separated SEO keywords. Include name variations, year, quality variants, language, dubbed, genre, 'download', 'watch online'."},
+        "title": {"type": "string", "description": "Clean movie name only (no year/quality/language)"},
+        "year": {"type": "integer"},
+        "genre": {"type": "string"},
+        "director": {"type": "string"},
+        "rating": {"type": "number", "description": "Numeric only (7.5)"},
+        "plot": {"type": "string"},
+        "poster_url": {"type": "string"},
+        "meta_title": {"type": "string", "description": "SEO title 50-60 chars"},
+        "meta_description": {"type": "string", "description": "Meta desc 140-160 chars with CTA"},
+        "meta_keywords": {"type": "string", "description": "10-15 comma-separated keywords"},
         "download_links": {
             "type": "object",
             "additionalProperties": {"type": "string"},
-            "description": (
-                "File DOWNLOAD URLs only per resolution (e.g. '480p', '720p'). "
-                "Must be links that fetch the release file (e.g. generate.php gateways, real Download buttons, etc). "
-                "Never watch/stream/play/Watch Resolution/player/watch-online URLs — omit a resolution if only streaming exists."
-            ),
+            "description": "Download URLs per resolution. No watch/stream URLs.",
         },
-        "cast": {
-            "type": "string",
-            "description": "Comma-separated cast/actors list. E.g. 'Leonardo DiCaprio, Joseph Gordon-Levitt'"
+        "download_filenames": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "description": "Basenames per resolution; keys=download_links keys. No path separators.",
         },
-        "languages": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of audio languages available. E.g. ['Hindi', 'English'] or ['Bengali']"
-        },
-        "countries": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of production countries. E.g. ['USA', 'UK']"
-        },
-        "imdb_id": {
-            "type": "string",
-            "description": "IMDb ID if found on the page (e.g. 'tt1375666'). Omit if not present."
-        },
-        "tmdb_id": {
-            "type": "string",
-            "description": "TMDB ID if found on the page (e.g. '27205'). Omit if not present."
-        },
+        "cast": {"type": "string", "description": "Comma-separated actors"},
+        "languages": {"type": "array", "items": {"type": "string"}},
+        "countries": {"type": "array", "items": {"type": "string"}},
+        "imdb_id": {"type": "string"},
+        "tmdb_id": {"type": "string"},
         "is_adult": {
             "type": "boolean",
-            "description": (
-                "Hard rule: if the word 'Tagalog' appears in `title`, `website_movie_title`, or the page's main "
-                "visible title/heading (case-insensitive), MUST be true. "
-                "Otherwise true only if the page/release is clearly adult-only or explicit erotic content: "
-                "e.g. 18+, Age 18+, Adults only, A-rated adult/erotic, XXX, hentai/uncensored adult anime. "
-                "False for mainstream films (including horror, action, R-rated violence, or UNRATED director's cuts "
-                "that are not sold as adult/erotic). When unsure (and no Tagalog in title), false."
-            ),
+            "description": "true if Tagalog in title (any case) OR explicit adult (18+/XXX). false otherwise.",
         },
     },
-    "required": ["website_movie_title", "title", "year", "is_adult"]
+    "required": ["website_movie_title", "title", "year", "is_adult", "download_filenames"],
 }
 
 
-MOVIE_SYSTEM_PROMPT = f"""You are an expert web scraping assistant specialized in extracting movie information from HTML content.
+# Standalone movie prompt — used only when NOT calling combined.
+# Combined prompt (get_combined_system_prompt) is the production path.
+MOVIE_SYSTEM_PROMPT = f"""Extract movie info from **Markdown** (page converted HTML→Markdown). Return ONLY valid JSON (no markdown fences).
 
-Your task is to analyze the provided HTML and extract movie details accurately.
+Rules: omit missing fields (no null/empty). Numeric rating/year. Clean title (no year/quality/language). Strip blocked names: {_blocked_names_str}
 
-## Instructions:
-- Extract all available movie information from the HTML content
-- Return ONLY a valid JSON object — no markdown, no backticks, no extra text
-- Follow the JSON schema strictly
-- For missing fields, omit them entirely (do not return null or empty strings)
-- For poster_url: find the main/primary movie poster image
-- For rating: extract numeric value only (e.g. 7.5, not "7.5/10")
-- For year: integer only (e.g. 2026, not "2026")
-- title: extract the CLEAN movie name only (without year, quality, language info)
-- cast: comma-separated actors if listed on page
-- languages: array of audio languages found on page (e.g. ["Hindi", "English"])
-- countries: array of production countries from the page (e.g. ["USA"])
-- **is_adult** (required boolean): **If `title`, `website_movie_title`, or the main page title contains `Tagalog` (any casing) → always `true`.** Else `true` only for clear adult/explicit erotic releases (18+, Adults only, XXX, explicit adult UNRATED/NR marketing). `false` for normal movies including violent/horror/R-rated or UNRATED that is not adult erotica. If ambiguous and no Tagalog in title → `false`.
+website_movie_title: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
+is_adult: true if Tagalog in title/heading (any case). Else true only for explicit adult (18+/XXX/Adults only). false for mainstream.
 
-## IMPORTANT - website_movie_title field (MUST generate in this exact format):
-`Title Year Source Language - {SITE_NAME}`
-- **Title**: clean movie title
-- **Year**: 4-digit year
-- **Source**: WEB-DL, CAMRip, HDRip, BluRay, WEBRip, HDTS, or similar — detect from page content. Do NOT use resolution (1080p/720p) here.
-- **Language**: e.g. `Dual Audio [Hindi ORG. + English]` or `Bengali` or `Multi Audio [Hindi + Bengali + Tamil]`. Extract from the page.
-- **{SITE_NAME}**: always append ` - {SITE_NAME}` at the end
-Example: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars natural CTA. meta_keywords 10-15 relevant.
 
-## IMPORTANT - Clean Site Names:
-- Remove ALL references to these site names from ALL fields (title, website_movie_title, etc.): {_blocked_names_str}
-- For example: "CINEFREAK.TOP - War Machine (2026)" should become title: "War Machine"
-- Never include any site watermark names in the extracted data
+download_filenames: keys=download_links keys. Basename only (no / \\ :). Pattern: `Title.Year.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
+Src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 / else omit extra src. Ext .mkv default.
 
-## SEO Meta Fields (MUST generate — do NOT skip):
-- **meta_title**: Create a natural, human-like SEO title (50-60 chars). Place the main keyword (movie name) early. Avoid repetitive patterns across pages — vary the structure. Do NOT always use the same format.
-  Good examples:
-  - "Ali (2025) Bengali WEB-DL 1080p 720p Full Movie"
-  - "Download Kaliyugam (2025) Hindi Dubbed 480p 720p 1080p"
-  - "War Machine 2026 Hindi Full Movie WEB-DL Download"
-- **meta_description**: Write a compelling, natural meta description (140-160 chars). Use human language — NOT a keyword list. Include a CTA (call-to-action) that makes users want to click. Mention movie name, year, quality, and language naturally.
-  Good examples:
-  - "Download Ali (2025) Bengali full movie in multiple qualities. Fast direct links, English subs included. Stream or download now."
-  - "Watch Kaliyugam (2025) Hindi Dubbed in 480p to 1080p. High-speed GDrive download with subtitles. Grab your copy today."
-- **meta_keywords**: Generate 10-15 relevant, comma-separated keywords. Include name variations (with/without year), quality variants (480p, 720p, 1080p), language, "download", "watch online", "full movie", genre terms.
-  Example: "Ali, Ali 2025, Ali Bengali movie, Ali download, Ali 480p, Ali 720p, Ali 1080p, Bengali movie download, WEB-DL, full movie, watch online, GDrive, drama"
-
-## JSON Schema you must follow:
-{json.dumps(movie_schema, indent=2)}
-
-## Output:
-Return only the JSON object. Nothing else."""
-
-# ───────────────────────────────────────────────
-# Download Filename Schema
-# ───────────────────────────────────────────────
-
-filename_schema = {
-    "type": "object",
-    "additionalProperties": {"type": "string"},
-    "description": "Filenames keyed by resolution (e.g. '480p', '720p', ....). Only include resolutions that exist in download_links."
-}
-
-
-FILENAME_SYSTEM_PROMPT = f"""You are a filename generator for movie downloads.
-
-Given the movie info JSON, generate clean, standardized filenames for each available resolution.
-
-## Rules:
-- Use dots (.) instead of spaces
-- Format: Title.Year.Resolution.Source.WEB-DL.x264.{SITE_NAME}.mkv
-- The LAST part before extension MUST always be "{SITE_NAME}"
-- Example: "War.Machine.2026.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"
-- Use the title and year from the provided movie data
-- Only generate filenames for resolutions that exist in download_links
-
-## Source Detection:
-- If the website_movie_title contains "Netflix" or "NF" → add "NF" as source
-- If it contains "Amazon" or "AMZN" → add "AMZN" as source
-- If it contains "Hotstar" or "DSNP" → add "DSNP" as source
-- If it contains "Jio" or "JC" → add "JC" as source
-- If it contains "Zee5" or "ZEE5" → add "ZEE5" as source
-- If no recognizable source, just use "WEB-DL"
-- Do NOT hardcode "NF" — only use it if the title actually indicates Netflix
-
-## IMPORTANT:
-- NEVER include site names like {_blocked_names_str} in the filename
-- ALWAYS end filename with ".{SITE_NAME}.mkv" (or appropriate extension)
-- Extension should match the URL file extension (default to .mkv if unclear)
-- Return ONLY a valid JSON object — no markdown, no backticks, no extra text
-
-## JSON Schema:
-{json.dumps(filename_schema, indent=2)}
-
-## Output:
-Return only the JSON object. Nothing else."""
+Schema: {json.dumps(movie_schema, **_COMPACT)}"""

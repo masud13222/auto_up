@@ -4,24 +4,45 @@ import shutil
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from upload.service.info import get_structured_output
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
 from screenshot.services.capture import capture_screenshots_for_publish
-from llm.services import LLMService
-from llm.schema import FILENAME_SYSTEM_PROMPT
 from django.conf import settings
 
-from .helpers import save_task, is_drive_link
+from .helpers import save_task, is_drive_link, validate_llm_download_basename
 
 logger = logging.getLogger(__name__)
 
 
+def _movie_download_filenames_from_llm(movie_data: dict) -> dict:
+    """Require LLM `download_filenames`; validate keys match download_links and basenames are safe."""
+    download_links = movie_data.get("download_links") or {}
+    raw = movie_data.get("download_filenames")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Movie `download_filenames` must be a JSON object with the same keys as `download_links`"
+        )
+    out = {}
+    for q in download_links:
+        ctx = f"Movie download_filenames[{q!r}]"
+        if q not in raw:
+            raise ValueError(
+                f"{ctx}: missing key — must supply one basename per `download_links` key "
+                f"(expected keys: {list(download_links.keys())!r})"
+            )
+        out[q] = validate_llm_download_basename(raw.get(q), context=ctx)
+    extra = set(raw.keys()) - set(download_links.keys())
+    if extra:
+        logger.warning("Movie download_filenames: ignoring extra keys not in download_links: %s", sorted(extra))
+    movie_data["download_filenames"] = out
+    return out
+
+
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
     """
-    Movie pipeline: filenames (LLM) -> parallel download+subtitle clean -> optional keyframe
-    screenshots (skipped on duplicate update) -> parallel Drive upload -> FlixBD publish.
+    Movie pipeline: LLM `download_filenames` (validated) -> parallel download + subtitle clean ->
+    optional keyframe screenshots -> parallel Drive upload -> FlixBD publish.
     Skips qualities already on Drive; duplicate update only downloads missing_resolutions.
     """
     title = movie_data.get("title", "Unknown")
@@ -42,14 +63,15 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     if not is_dup_update:
         movie_data.pop("screen_shots_url", None)
 
-    # Step 2: Generate filenames via LLM
-    logger.info(f"Generating filenames for movie: {title}")
-    filename_response = LLMService.generate_completion(
-        prompt=json.dumps(movie_data, indent=2),
-        system_prompt=FILENAME_SYSTEM_PROMPT,
-        purpose='movie_filename',
-    )
-    filenames = get_structured_output(filename_response)
+    # Step 2: Require download_filenames from main extract (no server-side synthesis)
+    logger.info(f"Validating download_filenames for movie: {title}")
+    try:
+        filenames = _movie_download_filenames_from_llm(movie_data)
+    except ValueError as e:
+        msg = str(e)
+        logger.error("Movie pipeline: %s", msg)
+        save_task(media_task, status="failed", error_message=msg, result=movie_data)
+        return json.dumps({"status": "error", "message": msg})
 
     # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()

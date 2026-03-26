@@ -133,7 +133,7 @@ Always show all three lists. Never write a vague sentence.
 - Return ONLY valid JSON — no markdown, no backticks
 
 ## JSON Schema:
-{json.dumps(duplicate_schema, indent=2)}
+{json.dumps(duplicate_schema, separators=(',',':'))}
 
 ## Output:
 Return only the JSON object. Nothing else."""

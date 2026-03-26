@@ -20,6 +20,27 @@ def is_drive_link(url):
     return 'drive.google.com' in url
 
 
+def validate_llm_download_basename(value, *, context: str) -> str:
+    """
+    Ensure LLM-supplied download basename is safe for local filesystem use.
+    Reject path traversal / directory injection (validation gate for structured extract).
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{context}: expected string basename, got {type(value).__name__}")
+    s = value.strip()
+    if not s:
+        raise ValueError(f"{context}: empty basename")
+    if any(c in s for c in "/\\"):
+        raise ValueError(f"{context}: basename must not contain path separators (use filename only, no folders)")
+    if s in (".", ".."):
+        raise ValueError(f"{context}: invalid basename {s!r}")
+    if "\x00" in s:
+        raise ValueError(f"{context}: basename contains null byte")
+    if ":" in s:
+        raise ValueError(f"{context}: basename must not contain ':' (Windows / ADS)")
+    return s
+
+
 def get_memory_mb():
     """Get current process RSS memory usage in MB (Linux only)."""
     try:

@@ -246,6 +246,17 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
                 logger.debug(f"Preserved existing drive link for {res}")
         new_data["download_links"] = new_dl
 
+    old_fn = old_result.get("download_filenames")
+    if isinstance(old_fn, dict) and old_fn and new_dl:
+        merged_fn = dict(new_data.get("download_filenames") or {})
+        for res in new_dl:
+            cur = merged_fn.get(res)
+            if not (isinstance(cur, str) and cur.strip()) and res in old_fn:
+                ov = old_fn.get(res)
+                if isinstance(ov, str) and ov.strip():
+                    merged_fn[res] = ov.strip()
+        new_data["download_filenames"] = merged_fn
+
     # ── TV Show: seasons → download_items → resolutions ──
     old_seasons = {s.get("season_number"): s for s in old_result.get("seasons", [])}
     for new_season in new_data.get("seasons", []):
@@ -254,10 +265,13 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
         if not old_season:
             continue
 
-        # Build lookup: label → {resolution: link}
+        # Build lookup: label → {resolution: link} and label → full item (for download_filenames)
         old_items = {}
+        old_items_full = {}
         for item in old_season.get("download_items", []):
-            old_items[item.get("label", "")] = item.get("resolutions", {})
+            lab = item.get("label", "")
+            old_items[lab] = item.get("resolutions", {})
+            old_items_full[lab] = item
 
         for new_item in new_season.get("download_items", []):
             label = new_item.get("label", "")
@@ -270,6 +284,18 @@ def _merge_drive_links(old_result: dict, new_data: dict) -> dict:
                     logger.debug(f"Preserved existing drive link for S{snum} {label} {res}")
 
             new_item["resolutions"] = new_res
+
+            old_full = old_items_full.get(label) or {}
+            old_dfn = old_full.get("download_filenames")
+            if isinstance(old_dfn, dict) and old_dfn and new_res:
+                merged_dfn = dict(new_item.get("download_filenames") or {})
+                for res in new_res:
+                    cur = merged_dfn.get(res)
+                    if not (isinstance(cur, str) and cur.strip()) and res in old_dfn:
+                        ov = old_dfn.get(res)
+                        if isinstance(ov, str) and ov.strip():
+                            merged_dfn[res] = ov.strip()
+                new_item["download_filenames"] = merged_dfn
 
     # Preserve Telegram/Worker screenshot URLs — no re-capture on duplicate update
     old_ss = old_result.get("screen_shots_url")
@@ -316,6 +342,14 @@ def _clean_result_keep_drive_links(result: dict) -> dict:
             k: v for k, v in cleaned['download_links'].items()
             if is_drive_link(v)
         }
+        dfn = cleaned.get("download_filenames")
+        if isinstance(dfn, dict):
+            if cleaned["download_links"]:
+                cleaned["download_filenames"] = {
+                    k: v for k, v in dfn.items() if k in cleaned["download_links"]
+                }
+            else:
+                cleaned["download_filenames"] = {}
 
     # Clean TV show seasons
     for season in cleaned.get('seasons', []):
@@ -325,6 +359,11 @@ def _clean_result_keep_drive_links(result: dict) -> dict:
             cleaned_res = {k: v for k, v in res.items() if is_drive_link(v)}
             if cleaned_res:
                 item['resolutions'] = cleaned_res
+                dfn = item.get("download_filenames")
+                if isinstance(dfn, dict):
+                    item["download_filenames"] = {
+                        k: v for k, v in dfn.items() if k in cleaned_res
+                    }
                 items_to_keep.append(item)
         season['download_items'] = items_to_keep
 

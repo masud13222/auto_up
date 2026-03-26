@@ -4,23 +4,41 @@ import shutil
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from upload.service.info import get_structured_output
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
 from screenshot.services.capture import capture_screenshots_for_publish
-from llm.services import LLMService
-from llm.schema import TVSHOW_FILENAME_SYSTEM_PROMPT, tvshow_filename_schema
 from django.conf import settings
 
-from .helpers import save_task, is_drive_link, log_memory
+from .helpers import save_task, is_drive_link, log_memory, validate_llm_download_basename
 
 logger = logging.getLogger(__name__)
 
 
+def _tv_item_filenames_from_llm(item: dict, season_num) -> dict:
+    """Use LLM output only; raise ValueError if any resolution lacks a safe non-empty basename."""
+    raw = item.get("download_filenames")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"S{season_num} {item.get('label')!r}: download_filenames must be a JSON object"
+        )
+    resolutions = item.get("resolutions") or {}
+    out = {}
+    for q in resolutions:
+        ctx = f"S{season_num} {item.get('label')!r} download_filenames[{q!r}]"
+        if q not in raw:
+            raise ValueError(
+                f"{ctx}: missing key — need one basename per resolutions key "
+                f"{list(resolutions.keys())!r}"
+            )
+        out[q] = validate_llm_download_basename(raw.get(q), context=ctx)
+    item["download_filenames"] = out
+    return out
+
+
 def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     """
-    TV Show pipeline: Generate filenames -> Download/Clean/Upload -> FlixBD Publish -> Cleanup
+    TV Show pipeline: download_filenames from main LLM extract -> Download/Clean/Upload -> FlixBD -> Cleanup
 
     Parallelism strategy:
     - Items (combo/partial/single) processed SEQUENTIALLY
@@ -56,16 +74,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     if not is_dup_update:
         tvshow_data.pop("screen_shots_url", None)
 
-    # Step 2: Generate filenames via LLM
-    logger.info(f"Generating filenames for TV show: {title}")
-    filename_response = LLMService.generate_completion(
-        prompt=json.dumps(tvshow_data, indent=2),
-        system_prompt=TVSHOW_FILENAME_SYSTEM_PROMPT,
-        purpose='tvshow_filename',
-    )
-    filenames = get_structured_output(filename_response)
-    if not isinstance(filenames, list):
-        filenames = [filenames]
+    # Step 2: Filenames embedded in extract (per-item download_filenames)
+    logger.info(f"Resolving download_filenames for TV show: {title}")
 
     # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()
@@ -94,31 +104,29 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     # Build list of all download items
     all_items = []
-    for season in seasons:
-        season_num = season.get("season_number")
-        for item in season.get("download_items", []):
-            item_type = item.get("type")
-            item_label = item.get("label", "Unknown")
-            resolutions = item.get("resolutions", {})
+    try:
+        for season in seasons:
+            season_num = season.get("season_number")
+            for item in season.get("download_items", []):
+                item_type = item.get("type")
+                item_label = item.get("label", "Unknown")
+                resolutions = item.get("resolutions", {})
 
-            # Find matching filename
-            fname_item = next(
-                (f for f in filenames
-                 if f.get("season_number") == season_num
-                 and f.get("type") == item_type
-                 and f.get("label") == item_label),
-                {}
-            )
-            fname_resolutions = fname_item.get("resolutions", {})
+                fname_resolutions = _tv_item_filenames_from_llm(item, season_num)
 
-            all_items.append({
-                "season_number": season_num,
-                "type": item_type,
-                "label": item_label,
-                "resolutions": resolutions,
-                "fname_resolutions": fname_resolutions,
-                "season_folder_id": season_folders.get(season_num),
-            })
+                all_items.append({
+                    "season_number": season_num,
+                    "type": item_type,
+                    "label": item_label,
+                    "resolutions": resolutions,
+                    "fname_resolutions": fname_resolutions,
+                    "season_folder_id": season_folders.get(season_num),
+                })
+    except ValueError as e:
+        msg = str(e)
+        logger.error("TV show pipeline: %s", msg)
+        save_task(media_task, status="failed", error_message=msg, result=tvshow_data)
+        return json.dumps({"status": "error", "message": msg})
 
     # -- Helper functions --
 
