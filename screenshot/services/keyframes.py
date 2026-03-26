@@ -1,5 +1,5 @@
 """
-Extract N evenly-spaced JPEG screenshots from a video, total ≤ 5 MiB.
+Extract N JPEG screenshots from a video (random times in the middle of the timeline), total ≤ 5 MiB.
 
 Practices aligned with FFmpeg / community guidance:
 
@@ -29,8 +29,11 @@ Practices aligned with FFmpeg / community guidance:
 Pillow is used only to enforce the **5 MiB** total bundle cap (re-encode / scale).
 
 ``thumbnail`` + ``-frames:v N`` in one pass does **not** evenly sample a long file (one
-thumbnail per decoded window from the start). Evenly spaced ``-ss`` times keep full-length
-coverage.
+thumbnail per decoded window from the start).
+
+**Sampling:** Timestamps are **random** inside the **middle** of the file (roughly 20%–80%
+of duration; widened for very short videos) so grabs avoid opening titles and tail credits.
+No Django settings — logic is code-only.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -64,6 +68,35 @@ FFMPEG_JPEG_Q = 3
 HYBRID_LEAD_SEC = 12.0
 # Minimum T1 for hybrid (skip hybrid when seek is already near start).
 HYBRID_MIN_T_FAST = 1.0
+
+
+def _random_sample_times_middle(duration: float, num_frames: int) -> list[float]:
+    """
+    Pick ``num_frames`` random seek times in the middle band of the file (skip start/end).
+    Sorted ascending for deterministic ffmpeg order in logs.
+    """
+    if num_frames < 1:
+        return []
+    # Default band: 20%–80% of runtime (avoids logos/titles and late credits).
+    t_lo = duration * 0.20
+    t_hi = duration * 0.80
+    if t_hi - t_lo < 8.0:
+        t_lo = max(0.5, duration * 0.08)
+        t_hi = max(t_lo + 2.0, duration * 0.92)
+    span = t_hi - t_lo
+    if span < 0.5:
+        t_lo = max(0.25, duration * 0.05)
+        t_hi = max(t_lo + 0.5, duration - 0.25)
+        span = t_hi - t_lo
+    times = sorted(random.uniform(t_lo, t_hi) for _ in range(num_frames))
+    logger.info(
+        "Screenshot middle-band random [%.1fs–%.1fs] of %.1fs: %s",
+        t_lo,
+        t_hi,
+        duration,
+        ", ".join(f"{t:.2f}s" for t in times),
+    )
+    return times
 
 
 def _env_hwaccel_raw() -> str:
@@ -477,7 +510,7 @@ def extract_keyframes_webp(
 ) -> list[Path]:
     """
     Extract ``num_frames`` JPEG screenshots; total size ≤ 5 MiB after optional Pillow pass.
-    Name kept for callers.
+    Seek times are random within the middle segment of the video (see module docstring).
     """
     if not video_path or not os.path.isfile(video_path):
         return []
@@ -504,7 +537,7 @@ def extract_keyframes_webp(
     prefix = _safe_prefix(name_prefix)
     tmp = tempfile.mkdtemp(prefix="ss_raw_")
     try:
-        times = [duration * (i + 0.5) / num_frames for i in range(num_frames)]
+        times = _random_sample_times_middle(duration, num_frames)
 
         jpg_paths: list[Path] = []
         for i, t in enumerate(times):
