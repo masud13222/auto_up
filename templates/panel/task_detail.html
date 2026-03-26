@@ -28,8 +28,10 @@
         <template x-if="status === 'failed' && error">
             <div class="mt-4 bg-red-500/5 border border-red-500/10 rounded-lg p-3">
                 <p class="text-xs text-red-400 break-words" x-text="error"></p>
-                <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="mt-2">{% csrf_token %}
-                    <button class="text-xs accent hover:underline">↺ Retry</button>
+                <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="mt-2 flex flex-wrap items-center gap-2">{% csrf_token %}
+                    <label class="text-[10px] text-[#555] uppercase tracking-wide">Priority</label>
+                    <input type="number" name="q_priority" value="10" min="0" max="999999" step="1" class="w-20 text-xs bg-[#0e0e0e] border border-[#333] rounded px-2 py-1 text-[#ccc] font-mono" title="Higher runs sooner in queue">
+                    <button type="submit" class="text-xs accent hover:underline">↺ Retry</button>
                 </form>
             </div>
         </template>

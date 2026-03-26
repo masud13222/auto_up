@@ -2,22 +2,24 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django_q.tasks import async_task
 
+from .django_q_priority import parse_q_priority
 from .models import MediaTask
 
 
-def _queue_new_task(url: str) -> MediaTask:
+def _queue_new_task(url: str, *, q_priority: int = 0) -> MediaTask:
     media_task = MediaTask.objects.create(url=url)
     q_task_id = async_task(
         "upload.tasks.process_media_task",
         media_task.pk,
         task_name=f"Process: {url[:50]}",
+        q_options={"q_priority": q_priority},
     )
     media_task.task_id = q_task_id or ""
     media_task.save(update_fields=["task_id"])
     return media_task
 
 
-def _process_one_with_duplicate_check(url: str) -> dict:
+def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
     """
     Legacy behavior: block or merge with existing MediaTask for same URL.
     Returns a dict suitable for JSON (always includes keys used by the panel).
@@ -50,6 +52,7 @@ def _process_one_with_duplicate_check(url: str) -> dict:
                 "upload.tasks.process_media_task",
                 existing.pk,
                 task_name=f"Process: {url[:50]}",
+                q_options={"q_priority": q_priority},
             )
             existing.task_id = q_task_id or ""
             existing.save(update_fields=["task_id"])
@@ -61,7 +64,7 @@ def _process_one_with_duplicate_check(url: str) -> dict:
                 "redirect": f"/panel/task/{existing.pk}/",
             }
 
-    media_task = _queue_new_task(url)
+    media_task = _queue_new_task(url, q_priority=q_priority)
     return {
         "success": True,
         "task_id": media_task.pk,
@@ -70,9 +73,9 @@ def _process_one_with_duplicate_check(url: str) -> dict:
     }
 
 
-def _process_one_skip_duplicate_check(url: str) -> dict:
+def _process_one_skip_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
     """Always create a new task and queue (no URL deduplication)."""
-    media_task = _queue_new_task(url)
+    media_task = _queue_new_task(url, q_priority=q_priority)
     return {
         "success": True,
         "task_id": media_task.pk,
@@ -90,6 +93,7 @@ def process_media(request):
       - ``urls`` — multiline, one URL per line (preferred)
       - ``url`` — single URL (backward compatible)
       - ``skip_duplicate_check`` — if 1/on/true/yes, never match existing MediaTask by URL
+      - ``q_priority`` — optional int 0–999999; higher values are dequeued first (ORM broker)
     """
     if request.method != "POST":
         return JsonResponse({"error": "POST method required."}, status=405)
@@ -100,6 +104,8 @@ def process_media(request):
     else:
         _sk = (request.POST.get("skip_duplicate_check") or "1").lower()
         skip_dup = _sk not in ("0", "false", "off", "no")
+
+    q_priority = parse_q_priority(request.POST.get("q_priority"))
 
     raw_block = request.POST.get("urls", "").strip()
     single = request.POST.get("url", "").strip()
@@ -122,9 +128,9 @@ def process_media(request):
             failed.append({"url": url, "error": "Must start with http:// or https://"})
             continue
         if skip_dup:
-            payload = _process_one_skip_duplicate_check(url)
+            payload = _process_one_skip_duplicate_check(url, q_priority=q_priority)
         else:
-            payload = _process_one_with_duplicate_check(url)
+            payload = _process_one_with_duplicate_check(url, q_priority=q_priority)
         results.append({"url": url, **payload})
 
     if len(lines) == 1 and len(results) == 1 and not failed:

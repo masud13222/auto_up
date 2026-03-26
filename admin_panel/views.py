@@ -8,6 +8,7 @@ from django.utils.safestring import mark_safe
 from django_q.tasks import async_task
 import json
 
+from upload.django_q_priority import parse_q_priority
 from upload.models import MediaTask
 from settings.models import GoogleConfig, UploadSettings
 
@@ -95,7 +96,13 @@ def requeue_task(request, pk):
     task.status = 'pending'
     task.error_message = ''
     task.save()
-    q_id = async_task('upload.tasks.process_media_task', task.pk, task_name=f'Process: {task.url[:50]}')
+    q_pri = parse_q_priority(request.POST.get("q_priority"))
+    q_id = async_task(
+        "upload.tasks.process_media_task",
+        task.pk,
+        task_name=f"Process: {task.url[:50]}",
+        q_options={"q_priority": q_pri},
+    )
     task.task_id = q_id or ''
     task.save(update_fields=['task_id'])
     return redirect('panel:task_detail', pk=pk)

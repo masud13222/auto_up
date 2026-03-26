@@ -33,6 +33,24 @@
             <p class="mt-1.5 text-[10px] sm:text-xs text-[#525252]">Tip: <kbd class="px-1 py-0.5 rounded bg-[#1a1a1a] border border-[#333] text-[#888]">Ctrl</kbd>+<kbd class="px-1 py-0.5 rounded bg-[#1a1a1a] border border-[#333] text-[#888]">Enter</kbd> to submit</p>
         </div>
 
+        <div>
+            <label for="id_q_priority" class="block text-[11px] sm:text-xs font-medium text-[#a3a3a3] uppercase tracking-wider mb-2">
+                Queue priority <span class="text-[#525252] font-normal normal-case">(higher runs first)</span>
+            </label>
+            <input
+                type="number"
+                id="id_q_priority"
+                x-model.number="qPriority"
+                min="0"
+                max="999999"
+                step="1"
+                placeholder="0"
+                class="w-full max-w-[10rem] bg-[#0e0e0e] border border-[#262626] text-white rounded-xl px-3 py-2.5 text-sm font-mono focus:border-[#f97316] transition-colors"
+                :disabled="loading"
+            >
+            <p class="mt-1.5 text-[10px] sm:text-xs text-[#525252]">Default 0. Use e.g. 50 or 100 to jump ahead of bulk jobs.</p>
+        </div>
+
         <label class="flex items-start gap-3 cursor-pointer group rounded-lg border border-[#262626] bg-[#141414] p-3 sm:p-3.5 hover:border-[#333] transition-colors">
             <input
                 type="checkbox"
@@ -99,6 +117,7 @@
 document.addEventListener('alpine:init', () => {
     Alpine.data('processForm', () => ({
         urls: '',
+        qPriority: 0,
         reuseExisting: false,
         loading: false,
         error: '',
@@ -127,6 +146,8 @@ document.addEventListener('alpine:init', () => {
             const fd = new FormData();
             fd.append('urls', raw);
             fd.append('skip_duplicate_check', this.reuseExisting ? '0' : '1');
+            const pri = Number.isFinite(this.qPriority) ? Math.max(0, Math.min(999999, Math.trunc(this.qPriority))) : 0;
+            fd.append('q_priority', String(pri));
             fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
             try {

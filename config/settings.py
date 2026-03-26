@@ -165,11 +165,14 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DOWNLOADS_DIR = BASE_DIR / 'downloads'
 
 # Django-Q2 Queue Configuration (ORM Broker)
-# Worker count is fixed here; do NOT query DB at settings load time (causes Gunicorn worker timeout)
-# To change worker count, update this value and redeploy.
+# Default workers below; when you run ``manage.py qcluster``, upload.apps.UploadConfig.ready()
+# overwrites ``workers`` from settings.UploadSettings.worker_count (Panel → Settings).
+# Optional env override (highest priority): Q_CLUSTER_WORKERS=2
+# Gunicorn/web processes do not run qcluster — they keep this dict unchanged.
+_QC_WORKERS = int(os.environ.get("Q_CLUSTER_WORKERS", "1"))
 Q_CLUSTER = {
     'name': 'Upload',
-    'workers': 1,
+    'workers': max(1, _QC_WORKERS),
     'timeout': 7200,       # 2 hours max per task
     'retry': 7500,         # Retry after 2.5 hours if no result
     'queue_limit': 50,
@@ -178,6 +181,8 @@ Q_CLUSTER = {
     'ack_failures': True,  # Mark failed tasks as done (don't auto-retry)
     'max_attempts': 1,     # Don't retry failed tasks
     'orm': 'default',      # Use Django ORM as broker (no Redis needed)
+    # Dequeue order: higher q_priority first (see upload.django_q_priority + migration 0007)
+    'broker_class': 'upload.django_q_priority.PriorityORM',
     # Successful task rows: keep at most this many (oldest dropped). 0 = keep all, -1 = keep none.
     # Failed tasks are NOT pruned by this setting; clear those from admin or a custom job if needed.
     'save_limit': 250,
