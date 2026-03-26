@@ -1,74 +1,148 @@
+from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django_q.tasks import async_task
+
 from .models import MediaTask
 
 
-def process_media(request):
-    """
-    AJAX endpoint: receives a URL, checks for duplicates, queues task.
-    """
-    if request.method != 'POST':
-        return JsonResponse({'error': 'POST method required.'}, status=405)
+def _queue_new_task(url: str) -> MediaTask:
+    media_task = MediaTask.objects.create(url=url)
+    q_task_id = async_task(
+        "upload.tasks.process_media_task",
+        media_task.pk,
+        task_name=f"Process: {url[:50]}",
+    )
+    media_task.task_id = q_task_id or ""
+    media_task.save(update_fields=["task_id"])
+    return media_task
 
-    url = request.POST.get('url', '').strip()
-    if not url:
-        return JsonResponse({'error': 'URL is required.'}, status=400)
 
-    # Check if this URL was already processed
+def _process_one_with_duplicate_check(url: str) -> dict:
+    """
+    Legacy behavior: block or merge with existing MediaTask for same URL.
+    Returns a dict suitable for JSON (always includes keys used by the panel).
+    """
     existing = MediaTask.objects.filter(url=url).first()
 
     if existing:
-        if existing.status == 'completed':
-            return JsonResponse({
-                'success': True,
-                'duplicate': True,
-                'task_id': existing.pk,
-                'message': 'Already processed! Redirecting to results...',
-                'redirect': f'/panel/task/{existing.pk}/'
-            })
-        elif existing.status in ('pending', 'processing'):
-            return JsonResponse({
-                'success': True,
-                'duplicate': True,
-                'task_id': existing.pk,
-                'message': 'Already in queue! Redirecting...',
-                'redirect': f'/panel/task/{existing.pk}/'
-            })
-        elif existing.status == 'failed':
-            # Reset and re-queue
-            existing.status = 'pending'
-            existing.error_message = ''
+        if existing.status == "completed":
+            return {
+                "success": True,
+                "duplicate": True,
+                "task_id": existing.pk,
+                "message": "Already processed! Redirecting to results...",
+                "redirect": f"/panel/task/{existing.pk}/",
+            }
+        if existing.status in ("pending", "processing"):
+            return {
+                "success": True,
+                "duplicate": True,
+                "task_id": existing.pk,
+                "message": "Already in queue! Redirecting...",
+                "redirect": f"/panel/task/{existing.pk}/",
+            }
+        if existing.status == "failed":
+            existing.status = "pending"
+            existing.error_message = ""
             existing.save()
 
             q_task_id = async_task(
-                'upload.tasks.process_media_task',
+                "upload.tasks.process_media_task",
                 existing.pk,
-                task_name=f'Process: {url[:50]}',
+                task_name=f"Process: {url[:50]}",
             )
-            existing.task_id = q_task_id or ''
-            existing.save(update_fields=['task_id'])
+            existing.task_id = q_task_id or ""
+            existing.save(update_fields=["task_id"])
 
-            return JsonResponse({
-                'success': True,
-                'task_id': existing.pk,
-                'message': 'Re-queued failed task!',
-                'redirect': f'/panel/task/{existing.pk}/'
-            })
+            return {
+                "success": True,
+                "task_id": existing.pk,
+                "message": "Re-queued failed task!",
+                "redirect": f"/panel/task/{existing.pk}/",
+            }
 
-    # Create new task
-    media_task = MediaTask.objects.create(url=url)
+    media_task = _queue_new_task(url)
+    return {
+        "success": True,
+        "task_id": media_task.pk,
+        "message": "Task queued!",
+        "redirect": f"/panel/task/{media_task.pk}/",
+    }
 
-    q_task_id = async_task(
-        'upload.tasks.process_media_task',
-        media_task.pk,
-        task_name=f'Process: {url[:50]}',
+
+def _process_one_skip_duplicate_check(url: str) -> dict:
+    """Always create a new task and queue (no URL deduplication)."""
+    media_task = _queue_new_task(url)
+    return {
+        "success": True,
+        "task_id": media_task.pk,
+        "message": "Task queued!",
+        "redirect": f"/panel/task/{media_task.pk}/",
+    }
+
+
+@login_required
+def process_media(request):
+    """
+    AJAX endpoint: one or many URLs (one per line in ``urls``), optional duplicate check.
+
+    POST:
+      - ``urls`` — multiline, one URL per line (preferred)
+      - ``url`` — single URL (backward compatible)
+      - ``skip_duplicate_check`` — if 1/on/true/yes, never match existing MediaTask by URL
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST method required."}, status=405)
+
+    # Panel sends skip_duplicate_check=1 to queue without URL dedup. Omit field = legacy duplicate check.
+    if "skip_duplicate_check" not in request.POST:
+        skip_dup = False
+    else:
+        _sk = (request.POST.get("skip_duplicate_check") or "1").lower()
+        skip_dup = _sk not in ("0", "false", "off", "no")
+
+    raw_block = request.POST.get("urls", "").strip()
+    single = request.POST.get("url", "").strip()
+    if raw_block:
+        lines = [ln.strip() for ln in raw_block.splitlines() if ln.strip()]
+    elif single:
+        lines = [single]
+    else:
+        return JsonResponse({"error": "URL is required."}, status=400)
+
+    def valid_http(u: str) -> bool:
+        low = u.lower()
+        return low.startswith("http://") or low.startswith("https://")
+
+    results: list[dict] = []
+    failed: list[dict] = []
+
+    for url in lines:
+        if not valid_http(url):
+            failed.append({"url": url, "error": "Must start with http:// or https://"})
+            continue
+        if skip_dup:
+            payload = _process_one_skip_duplicate_check(url)
+        else:
+            payload = _process_one_with_duplicate_check(url)
+        results.append({"url": url, **payload})
+
+    if len(lines) == 1 and len(results) == 1 and not failed:
+        r = results[0]
+        body = {k: v for k, v in r.items() if k != "url"}
+        return JsonResponse(body)
+
+    msg_parts = [f"Queued {len(results)}"]
+    if failed:
+        msg_parts.append(f"{len(failed)} invalid/skipped")
+    return JsonResponse(
+        {
+            "success": len(results) > 0,
+            "batch": True,
+            "queued": len(results),
+            "failed_count": len(failed),
+            "results": results,
+            "failed": failed,
+            "message": ", ".join(msg_parts),
+        }
     )
-    media_task.task_id = q_task_id or ''
-    media_task.save(update_fields=['task_id'])
-
-    return JsonResponse({
-        'success': True,
-        'task_id': media_task.pk,
-        'message': 'Task queued!',
-        'redirect': f'/panel/task/{media_task.pk}/'
-    })

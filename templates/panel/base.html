@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0e0e0e">
     <title>{% block title %}FlixBD{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
@@ -21,7 +22,7 @@
         .btn-primary:hover { background:#fb923c; }
     </style>
 </head>
-<body class="min-h-screen" x-data="{ drawer: false }">
+<body class="min-h-screen antialiased overflow-x-hidden" x-data="{ drawer: false }">
 
 <!-- Mobile Overlay -->
 <div x-show="drawer" x-transition.opacity @click="drawer=false"
@@ -86,7 +87,7 @@
             <h2 class="text-sm font-semibold text-white">{% block page_title %}Dashboard{% endblock %}</h2>
         </div>
     </header>
-    <main class="flex-1 p-4 md:p-6">{% block content %}{% endblock %}</main>
+    <main class="flex-1 p-4 sm:p-5 md:p-6 w-full min-w-0 max-w-[100vw]">{% block content %}{% endblock %}</main>
 </div>
 </body>
 </html>

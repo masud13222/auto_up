@@ -16,3 +16,4 @@ staticfiles/
 .cursor/
 **/.dev.vars
 node_modules/
+extracted_links.txt
