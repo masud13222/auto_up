@@ -6,6 +6,9 @@ Uses safe startup logic — only creates the schedule if it doesn't exist.
 """
 
 import logging
+from datetime import timedelta
+
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,7 @@ def update_interval(minutes: int):
             schedule_type=Schedule.MINUTES,
             minutes=minutes,
             repeats=-1,
+            next_run=timezone.now() + timedelta(minutes=minutes),
         )
         logger.info(f"Created auto-scrape schedule: every {minutes} minutes")
 

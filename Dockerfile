@@ -9,6 +9,7 @@ ENV DJANGO_SETTINGS_MODULE=config.settings
 # Step 1: aria2 + ffmpeg (JPEG screenshots) + Chrome prerequisites; Pillow compresses frames in-app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     aria2 ffmpeg wget gnupg ca-certificates \
+    postgresql-client \
     libx11-xcb1 libdbus-glib-1-2 \
     && rm -rf /var/lib/apt/lists/*
 
