@@ -192,7 +192,10 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
             # Save usage on success
             _save_usage(config, response, duration_ms, success=True, purpose=purpose)
 
-            logger.debug(f"[{config.name}] Response received: {len(content)} chars")
+            logger.info(
+                f"[{config.name}] LLM raw output: {len(content)} characters "
+                f"(purpose={purpose or 'n/a'}, {duration_ms}ms)"
+            )
             return content
 
         except Exception as e:
