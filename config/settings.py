@@ -48,6 +48,9 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    # django_q before upload: django_q/admin.py registers OrmQ; upload.admin replaces it.
+    'django_q',
+
     # Local Apps
     'llm',
     'upload',
@@ -56,9 +59,6 @@ INSTALLED_APPS = [
     'screenshot',
     'admin_panel',
     'credentials',
-
-    # Third-party Apps
-    'django_q',
 
     # django-cleanup must be last
     'django_cleanup.apps.CleanupConfig',

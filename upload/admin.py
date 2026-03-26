@@ -6,6 +6,10 @@ from django_q.models import OrmQ
 
 from .models import MediaTask
 
+# django_q registers OrmQ in django_q.admin; replace with priority-aware admin.
+if admin.site.is_registered(OrmQ):
+    admin.site.unregister(OrmQ)
+
 
 @admin.register(OrmQ)
 class OrmQQueueAdmin(admin.ModelAdmin):
