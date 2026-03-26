@@ -41,7 +41,9 @@ services:
   worker:
     build: .
     container_name: flixbd_worker
-    command: python manage.py qcluster
+    # Must migrate before qcluster — same race as web if DB is empty (django_q_ormq, etc.)
+    command: >
+      sh -c "python manage.py migrate --noinput && exec python manage.py qcluster"
     depends_on:
       db:
         condition: service_healthy
