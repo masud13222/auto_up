@@ -93,8 +93,10 @@ class UploadConfig(AppConfig):
     def ready(self):
         """Re-queue stuck tasks + clean downloads after app init (deferred — avoids DB during setup)."""
         from .django_q_priority import install_django_q_priority
+        from .django_q_pusher_backpressure import install_django_q_pusher_backpressure
 
         install_django_q_priority()
+        install_django_q_pusher_backpressure()
 
         if not _is_server_or_queue_process():
             return

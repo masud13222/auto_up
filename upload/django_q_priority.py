@@ -15,6 +15,11 @@ Priority semantics (django-q):
     With WORKERS>1, multiple jobs can run at once; a free worker always pulls the best waiting
     task by (-priority, id). Enable DEBUG on logger ``upload.django_q_priority`` to log each
     dequeue (pk + priority).
+
+Stock django-q ``pusher`` prefetches many broker tasks into a FIFO multiprocessing Queue before
+workers consume them, which can reorder behind later high-priority inserts. See
+``upload.django_q_pusher_backpressure`` — limits in-memory queue depth to Conf.WORKERS so each
+new dequeue sees up-to-date DB ordering.
 """
 
 from __future__ import annotations
@@ -120,7 +125,7 @@ class PriorityORM(ORM):
                     .update(lock=self.timeout(task))
                 ):
                     log.debug(
-                        "django-q OrmQ dequeued pk=%s priority=%s (higher priority waited first)",
+                        "django-q OrmQ claimed pk=%s db_priority=%s",
                         task.pk,
                         getattr(task, "priority", 0),
                     )
