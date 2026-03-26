@@ -1,5 +1,6 @@
 import json
 
+from .blocked_names import SITE_NAME
 
 # ───────────────────────────────────────────────
 # Duplicate Detection Schema
@@ -14,7 +15,13 @@ duplicate_schema = {
         },
         "matched_task_id": {
             "type": ["integer", "null"],
-            "description": "The 'id' of the DB candidate you matched against. REQUIRED for skip/update/replace. null only when action=process (no match)."
+            "description": (
+                "Our upload DB (MediaTask) primary key: ONLY from ### DB Candidates `id` when that block exists. "
+                f"If there is NO DB Candidates block, MUST always be null — never invent an id; never use {SITE_NAME} Match `id` "
+                f"({SITE_NAME} uses a different id space). "
+                f"When DB candidates exist AND you skip/update/replace that specific DB row, set its `id`. "
+                "When action is process, or only the target site matches (no DB row), null."
+            ),
         },
         "action": {
             "type": "string",
@@ -111,17 +118,18 @@ Missing = [480p, 1080p]
 
 ## Action Definitions:
 
-**"skip"** — Nothing new. Same title+year AND every resolution in Extracted already exists in Existing. Even ONE missing resolution = NOT a skip. Set matched_task_id to the candidate's id.
+**"skip"** — Nothing new on the target. Same title+year AND every resolution in Extracted already exists in Existing. Even ONE missing resolution = NOT a skip. If you matched a **DB candidate**, set matched_task_id to that candidate's id; if you matched **only** a target-site row (no DB candidates in input), matched_task_id=null.
 
-**"update"** — Same title+year but at least one resolution is missing OR new episodes found. Set missing_resolutions to the missing list. Set matched_task_id to the candidate's id.
+**"update"** — Same title+year but missing resolutions OR new episodes. Set missing_resolutions. If a **DB candidate** is the match, set matched_task_id to its id; if only target-site context (no DB list), matched_task_id=null.
 
-**"replace"** — Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay). OR type mismatch with same title. Set matched_task_id to the candidate's id.
+**"replace"** — Quality upgrade or type fix against a **DB** row; matched_task_id = that DB candidate's id. If no DB candidates in input, use action process with matched_task_id=null unless instructions say otherwise.
 
-**"process"** — Completely different content (different title, year, or season). Set matched_task_id=null.
+**"process"** — Different content or no confident match. matched_task_id=null.
 
 ## matched_task_id Rules:
-- For skip/update/replace: MUST be the `id` of the candidate you matched against. Never null.
-- For process: MUST be null. No match found.
+- NEVER use **{SITE_NAME} Match** `id` values (e.g. 10407) — those are NOT MediaTask primary keys.
+- **DB Candidates present in prompt:** skip/update/replace against a DB row → set that row's `id`; process → null.
+- **No DB Candidates in prompt:** matched_task_id MUST always be null; decide skip/update/process using target-site rows + resolutions only.
 
 ## Quality Hierarchy (lowest to highest):
 CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX
