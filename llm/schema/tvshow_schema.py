@@ -59,6 +59,15 @@ tvshow_schema = {
             "type": "string",
             "description": "TMDB ID if found on the page (e.g. '1396'). Omit if not present."
         },
+        "is_adult": {
+            "type": "boolean",
+            "description": (
+                "True only if the series/page is clearly adult-only or explicit erotic content: "
+                "e.g. 18+, Adults only, A-rated adult, XXX, uncensored adult anime. "
+                "False for mainstream series (including mature themes, violence, or UNRATED episodes that are not "
+                "marketed as adult erotica). When unsure, false."
+            ),
+        },
         "seasons": {
             "type": "array",
             "items": {
@@ -102,7 +111,7 @@ tvshow_schema = {
             }
         }
     },
-    "required": ["website_tvshow_title", "title", "year"]
+    "required": ["website_tvshow_title", "title", "year", "is_adult"]
 }
 
 # ───────────────────────────────────────────────
@@ -119,6 +128,7 @@ TVSHOW_SYSTEM_PROMPT = f"""You are a web scraping assistant. Extract TV show dat
 - cast_info: comma-separated actors if listed on page
 - languages: array of audio languages found on page (e.g. ["Hindi", "English"] or ["Bengali"])
 - countries: array of production countries from page (e.g. ["USA"])
+- **is_adult** (required boolean): `true` only for clear adult/explicit erotic series (18+, Adults only, XXX, adult anime). `false` for mainstream shows including mature drama/violence. If ambiguous → `false`.
 
 ## IMPORTANT - website_tvshow_title (series — different format from movies, includes Season + EP):
 **Must** include **Season** and **episode scope** before Source (movies do not use Season/EP):
@@ -158,12 +168,6 @@ Examples:
 - **meta_keywords**: Generate 10-15 relevant, comma-separated keywords. Include show name variations, season info, quality variants, language, "download", "watch online", "all episodes", genre.
   Example: "Money Heist, Money Heist Hindi, Money Heist download, Money Heist Season 1, Money Heist 1080p, Hindi dubbed series, Netflix, WEB-DL, all episodes, watch online, GDrive"
 
-## URL RULES (CRITICAL — violations break all downloads):
-- All URLs must be ABSOLUTE (start with https://)
-- To convert a relative URL: ONLY prepend the site domain — change NOTHING else
-- NEVER decode base64, URL params, or any encoding — if `?id=` looks like base64, leave it exactly as-is
-- ✅ CORRECT: `/generate.php?id=aHR0cHM6...` → `https://site.com/generate.php?id=aHR0cHM6...`
-- ❌ WRONG:   `/generate.php?id=aHR0cHM6...` → `https://new5.cinecloud.site/f/abc123` (decoded — NEVER do this)
 
 ## DOWNLOAD STRUCTURE:
 Classify each download item based ENTIRELY on the page's HTML structure — not the specific episode numbers or how many resolution buttons appear.

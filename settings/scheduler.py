@@ -1,5 +1,5 @@
 """
-django-q Schedule for database backup — created/removed from BackupSettings state.
+django-q Schedule for database backup — driven by settings.BackupSettings.
 """
 
 from __future__ import annotations
@@ -11,14 +11,13 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-BACKUP_SCHEDULE_NAME = "admin_panel.db_backup"
-BACKUP_FUNC = "admin_panel.tasks.run_database_backup"
+BACKUP_SCHEDULE_NAME = "settings.db_backup"
+BACKUP_FUNC = "settings.tasks.run_database_backup"
 
 
 def backup_config_ready() -> bool:
     """True when a daily backup schedule should exist."""
-    from admin_panel.models import BackupSettings
-    from settings.models import GoogleConfig
+    from settings.models import BackupSettings, GoogleConfig
 
     row = BackupSettings.objects.filter(pk=1).first()
     if not row or not row.is_enabled:
@@ -38,7 +37,7 @@ def ensure_backup_schedule():
     try:
         from django_q.models import Schedule
     except Exception as e:
-        logger.debug(f"ensure_backup_schedule skipped: {e}")
+        logger.debug("ensure_backup_schedule skipped: %s", e)
         return
 
     try:

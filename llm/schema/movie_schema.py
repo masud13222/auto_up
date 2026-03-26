@@ -62,9 +62,18 @@ movie_schema = {
         "tmdb_id": {
             "type": "string",
             "description": "TMDB ID if found on the page (e.g. '27205'). Omit if not present."
-        }
+        },
+        "is_adult": {
+            "type": "boolean",
+            "description": (
+                "True only if the page/release is clearly adult-only or explicit erotic content: "
+                "e.g. 18+, Age 18+, Adults only, A-rated adult/erotic, XXX, hentai/uncensored adult anime, "
+                "False for mainstream films (including horror, action, R-rated violence, or UNRATED director's cuts "
+                "that are not sold as adult/erotic). When unsure, false."
+            ),
+        },
     },
-    "required": ["website_movie_title", "title", "year"]
+    "required": ["website_movie_title", "title", "year", "is_adult"]
 }
 
 
@@ -84,6 +93,7 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - cast: comma-separated actors if listed on page
 - languages: array of audio languages found on page (e.g. ["Hindi", "English"])
 - countries: array of production countries from the page (e.g. ["USA"])
+- **is_adult** (required boolean): `true` only for clear adult/explicit erotic releases (18+, Adults only, XXX, explicit adult UNRATED/NR marketing). `false` for normal movies including violent/horror/R-rated or UNRATED that is not adult erotica. If ambiguous → `false`.
 
 ## IMPORTANT - website_movie_title field (MUST generate in this exact format):
 `Title Year Source Language - {SITE_NAME}`

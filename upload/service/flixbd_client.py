@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 # Shared httpx timeout (read bumped for slow API / Docker → avoids truncated empty reads)
 _TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=5.0)
 
+# FlixBD MySQL columns are often VARCHAR(255); longer LLM meta strings cause PDO "Data too long" + HTML error body.
+_FLIXBD_MAX_META_TITLE = 255
+_FLIXBD_MAX_META_KEYWORDS = 255
+_FLIXBD_MAX_META_DESCRIPTION = 2048
+
 
 def _get_config():
     """
@@ -590,6 +595,7 @@ def _build_movie_payload(movie_data: dict) -> dict:
     payload: dict = {
         "title": display_title,
         "status": "published",
+        "is_adult": bool(movie_data.get("is_adult")),
     }
 
     _set_if(payload, "description", movie_data.get("plot"))
@@ -599,9 +605,13 @@ def _build_movie_payload(movie_data: dict) -> dict:
     _set_if(payload, "cast", movie_data.get("cast"))
     _set_if(payload, "imdb_id", movie_data.get("imdb_id"))
     _set_if(payload, "tmdb_id", movie_data.get("tmdb_id"))
-    _set_if(payload, "meta_title", movie_data.get("meta_title"))
-    _set_if(payload, "meta_description", movie_data.get("meta_description"))
-    _set_if(payload, "meta_keywords", movie_data.get("meta_keywords"))
+    _set_if_truncated(payload, "meta_title", movie_data.get("meta_title"), _FLIXBD_MAX_META_TITLE)
+    _set_if_truncated(
+        payload, "meta_description", movie_data.get("meta_description"), _FLIXBD_MAX_META_DESCRIPTION
+    )
+    _set_if_truncated(
+        payload, "meta_keywords", movie_data.get("meta_keywords"), _FLIXBD_MAX_META_KEYWORDS
+    )
 
     year = movie_data.get("year")
     if year:
@@ -639,6 +649,7 @@ def _build_series_payload(tvshow_data: dict) -> dict:
     payload: dict = {
         "title": display_title,
         "status": "published",
+        "is_adult": bool(tvshow_data.get("is_adult")),
     }
 
     _set_if(payload, "description", tvshow_data.get("plot"))
@@ -649,9 +660,13 @@ def _build_series_payload(tvshow_data: dict) -> dict:
     _set_if(payload, "imdb_id", tvshow_data.get("imdb_id"))
     _set_if(payload, "tmdb_id", tvshow_data.get("tmdb_id"))
     _set_if(payload, "total_seasons", tvshow_data.get("total_seasons"))
-    _set_if(payload, "meta_title", tvshow_data.get("meta_title"))
-    _set_if(payload, "meta_description", tvshow_data.get("meta_description"))
-    _set_if(payload, "meta_keywords", tvshow_data.get("meta_keywords"))
+    _set_if_truncated(payload, "meta_title", tvshow_data.get("meta_title"), _FLIXBD_MAX_META_TITLE)
+    _set_if_truncated(
+        payload, "meta_description", tvshow_data.get("meta_description"), _FLIXBD_MAX_META_DESCRIPTION
+    )
+    _set_if_truncated(
+        payload, "meta_keywords", tvshow_data.get("meta_keywords"), _FLIXBD_MAX_META_KEYWORDS
+    )
 
     year = tvshow_data.get("year")
     if year:
@@ -680,6 +695,33 @@ def _set_if(payload: dict, key: str, value) -> None:
     """Only add key to payload if value is truthy."""
     if value:
         payload[key] = value
+
+
+def _truncate_api_text(value, max_len: int) -> str | None:
+    """Strip and cap string length for FlixBD create/patch payloads."""
+    if value is None or max_len <= 0:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if len(s) <= max_len:
+        return s
+    return s[:max_len]
+
+
+def _set_if_truncated(payload: dict, key: str, value, max_len: int) -> None:
+    """Like _set_if but enforce max_len (avoids SQLSTATE 22001 on meta_* columns)."""
+    t = _truncate_api_text(value, max_len)
+    if not t:
+        return
+    if isinstance(value, str) and len(value.strip()) > len(t):
+        logger.debug(
+            "FlixBD payload: truncated %r %d → %d chars",
+            key,
+            len(value.strip()),
+            len(t),
+        )
+    payload[key] = t
 
 
 def _derive_language_string(data: dict) -> str:
