@@ -168,3 +168,28 @@ def install_django_q_priority():
 
     dq_tasks.async_task = async_task
     log.debug("django_q priority: async_task patched, pre_enqueue injects q_priority")
+
+
+class EnqueueError(Exception):
+    """django-q broker/worker refused or failed to accept the task."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def enqueue_process_media_task(media_task_pk: int, url: str, *, q_priority: int = 0) -> str:
+    """Queue ``upload.tasks.process_media_task``; raises EnqueueError on broker failure."""
+    from django_q.tasks import async_task
+
+    try:
+        q_task_id = async_task(
+            "upload.tasks.process_media_task",
+            media_task_pk,
+            task_name=f"Process: {url[:50]}",
+            q_options={"q_priority": q_priority},
+        )
+    except Exception as e:
+        log.exception("async_task enqueue failed for MediaTask pk=%s", media_task_pk)
+        raise EnqueueError(str(e) or "Queue unavailable; check django-q cluster/workers.") from e
+    return q_task_id or ""

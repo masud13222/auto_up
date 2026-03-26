@@ -152,8 +152,19 @@ document.addEventListener('alpine:init', () => {
 
             try {
                 const r = await fetch("{% url 'upload:process_media' %}", { method: 'POST', body: fd });
-                const d = await r.json();
-                if (!r.ok) throw new Error(d.error || 'Request failed');
+                const text = await r.text();
+                let d;
+                try {
+                    d = JSON.parse(text);
+                } catch (parseErr) {
+                    const snippet = text.trim().slice(0, 280) || `HTTP ${r.status}`;
+                    throw new Error(
+                        r.ok
+                            ? `Server returned non-JSON (${snippet})`
+                            : snippet
+                    );
+                }
+                if (!r.ok) throw new Error(d.error || text.trim().slice(0, 280) || 'Request failed');
 
                 if (d.batch) {
                     this.batchResult = d;

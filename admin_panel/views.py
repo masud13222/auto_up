@@ -5,10 +5,9 @@ from django.http import JsonResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
 from django.utils.safestring import mark_safe
-from django_q.tasks import async_task
 import json
 
-from upload.django_q_priority import parse_q_priority
+from upload.django_q_priority import EnqueueError, enqueue_process_media_task, parse_q_priority
 from upload.models import MediaTask
 from settings.models import GoogleConfig, UploadSettings
 
@@ -97,13 +96,15 @@ def requeue_task(request, pk):
     task.error_message = ''
     task.save()
     q_pri = parse_q_priority(request.POST.get("q_priority"))
-    q_id = async_task(
-        "upload.tasks.process_media_task",
-        task.pk,
-        task_name=f"Process: {task.url[:50]}",
-        q_options={"q_priority": q_pri},
-    )
-    task.task_id = q_id or ''
+    try:
+        q_id = enqueue_process_media_task(task.pk, task.url, q_priority=q_pri)
+    except EnqueueError as e:
+        msg = e.message[:2000] if len(e.message) > 2000 else e.message
+        task.status = 'failed'
+        task.error_message = msg
+        task.save(update_fields=['status', 'error_message'])
+        return redirect('panel:task_detail', pk=pk)
+    task.task_id = q_id
     task.save(update_fields=['task_id'])
     return redirect('panel:task_detail', pk=pk)
 

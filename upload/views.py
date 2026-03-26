@@ -1,20 +1,18 @@
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django_q.tasks import async_task
 
-from .django_q_priority import parse_q_priority
+from .django_q_priority import EnqueueError, enqueue_process_media_task, parse_q_priority
 from .models import MediaTask
 
 
 def _queue_new_task(url: str, *, q_priority: int = 0) -> MediaTask:
     media_task = MediaTask.objects.create(url=url)
-    q_task_id = async_task(
-        "upload.tasks.process_media_task",
-        media_task.pk,
-        task_name=f"Process: {url[:50]}",
-        q_options={"q_priority": q_priority},
-    )
-    media_task.task_id = q_task_id or ""
+    try:
+        q_task_id = enqueue_process_media_task(media_task.pk, url, q_priority=q_priority)
+    except EnqueueError:
+        media_task.delete()
+        raise
+    media_task.task_id = q_task_id
     media_task.save(update_fields=["task_id"])
     return media_task
 
@@ -48,13 +46,15 @@ def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
             existing.error_message = ""
             existing.save()
 
-            q_task_id = async_task(
-                "upload.tasks.process_media_task",
-                existing.pk,
-                task_name=f"Process: {url[:50]}",
-                q_options={"q_priority": q_priority},
-            )
-            existing.task_id = q_task_id or ""
+            try:
+                q_task_id = enqueue_process_media_task(existing.pk, url, q_priority=q_priority)
+            except EnqueueError as e:
+                existing.status = "failed"
+                existing.error_message = e.message[:2000] if len(e.message) > 2000 else e.message
+                existing.save(update_fields=["status", "error_message"])
+                raise
+
+            existing.task_id = q_task_id
             existing.save(update_fields=["task_id"])
 
             return {
@@ -127,10 +127,19 @@ def process_media(request):
         if not valid_http(url):
             failed.append({"url": url, "error": "Must start with http:// or https://"})
             continue
-        if skip_dup:
-            payload = _process_one_skip_duplicate_check(url, q_priority=q_priority)
-        else:
-            payload = _process_one_with_duplicate_check(url, q_priority=q_priority)
+        try:
+            if skip_dup:
+                payload = _process_one_skip_duplicate_check(url, q_priority=q_priority)
+            else:
+                payload = _process_one_with_duplicate_check(url, q_priority=q_priority)
+        except EnqueueError as e:
+            failed.append(
+                {
+                    "url": url,
+                    "error": e.message,
+                }
+            )
+            continue
         results.append({"url": url, **payload})
 
     if len(lines) == 1 and len(results) == 1 and not failed:
