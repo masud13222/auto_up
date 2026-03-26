@@ -5,10 +5,8 @@ class BackupSettings(models.Model):
     """
     Singleton (pk=1): Drive folder + OAuth selection for DB backups.
 
-    When configuration is valid (enabled, folder id, and a GoogleConfig available),
-    ``admin_panel.scheduler.ensure_backup_schedule`` registers a **django-q** daily task
-    named ``admin_panel.db_backup``. Timing is only on the Schedule row in Admin →
-    Django Q → Scheduled tasks — not on this model.
+    When configuration is valid, ``ensure_backup_schedule`` registers django-q task
+    ``admin_panel.db_backup``. Success/failure history: Django Q → Successful tasks / Failures.
     """
 
     google_config = models.ForeignKey(
@@ -25,24 +23,6 @@ class BackupSettings(models.Model):
     is_enabled = models.BooleanField(
         default=True,
         help_text="If off, the backup schedule is removed and the job no-ops.",
-    )
-    last_backup_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        editable=False,
-        help_text="Last run (set by backup task).",
-    )
-    last_backup_ok = models.BooleanField(
-        null=True,
-        blank=True,
-        editable=False,
-        help_text="Whether the last run succeeded.",
-    )
-    last_backup_note = models.TextField(
-        blank=True,
-        default="",
-        editable=False,
-        help_text="Status or error from the last run.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

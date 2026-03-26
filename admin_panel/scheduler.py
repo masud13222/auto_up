@@ -67,4 +67,4 @@ def ensure_backup_schedule():
             first_run.isoformat(),
         )
     except Exception as e:
-        logger.debug(f"ensure_backup_schedule failed: {e}")
+        logger.warning("ensure_backup_schedule failed: %s", e, exc_info=True)

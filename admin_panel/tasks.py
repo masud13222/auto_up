@@ -17,18 +17,6 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
-def _finish(ok: bool, note: str):
-    from admin_panel.models import BackupSettings
-
-    if not BackupSettings.objects.filter(pk=1).exists():
-        return
-    BackupSettings.objects.filter(pk=1).update(
-        last_backup_at=timezone.now(),
-        last_backup_ok=ok,
-        last_backup_note=(note or "")[:2000],
-    )
-
-
 def run_database_backup():
     """Called by django-q on schedule."""
     from admin_panel.models import BackupSettings
@@ -44,12 +32,12 @@ def run_database_backup():
         return
     folder_id = (cfg.drive_backup_folder_id or "").strip()
     if not folder_id:
-        _finish(False, "drive_backup_folder_id empty")
+        logger.warning("run_database_backup: drive_backup_folder_id empty")
         return
 
     gconf = cfg.google_config or GoogleConfig.objects.first()
     if not gconf:
-        _finish(False, "No GoogleConfig")
+        logger.warning("run_database_backup: No GoogleConfig")
         return
 
     db = settings.DATABASES["default"]
@@ -88,7 +76,7 @@ def run_database_backup():
             )
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "pg_dump failed")[:2000]
-                _finish(False, err)
+                logger.error("run_database_backup: pg_dump failed: %s", err)
                 return
             upload_name = f"db_backup_{stamp}.dump"
             mime = "application/octet-stream"
@@ -96,7 +84,7 @@ def run_database_backup():
         elif "sqlite" in engine:
             src = db.get("NAME")
             if not src or not Path(str(src)).is_file():
-                _finish(False, "SQLite database file missing")
+                logger.error("run_database_backup: SQLite database file missing")
                 return
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_db_{stamp}.sqlite3")
             tmp_path = tmp.name
@@ -106,7 +94,7 @@ def run_database_backup():
             mime = "application/octet-stream"
 
         else:
-            _finish(False, f"Unsupported DB engine: {engine!r}")
+            logger.error("run_database_backup: unsupported DB engine %r", engine)
             return
 
         gconf = GoogleConfig.objects.get(pk=gconf.pk)
@@ -124,17 +112,13 @@ def run_database_backup():
             supportsAllDrives=True,
         ).execute()
 
-        _finish(True, f"Uploaded {upload_name}")
         logger.info("run_database_backup: uploaded %s", upload_name)
 
     except FileNotFoundError as e:
-        _finish(False, f"Missing binary or file: {e}")
-        logger.error("run_database_backup: %s", e)
+        logger.error("run_database_backup: missing binary or file: %s", e)
     except subprocess.TimeoutExpired:
-        _finish(False, "pg_dump timed out")
-        logger.error("run_database_backup: pg_dump timeout")
-    except Exception as e:
-        _finish(False, str(e)[:2000])
+        logger.error("run_database_backup: pg_dump timed out")
+    except Exception:
         logger.exception("run_database_backup failed")
     finally:
         if tmp_path and os.path.isfile(tmp_path):

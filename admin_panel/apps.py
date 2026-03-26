@@ -31,8 +31,7 @@ class AdminPanelConfig(AppConfig):
     def ready(self):
         import admin_panel.signals  # noqa: F401
 
-        if os.environ.get("GUNICORN_WORKER_PROCESS"):
-            return
+        # Gunicorn workers must run this too — otherwise backup Schedule is never created on web-only deploys.
         if not _is_server_or_queue_process():
             return
         threading.Timer(1.0, _ensure_backup_schedule_deferred).start()

@@ -5,15 +5,8 @@ from .models import BackupSettings
 
 @admin.register(BackupSettings)
 class BackupSettingsAdmin(admin.ModelAdmin):
-    list_display = (
-        "is_enabled",
-        "google_config",
-        "drive_backup_folder_id",
-        "last_backup_at",
-        "last_backup_ok",
-        "updated_at",
-    )
-    readonly_fields = ("last_backup_at", "last_backup_ok", "last_backup_note", "created_at", "updated_at")
+    list_display = ("is_enabled", "google_config", "drive_backup_folder_id", "updated_at")
+    readonly_fields = ("created_at", "updated_at")
     fieldsets = (
         (
             None,
@@ -23,14 +16,9 @@ class BackupSettingsAdmin(admin.ModelAdmin):
                     "When enabled, folder ID is set, and a GoogleConfig exists (picked or any), "
                     "django-q creates a daily task named admin_panel.db_backup "
                     "(Admin → Django Q → Scheduled tasks). "
-                    "First next_run is 24 hours after the schedule is created (no immediate backup on cold start)."
+                    "First next_run is 24 hours after the schedule is created. "
+                    "Backup run history: Django Q → Successful tasks / Failures."
                 ),
-            },
-        ),
-        (
-            "Last run",
-            {
-                "fields": ("last_backup_at", "last_backup_ok", "last_backup_note"),
             },
         ),
         (
