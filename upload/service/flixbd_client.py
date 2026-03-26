@@ -14,6 +14,7 @@ All methods raise on fatal errors. Callers should catch and log.
 Title-only PATCH failures are logged; download links are still added.
 """
 
+import json
 import logging
 import re
 import httpx
@@ -21,8 +22,8 @@ from llm.schema.blocked_names import SITE_NAME
 
 logger = logging.getLogger(__name__)
 
-# Shared httpx timeout config (seconds)
-_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=5.0)
+# Shared httpx timeout (read bumped for slow API / Docker → avoids truncated empty reads)
+_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=5.0)
 
 
 def _get_config():
@@ -51,6 +52,34 @@ def _headers(api_key: str) -> dict:
             "Chrome/124.0.0.0 Safari/537.36"
         ),
     }
+
+
+def _safe_json(resp: httpx.Response, operation: str) -> dict:
+    """
+    Parse API JSON. Failures often look like JSONDecodeError with no context — loggable body here.
+    """
+    raw = resp.text or ""
+    stripped = raw.strip()
+    ct = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if not stripped:
+        raise RuntimeError(
+            f"FlixBD {operation}: empty response body "
+            f"(HTTP {resp.status_code}, content-type={ct!r})"
+        )
+    try:
+        out = json.loads(raw)
+    except json.JSONDecodeError as e:
+        snippet = stripped[:1200].replace("\n", "\\n")
+        raise RuntimeError(
+            f"FlixBD {operation}: response is not JSON "
+            f"(HTTP {resp.status_code}, content-type={ct!r}): {e}; "
+            f"body_start={snippet!r}"
+        ) from e
+    if not isinstance(out, dict):
+        raise RuntimeError(
+            f"FlixBD {operation}: expected JSON object, got {type(out).__name__}"
+        )
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -87,7 +116,7 @@ def search(title: str, content_type: str = "all") -> dict | None:
             return None
 
         resp.raise_for_status()
-        body = resp.json()
+        body = _safe_json(resp, "search")
 
         results = body.get("data", [])
         if not results:
@@ -157,12 +186,13 @@ def create_movie(movie_data: dict) -> int:
             raise RuntimeError(f"FlixBD create_movie bad request: {resp.text}")
 
         resp.raise_for_status()
-        body = resp.json()
+        body = _safe_json(resp, "create_movie")
         content_id = body["data"]["id"]
         logger.info(f"FlixBD: movie created -- id={content_id} title={body['data'].get('title')}")
         return content_id
 
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.error(f"FlixBD create_movie failed: {e}")
         raise
     except Exception as e:
         logger.error(f"FlixBD create_movie failed: {e}")
@@ -194,12 +224,13 @@ def create_series(tvshow_data: dict) -> int:
             raise RuntimeError(f"FlixBD create_series bad request: {resp.text}")
 
         resp.raise_for_status()
-        body = resp.json()
+        body = _safe_json(resp, "create_series")
         content_id = body["data"]["id"]
         logger.info(f"FlixBD: series created -- id={content_id} title={body['data'].get('title')}")
         return content_id
 
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.error(f"FlixBD create_series failed: {e}")
         raise
     except Exception as e:
         logger.error(f"FlixBD create_series failed: {e}")
@@ -339,7 +370,7 @@ def add_movie_download_links(
 
             if resp.status_code == 409:
                 # Duplicate -- Drive file already linked, skip gracefully
-                body = resp.json()
+                body = _safe_json(resp, f"movie {content_id} downloads 409")
                 existing_id = body.get("errors", {}).get("existing_download_id")
                 logger.info(f"FlixBD: duplicate link for movie {content_id} {quality} (existing id={existing_id})")
                 if existing_id:
@@ -351,7 +382,7 @@ def add_movie_download_links(
                 continue
 
             resp.raise_for_status()
-            dl_id = resp.json()["data"]["id"]
+            dl_id = _safe_json(resp, f"movie {content_id} add_download {quality}")["data"]["id"]
             created_ids.append(dl_id)
             logger.info(f"FlixBD: added download link id={dl_id} movie={content_id} quality={quality}")
 
@@ -505,7 +536,10 @@ def add_series_download_links(
                         resp = client.post(endpoint, json=payload, headers=_headers(api_key))
 
                     if resp.status_code == 409:
-                        body = resp.json()
+                        body = _safe_json(
+                            resp,
+                            f"series {content_id} S{season_num} downloads 409",
+                        )
                         existing_id = body.get("errors", {}).get("existing_download_id")
                         logger.info(
                             f"FlixBD: duplicate link series {content_id} S{season_num} "
@@ -522,7 +556,10 @@ def add_series_download_links(
                         continue
 
                     resp.raise_for_status()
-                    dl_id = resp.json()["data"]["id"]
+                    dl_id = _safe_json(
+                        resp,
+                        f"series {content_id} add_download S{season_num} {quality}",
+                    )["data"]["id"]
                     created_ids.append(dl_id)
                     logger.info(
                         f"FlixBD: added series link id={dl_id} series={content_id} "
