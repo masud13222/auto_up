@@ -77,16 +77,25 @@ def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
         skipped = 0
         resolved = 0
         logger.info("Resolving movie download links...")
+        pending: list[tuple[str, str]] = []
         for quality, url in list(download_links.items()):
-            # Skip if we already have a drive link for this quality
             if quality in existing_links:
                 movie_data["download_links"][quality] = existing_links[quality]
                 skipped += 1
                 logger.debug(f"Skipping {quality}: already has Drive link")
                 continue
             if url:
-                logger.debug(f"Resolving {quality}: {url}")
-                movie_data["download_links"][quality] = WebScrapeService.get_url(url)
+                pending.append((quality, url))
+                logger.debug(f"Queued {quality}: {url}")
+        if pending:
+            urls = [u for _, u in pending]
+            batch = WebScrapeService.get_urls_parallel(urls)
+            for (quality, url), res in zip(pending, batch):
+                if isinstance(res, Exception):
+                    logger.error(f"Resolving movie {quality} ({url}): {res}", exc_info=res)
+                    movie_data["download_links"][quality] = None
+                else:
+                    movie_data["download_links"][quality] = res
                 resolved += 1
         if skipped:
             logger.info(f"Link resolution: {resolved} resolved, {skipped} skipped (already uploaded)")
@@ -160,7 +169,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
                     on_item_resolved(tvshow_data)
                 continue
 
-            # Resolve only missing resolutions
+            pending: list[tuple[str, str]] = []
             for quality, url in list(resolutions.items()):
                 existing_link = existing_links.get((season_num, item_label, quality)) or existing_links.get((season_num, item_type, quality))
                 if existing_link:
@@ -169,9 +178,19 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
                     logger.debug(f"Skipping S{season_num} {item_label} {quality}: already has Drive link")
                     continue
                 if url:
-                    logger.debug(f"Resolving S{season_num} {item_label} {quality}: {url}")
-                    resolved = WebScrapeService.get_url(url)
-                    item["resolutions"][quality] = resolved
+                    pending.append((quality, url))
+                    logger.debug(f"Queued S{season_num} {item_label} {quality}: {url}")
+            if pending:
+                batch = WebScrapeService.get_urls_parallel([u for _, u in pending])
+                for (quality, url), res in zip(pending, batch):
+                    if isinstance(res, Exception):
+                        logger.error(
+                            f"Resolving S{season_num} {item_label} {quality} ({url}): {res}",
+                            exc_info=res,
+                        )
+                        item["resolutions"][quality] = None
+                    else:
+                        item["resolutions"][quality] = res
                     total_resolved += 1
 
             # Callback after each item is fully resolved
@@ -230,4 +249,4 @@ def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=N
         data = resolve_movie_links(data, existing_result=existing_result)
         logger.info("Movie info extraction complete.")
 
-    return content_type, data, dup_result
+    return content_type, data, dup_result

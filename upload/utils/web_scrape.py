@@ -210,6 +210,104 @@ def _fetch_html(url: str, settle: float = 2.0) -> str:
     return _submit(_fetch_html_async(gateway_fixed, settle))
 
 
+def _prepare_nav_url(url: str) -> str:
+    """Same normalization as ``_fetch_html`` before navigation."""
+    n = normalize_http_url((url or "").strip())
+    return normalize_download_gateway_path(n)
+
+
+_PATTERN_R2 = re.compile(
+    r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
+)
+_PATTERN_VIDEO = re.compile(
+    r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
+)
+_PATTERN_LOC = re.compile(r'window\.location\.href\s*=\s*["\'](.+?)["\']')
+
+
+async def _resolve_download_page_async(url: str):
+    """
+    One generate.php (or similar) page → R2 or video link list.
+    Uses its own browser tab; safe to run many concurrently via asyncio.gather.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        u = _prepare_nav_url(url)
+        html = await _fetch_html_async(u, 4.0)
+        target_url = u
+        match_loc = _PATTERN_LOC.search(html)
+
+        if match_loc:
+            raw_target = match_loc.group(1)
+            target_url = normalize_download_gateway_path(normalize_http_url(raw_target))
+            if target_url != raw_target:
+                logger.debug(f"[Scrape] Normalized redirect URL: {raw_target!r} -> {target_url!r}")
+            logger.debug(f"[Scrape] Found redirect URL: {target_url}")
+            html = await _fetch_html_async(target_url, 4.0)
+        else:
+            logger.debug(f"[Scrape] No redirect found, checking current page: {u}")
+
+        matches = _PATTERN_R2.findall(html)
+        if matches:
+            logger.info(f"[Scrape] Found {len(matches)} R2 link(s)")
+            return matches
+
+        video_matches = _PATTERN_VIDEO.findall(html)
+        if video_matches:
+            logger.info(f"[Scrape] Found {len(video_matches)} video link(s)")
+            return video_matches
+
+        logger.info(f"[Scrape] No R2/video links found. Trying fallback for: {target_url}")
+        if "/f/" in target_url:
+            for fb_url in (
+                target_url.replace("/f/", "/w/"),
+                target_url.replace("/f/", "/gp/"),
+            ):
+                try:
+                    logger.debug(f"[Scrape] Checking fallback: {fb_url}")
+                    fb_html = await _fetch_html_async(fb_url, 6.0)
+                    fb_matches = _PATTERN_VIDEO.findall(fb_html)
+                    if fb_matches:
+                        logger.info(f"[Scrape] Found {len(fb_matches)} video link(s) in {fb_url}")
+                        return fb_matches
+                except Exception as ve:
+                    logger.warning(f"[Scrape] Fallback failed for {fb_url}: {ve}")
+        else:
+            parsed = urlparse(target_url)
+            path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+            if path_parts:
+                last_id = path_parts[-1]
+                instant_url = f"{parsed.scheme}://{parsed.netloc}/instant_{last_id}"
+                try:
+                    logger.debug(f"[Scrape] Checking instant fallback: {instant_url}")
+                    instant_html = await _fetch_html_async(instant_url, 5.0)
+                    instant_matches = _PATTERN_VIDEO.findall(instant_html)
+                    if instant_matches:
+                        logger.info(
+                            f"[Scrape] Found {len(instant_matches)} video link(s) via instant: {instant_url}"
+                        )
+                        return instant_matches
+                    logger.warning(f"[Scrape] Instant fallback returned no video links: {instant_url}")
+                except Exception as ie:
+                    logger.warning(f"[Scrape] Instant fallback failed for {instant_url}: {ie}")
+
+        logger.warning(f"[Scrape] No links found for URL: {url}")
+        return None
+    except Exception as exc:
+        logger.error(f"[Scrape] resolve download page ({url}): {exc}", exc_info=True)
+        return None
+
+
+async def _resolve_download_pages_parallel(urls: list[str]) -> list:
+    if not urls:
+        return []
+    return await asyncio.gather(
+        *(_resolve_download_page_async(u) for u in urls),
+        return_exceptions=True,
+    )
+
+
 # ── Public scraping service ───────────────────────────────────────────────────
 
 class WebScrapeService:
@@ -268,92 +366,36 @@ class WebScrapeService:
             logger.error(f"[Scrape] cinefreak_title({url}): {exc}", exc_info=True)
             return None
 
-    # ── 3. get_url ────────────────────────────────────────────────────────────
+    # ── 3. get_url / get_urls_parallel ─────────────────────────────────────────
 
     @staticmethod
     def get_url(url: str):
         """
         Follows window.location.href redirects and extracts R2/video links.
 
-        1. Navigate to url → find window.location.href → follow redirect
-        2. Scan page for R2 links
-        3. Scan page for video links
-        4. Fallback: try /w/ and /gp/ variants
+        Same logic as ``_resolve_download_page_async``; one URL, one tab, sync API.
         """
-        pattern_r2    = r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
-        pattern_video = r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
-        pattern_loc   = r'window\.location\.href\s*=\s*["\'](.+?)["\']'
-
         try:
             logger.info(f"[Scrape] get_url → {url}")
-
-            # 1. Initial request
-            html = _fetch_html(url, settle=4.0)
-
-            match_loc = re.search(pattern_loc, html)
-            target_url = url
-
-            if match_loc:
-                raw_target = match_loc.group(1)
-                target_url = normalize_download_gateway_path(normalize_http_url(raw_target))
-                if target_url != raw_target:
-                    logger.debug(f"[Scrape] Normalized redirect URL: {raw_target!r} -> {target_url!r}")
-                logger.debug(f"[Scrape] Found redirect URL: {target_url}")
-                html = _fetch_html(target_url, settle=4.0)
-            else:
-                logger.debug(f"[Scrape] No redirect found, checking current page: {url}")
-
-            # 2. R2 links
-            matches = re.findall(pattern_r2, html)
-            if matches:
-                logger.info(f"[Scrape] Found {len(matches)} R2 link(s)")
-                return matches
-
-            # 3. Video links
-            video_matches = re.findall(pattern_video, html)
-            if video_matches:
-                logger.info(f"[Scrape] Found {len(video_matches)} video link(s)")
-                return video_matches
-
-            # 4. Fallback: /w/ and /gp/ variants
-            logger.info(f"[Scrape] No R2/video links found. Trying fallback for: {target_url}")
-            if "/f/" in target_url:
-                for fb_url in (
-                    target_url.replace("/f/", "/w/"),
-                    target_url.replace("/f/", "/gp/"),
-                ):
-                    try:
-                        logger.debug(f"[Scrape] Checking fallback: {fb_url}")
-                        fb_html = _fetch_html(fb_url, settle=6.0)
-                        fb_matches = re.findall(pattern_video, fb_html)
-                        if fb_matches:
-                            logger.info(f"[Scrape] Found {len(fb_matches)} video link(s) in {fb_url}")
-                            return fb_matches
-                    except Exception as ve:
-                        logger.warning(f"[Scrape] Fallback failed for {fb_url}: {ve}")
-
-            # 5. Fallback: instant_{id}
-            else:
-                from urllib.parse import urlparse
-                parsed = urlparse(target_url)
-                path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-                if path_parts:
-                    last_id = path_parts[-1]
-                    instant_url = f"{parsed.scheme}://{parsed.netloc}/instant_{last_id}"
-                    try:
-                        logger.debug(f"[Scrape] Checking instant fallback: {instant_url}")
-                        instant_html = _fetch_html(instant_url, settle=5.0)
-                        instant_matches = re.findall(pattern_video, instant_html)
-                        if instant_matches:
-                            logger.info(f"[Scrape] Found {len(instant_matches)} video link(s) via instant fallback: {instant_url}")
-                            return instant_matches
-                        logger.warning(f"[Scrape] Instant fallback returned no video links: {instant_url}")
-                    except Exception as ie:
-                        logger.warning(f"[Scrape] Instant fallback failed for {instant_url}: {ie}")
-
-            # 6. Nothing found
-            logger.warning(f"[Scrape] No links found for URL: {url}")
-            return None
+            return _submit(_resolve_download_page_async(url), timeout=180)
         except Exception as exc:
             logger.error(f"[Scrape] get_url({url}): {exc}", exc_info=True)
             return None
+
+    @staticmethod
+    def get_urls_parallel(urls: list[str]) -> list:
+        """
+        Resolve multiple gateway URLs at once (one tab each, ``asyncio.gather`` on the worker loop).
+        Return list aligned with input; each entry is a link list, None, or Exception if
+        ``return_exceptions`` surfaced (caller should treat like failure).
+        """
+        urls = [u for u in urls if u]
+        if not urls:
+            return []
+        timeout = min(900, 120 + 90 * len(urls))
+        try:
+            logger.info(f"[Scrape] get_urls_parallel → {len(urls)} URL(s)")
+            return _submit(_resolve_download_pages_parallel(urls), timeout=timeout)
+        except Exception as exc:
+            logger.error(f"[Scrape] get_urls_parallel: {exc}", exc_info=True)
+            return [None] * len(urls)
