@@ -405,7 +405,15 @@ def process_media_task(task_pk: int) -> str:
     2. Full page scrape + LLM (extract + duplicate check in one call)
     3. Route to movie or tvshow pipeline
     """
-    media_task = MediaTask.objects.get(pk=task_pk)
+    try:
+        media_task = MediaTask.objects.get(pk=task_pk)
+    except MediaTask.DoesNotExist:
+        # Stale django-q job after duplicate-skip delete, admin delete, or re-queue race.
+        logger.warning(
+            "process_media_task: MediaTask pk=%s missing (row deleted); stale queue job — skipping",
+            task_pk,
+        )
+        return json.dumps({"status": "skipped", "message": "MediaTask does not exist"})
 
     # Skip if already completed
     if media_task.status == 'completed':
