@@ -60,6 +60,8 @@ class OrmQWithPriority(models.Model):
         app_label = "upload"
         db_table = "django_q_ormq"
         managed = False
+        verbose_name = "Queued task (ORM + priority)"
+        verbose_name_plural = "Queued tasks (ORM + priority)"
 
 
 class PriorityORM(ORM):
@@ -84,6 +86,13 @@ class PriorityORM(ORM):
             lock=timezone.now(),
             priority=priority,
         )
+        if priority:
+            log.info(
+                "django-q OrmQ enqueued pk=%s priority=%s key=%s (higher runs first)",
+                row.pk,
+                priority,
+                row.key,
+            )
         return row.pk
 
     def dequeue(self):

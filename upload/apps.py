@@ -120,7 +120,12 @@ class UploadConfig(AppConfig):
         from .django_q_priority import install_django_q_priority
 
         install_django_q_priority()
+        # MUST run synchronously before ``manage.py qcluster`` imports django_q.conf: Conf.WORKERS is
+        # snapshotted from settings.Q_CLUSTER on first import. Deferring with a Timer leaves workers=1
+        # (settings default) so Panel worker_count is ignored.
+        # May log RuntimeWarning on qcluster start — harmless.
         _apply_qcluster_workers_from_upload_settings()
+
         if not _is_server_or_queue_process():
             return
         # Gunicorn workers: no stuck-task DB work (qcluster handles queue); only clean downloads

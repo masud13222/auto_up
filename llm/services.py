@@ -153,8 +153,27 @@ def _get_ordered_configs():
     """
     Get active LLM configs ordered by priority.
     Primary first, then others by ID.
+    Drops duplicate rows that point at the same provider+model+base_url (avoids retrying
+    the same failing endpoint twice, e.g. two identical Gemini primary rows).
     """
-    configs = list(LLMConfig.objects.filter(is_active=True).order_by('-is_primary', 'pk'))
+    raw = list(LLMConfig.objects.filter(is_active=True).order_by("-is_primary", "pk"))
+    seen: set[tuple[str, str, str]] = set()
+    configs: list[LLMConfig] = []
+    for c in raw:
+        key = (
+            (c.sdk or "").strip().lower(),
+            (c.model_name or "").strip().lower(),
+            (c.base_url or "").strip().lower(),
+        )
+        if key in seen:
+            logger.warning(
+                "Skipping duplicate LLM config pk=%s name=%r (same sdk/model/base as earlier in chain)",
+                c.pk,
+                c.name,
+            )
+            continue
+        seen.add(key)
+        configs.append(c)
     if not configs:
         raise Exception(
             "No active LLM configs found. "
