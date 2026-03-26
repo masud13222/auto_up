@@ -5,7 +5,7 @@ Used by ``web_scrape`` for fragment absolutization, URL normalization, and LLM-o
 """
 
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from selectolax.lexbor import LexborHTMLParser
 
@@ -68,6 +68,27 @@ def normalize_http_url(url: str) -> str:
     if not _URL_WITH_SCHEME.match(u):
         return "https://" + u.lstrip("/")
     return u
+
+
+def normalize_download_gateway_path(url: str) -> str:
+    """
+    Some hosts use ``/x/...`` where the download gateway expects ``/f/...``.
+    Rewrite path segments only (query/fragment unchanged).
+    """
+    if not url or not isinstance(url, str):
+        return url
+    u = url.strip()
+    if not u or "/x/" not in u:
+        return u
+    try:
+        p = urlparse(u)
+        if "/x/" not in p.path:
+            return u
+        new_path = p.path.replace("/x/", "/f/")
+        out = urlunparse((p.scheme, p.netloc, new_path, p.params, p.query, p.fragment))
+        return out
+    except Exception:
+        return u
 
 
 def absolutize_resource_urls(html_fragment: str, page_url: str) -> str:

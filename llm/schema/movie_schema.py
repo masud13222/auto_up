@@ -38,7 +38,7 @@ movie_schema = {
             "description": (
                 "File DOWNLOAD URLs only per resolution (e.g. '480p', '720p'). "
                 "Must be links that fetch the release file (e.g. generate.php gateways, real Download buttons, etc). "
-                "Never watch/stream/play/player/watch-online URLs — omit a resolution if only streaming exists."
+                "Never watch/stream/play/Watch Resolution/player/watch-online URLs — omit a resolution if only streaming exists."
             ),
         },
         "cast": {

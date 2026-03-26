@@ -256,7 +256,7 @@ Each download item belongs to exactly ONE of these types. Classification is base
 
 ### ⚠️ DOWNLOAD vs WATCH — ONLY DOWNLOAD URLs IN `download_links` / `resolutions`:
 - Use URLs whose purpose is **downloading the release file** (generate.php-style gateways, **Download** / **720p Download** buttons, direct file or host links for the full movie/episode pack).
-- **Never** put **watch / stream / play** links there: "Watch Now", "Watch Online", "Stream", "Play", video player pages (`/watch/`, `/play/`, `/player/`), trailers/teasers only, YouTube/Vimeo, `.m3u8` / HLS for in-browser playback, or iframe embed sources.
+- **Never** put **watch / Watch Resolution  / stream / play** links there: "Watch Now", "Watch Online", "Stream", "Play", video player pages (`/watch/`, `/play/`, `/player/`), trailers/teasers only, YouTube/Vimeo, `.m3u8` / HLS for in-browser playback, or iframe embed sources.
 - If the HTML only exposes a streaming URL for a resolution and no real download → **omit that resolution** (do not fill with a watch URL).
 
 ### ⚠️ URL COPY RULE — NEVER decode, resolve, or alter any URL.

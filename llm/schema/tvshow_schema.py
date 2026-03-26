@@ -82,7 +82,7 @@ tvshow_schema = {
                                     "description": (
                                         "File DOWNLOAD URLs per resolution only ('480p', '720p', …). "
                                         "Real download/generate.php/Download-button targets. "
-                                        "Never watch/stream/player URLs — omit resolution if only streaming exists."
+                                        "Never watch/Watch Resolution/stream/player URLs — omit resolution if only streaming exists."
                                     ),
                                 }
                             },

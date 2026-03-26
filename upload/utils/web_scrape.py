@@ -29,6 +29,7 @@ from selectolax.lexbor import LexborHTMLParser
 
 from upload.utils.web_scrape_html import (
     absolutize_resource_urls,
+    normalize_download_gateway_path,
     normalize_http_url,
     sanitize_markdown_for_llm,
     truncate_markdown_for_llm,
@@ -201,13 +202,19 @@ def _fetch_html(url: str, settle: float = 2.0) -> str:
     normalized = normalize_http_url(url)
     if normalized != url:
         logger.info(f"[Browser] Normalized URL for navigation: {url!r} -> {normalized!r}")
-    return _submit(_fetch_html_async(normalized, settle))
+    gateway_fixed = normalize_download_gateway_path(normalized)
+    if gateway_fixed != normalized:
+        logger.info(
+            f"[Browser] Download gateway path /x/ -> /f/: {normalized!r} -> {gateway_fixed!r}"
+        )
+    return _submit(_fetch_html_async(gateway_fixed, settle))
 
 
 # ── Public scraping service ───────────────────────────────────────────────────
 
 class WebScrapeService:
     normalize_http_url = staticmethod(normalize_http_url)
+    normalize_download_gateway_path = staticmethod(normalize_download_gateway_path)
 
     @staticmethod
     def clean_html(html: str) -> str:
@@ -287,7 +294,10 @@ class WebScrapeService:
             target_url = url
 
             if match_loc:
-                target_url = match_loc.group(1)
+                raw_target = match_loc.group(1)
+                target_url = normalize_download_gateway_path(normalize_http_url(raw_target))
+                if target_url != raw_target:
+                    logger.debug(f"[Scrape] Normalized redirect URL: {raw_target!r} -> {target_url!r}")
                 logger.debug(f"[Scrape] Found redirect URL: {target_url}")
                 html = _fetch_html(target_url, settle=4.0)
             else:
