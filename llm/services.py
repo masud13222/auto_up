@@ -1,47 +1,8 @@
-import os
 import time
 import logging
 from .models import LLMConfig, LLMUsage
 
 logger = logging.getLogger(__name__)
-
-
-def _llm_full_io_enabled() -> bool:
-    """
-    When true, log full system + user request bodies (testing / debugging).
-    Raw response is logged on every successful call regardless; this flag only adds the request.
-    Enable with env LLM_LOG_FULL_IO=1 (or true/yes/on) or Django settings.LLM_LOG_FULL_IO = True.
-    """
-    v = os.environ.get("LLM_LOG_FULL_IO", "").strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    try:
-        from django.conf import settings
-
-        return bool(getattr(settings, "LLM_LOG_FULL_IO", False))
-    except Exception:
-        return False
-
-
-def _log_full_llm_request(purpose: str, system_prompt: str, prompt: str) -> None:
-    logger.info(
-        "LLM full IO — request purpose=%r | system_chars=%s user_chars=%s",
-        purpose or "n/a",
-        len(system_prompt or ""),
-        len(prompt or ""),
-    )
-    logger.info("LLM full IO — --- SYSTEM PROMPT ---\n%s", system_prompt or "")
-    logger.info("LLM full IO — --- USER PROMPT ---\n%s", prompt or "")
-
-
-def _log_full_llm_response(config_name: str, purpose: str, content: str) -> None:
-    logger.info(
-        "LLM full IO — response purpose=%r config=%r chars=%s\n--- RAW RESPONSE ---\n%s",
-        purpose or "n/a",
-        config_name,
-        len(content or ""),
-        content or "",
-    )
 
 # Retry settings
 MAX_RETRIES = 3
@@ -254,8 +215,6 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                 f"[{config.name}] LLM raw output: {len(content)} characters "
                 f"(purpose={purpose or 'n/a'}, {duration_ms}ms)"
             )
-            # Full response body every success (debugging). For huge prompts, set LLM_LOG_FULL_IO=1 on request too.
-            _log_full_llm_response(config.name, purpose, content)
             return content
 
         except Exception as e:
@@ -295,10 +254,6 @@ class LLMService:
         """
         Generate text completion with automatic provider fallback.
 
-        Logging: on success, the full raw model text is logged at INFO (``LLM full IO — … RAW RESPONSE``).
-        To also log the full system and user prompts (large for HTML extracts), set env
-        ``LLM_LOG_FULL_IO=1`` or ``settings.LLM_LOG_FULL_IO = True``.
-
         Flow:
         1. Get all active configs (primary first)
         2. Try each config with retries
@@ -310,13 +265,6 @@ class LLMService:
             f"Generating LLM completion. "
             f"Configs: {[f'{c.name}({c.sdk})' for c in configs]}"
         )
-
-        if _llm_full_io_enabled():
-            logger.info(
-                "LLM_LOG_FULL_IO is on — logging full request (system + user). "
-                "Raw response is logged after every successful completion regardless."
-            )
-            _log_full_llm_request(purpose, system_prompt, prompt)
 
         errors = []
         for i, config in enumerate(configs):

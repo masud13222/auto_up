@@ -589,9 +589,6 @@ def process_media_task(task_pk: int) -> str:
 
         # ── Handle duplicate result ──
         action = "process"
-        # LLM said "update" but no MediaTask to merge into → we run as process + site_content_id;
-        # movie_pipeline still needs action "update" when missing_resolutions is set (only those qualities).
-        coerced_update_without_db_task = False
         if dup_result:
             action = dup_result.get("action", "process")
             reason = dup_result.get("reason", "LLM decision")
@@ -603,19 +600,19 @@ def process_media_task(task_pk: int) -> str:
 
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
 
-            # Inconsistent LLM output — avoid wrong dup-update flags or deleting the new row
+            # update/replace without a merge target: never apply partial missing_resolutions
+            # (avoids skipping 720p etc. on bogus LLM "Existing").
             if action in ("update", "replace") and not existing_task:
-                if action == "update":
-                    mr0 = dup_result.get("missing_resolutions")
-                    if isinstance(mr0, list) and mr0:
-                        coerced_update_without_db_task = True
                 logger.warning(
-                    "Duplicate action=%s but no resolved existing_task — forcing process (pk=%s)",
+                    "PipelineWarning: duplicate action=%s but no resolved MediaTask — "
+                    "running full process (all qualities), not partial update. "
+                    "Clearing LLM missing_resolutions (pk=%s).",
                     action,
                     media_task.pk,
                 )
                 action = "process"
                 dup_result["action"] = "process"
+                dup_result["missing_resolutions"] = []
             elif (
                 action == "skip"
                 and not resume_result
@@ -741,17 +738,8 @@ def process_media_task(task_pk: int) -> str:
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 
         # ── Step 2: Route to appropriate pipeline ──
-        dup_pipeline_action = action
-        if coerced_update_without_db_task:
-            dup_pipeline_action = "update"
-            logger.info(
-                "Pipeline dup_info.action=update (coerced from process): only missing_resolutions "
-                "will download — existing %s row via site_content_id (pk=%s)",
-                SITE_NAME,
-                media_task.pk,
-            )
         dup_info = {
-            "action": dup_pipeline_action,
+            "action": action,
             "existing_task": existing_task if action != "process" and existing_task is not None else None,
         }
         if dup_result:

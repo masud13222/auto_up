@@ -118,10 +118,12 @@ def check_duplicate(url: str, current_task_pk: int = None) -> dict:
 
     if result["action"] in ("update", "replace") and existing_task is None:
         logger.warning(
-            "duplicate_check_legacy: action=%s but no existing_task — forcing process",
+            "PipelineWarning: duplicate_check_legacy action=%s but no existing_task — "
+            "full process only; clearing missing_resolutions",
             result["action"],
         )
         result["action"] = "process"
+        result["missing_resolutions"] = []
     elif result["action"] == "skip" and existing_task is None:
         logger.warning("duplicate_check_legacy: skip without resolved existing_task — forcing process")
         result["action"] = "process"
