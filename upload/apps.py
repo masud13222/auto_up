@@ -10,31 +10,6 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
-def _apply_qcluster_workers_from_upload_settings():
-    """
-    Panel stores worker_count on UploadSettings, but Q_CLUSTER is defined in settings.py.
-    Django-Q reads workers only at cluster startup — sync DB value when running qcluster.
-    """
-    joined = " ".join(sys.argv).lower()
-    if "qcluster" not in joined:
-        return
-    if os.environ.get("Q_CLUSTER_WORKERS", "").strip():
-        logger.info(
-            "Django-Q: using Q_CLUSTER_WORKERS=%s from environment (skipping DB worker_count)",
-            os.environ.get("Q_CLUSTER_WORKERS"),
-        )
-        return
-    try:
-        from settings.models import UploadSettings
-
-        obj = UploadSettings.objects.first()
-        workers = max(1, int(obj.worker_count)) if obj else 1
-        settings.Q_CLUSTER["workers"] = workers
-        logger.info("Django-Q: workers=%d (from UploadSettings.worker_count)", workers)
-    except Exception as e:
-        logger.warning("Django-Q: could not read worker_count from DB (%s); using settings default", e)
-
-
 def _is_server_or_queue_process():
     """Stuck requeue / queue wipe only for real app processes, not one-off management commands."""
     joined = " ".join(sys.argv).lower()
@@ -120,11 +95,6 @@ class UploadConfig(AppConfig):
         from .django_q_priority import install_django_q_priority
 
         install_django_q_priority()
-        # MUST run synchronously before ``manage.py qcluster`` imports django_q.conf: Conf.WORKERS is
-        # snapshotted from settings.Q_CLUSTER on first import. Deferring with a Timer leaves workers=1
-        # (settings default) so Panel worker_count is ignored.
-        # May log RuntimeWarning on qcluster start — harmless.
-        _apply_qcluster_workers_from_upload_settings()
 
         if not _is_server_or_queue_process():
             return

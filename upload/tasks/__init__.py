@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 import re
+from multiprocessing import current_process
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
@@ -429,7 +431,12 @@ def process_media_task(task_pk: int) -> str:
             media_task.save(update_fields=["url", "updated_at"])
             logger.info(f"Normalized task URL saved: {url}")
 
-        logger.info(f"Task started for URL: {url}")
+        logger.info(
+            "Task started for URL: %s (pid=%s worker=%s)",
+            url,
+            os.getpid(),
+            getattr(current_process(), "name", "main"),
+        )
 
         # ── Step 0: Title fetch + DB search (no LLM call) ──
         website_title = WebScrapeService.cinefreak_title(url)

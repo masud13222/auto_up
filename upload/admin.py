@@ -1,26 +1,39 @@
 from django.contrib import admin
+from django.db import connection
+from django.db.models import IntegerField
+from django.db.models.expressions import RawSQL
+from django_q.models import OrmQ
 
-from .django_q_priority import OrmQWithPriority
 from .models import MediaTask
 
 
-@admin.register(OrmQWithPriority)
-class OrmQWithPriorityAdmin(admin.ModelAdmin):
+@admin.register(OrmQ)
+class OrmQQueueAdmin(admin.ModelAdmin):
     """
-    Same table as django-q ORM queue (`django_q_ormq`) — includes `priority` (higher dequeued first).
-    Django-Q's built-in admin does not show this column.
+    django-q ORM broker queue under **Django Q** in admin (OrmQ._meta.app_label).
+    Adds DB column ``priority`` (upload.0007) for dequeue order — not on stock OrmQ model.
     """
 
-    list_display = ("id", "priority", "key", "lock", "payload_preview")
-    list_filter = ("key", "priority")
-    ordering = ("-priority", "id")
-    readonly_fields = ("id", "key", "payload", "lock", "priority")
+    list_display = ("id", "q_priority", "key", "lock")
+    list_filter = ("key",)
     search_fields = ("payload",)
+    readonly_fields = ("id", "key", "payload", "lock")
 
-    @admin.display(description="Payload (preview)")
-    def payload_preview(self, obj):
-        p = obj.payload or ""
-        return (p[:160] + "…") if len(p) > 160 else p
+    @admin.display(description="Priority", ordering="_qpri")
+    def q_priority(self, obj):
+        v = getattr(obj, "_qpri", None)
+        return 0 if v is None else v
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        qn = connection.ops.quote_name
+        t = qn(OrmQ._meta.db_table)
+        p = qn("priority")
+        # COALESCE: old rows / pre-migration safety
+        sql = f"COALESCE({t}.{p}, 0)"
+        return qs.annotate(
+            _qpri=RawSQL(sql, [], output_field=IntegerField()),
+        ).order_by("-_qpri", "id")
 
     def has_add_permission(self, request):
         return False
@@ -34,8 +47,8 @@ class OrmQWithPriorityAdmin(admin.ModelAdmin):
 
 @admin.register(MediaTask)
 class MediaTaskAdmin(admin.ModelAdmin):
-    list_display = ['title', 'content_type', 'status', 'url', 'created_at', 'updated_at']
-    list_filter = ['status', 'content_type']
-    search_fields = ['title', 'url']
-    readonly_fields = ['task_id', 'result', 'created_at', 'updated_at']
-    ordering = ['-created_at']
+    list_display = ["title", "content_type", "status", "url", "created_at", "updated_at"]
+    list_filter = ["status", "content_type"]
+    search_fields = ["title", "url"]
+    readonly_fields = ["task_id", "result", "created_at", "updated_at"]
+    ordering = ["-created_at"]

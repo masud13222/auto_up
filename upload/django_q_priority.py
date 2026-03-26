@@ -5,6 +5,16 @@ Usage:
     async_task(..., q_options={"q_priority": 10})
 
 Requires migration upload.0007 (adds django_q_ormq.priority) and Q_CLUSTER["broker_class"].
+
+Priority semantics (django-q):
+    Ordering applies only among tasks that are *waiting* in OrmQ (not yet claimed by a worker).
+    There is no preemption: a worker already running a long job will not stop for a higher
+    priority task. With WORKERS=1, a new task with priority 100 still waits until the current
+    job finishes; then the next dequeue picks the highest-priority waiting row.
+
+    With WORKERS>1, multiple jobs can run at once; a free worker always pulls the best waiting
+    task by (-priority, id). Enable DEBUG on logger ``upload.django_q_priority`` to log each
+    dequeue (pk + priority).
 """
 
 from __future__ import annotations
@@ -109,6 +119,11 @@ class PriorityORM(ORM):
                     .filter(id=task.id, lock=task.lock)
                     .update(lock=self.timeout(task))
                 ):
+                    log.debug(
+                        "django-q OrmQ dequeued pk=%s priority=%s (higher priority waited first)",
+                        task.pk,
+                        getattr(task, "priority", 0),
+                    )
                     task_list.append((task.pk, task.payload))
             return task_list
         sleep(Conf.POLL)

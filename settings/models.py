@@ -23,7 +23,6 @@ class GoogleConfig(models.Model):
 
 class UploadSettings(models.Model):
     upload_folder_id = models.CharField(max_length=255, help_text="Google Drive Folder ID for uploads")
-    worker_count = models.PositiveIntegerField(default=1, help_text="Number of queue workers (requires qcluster restart)")
     extra_res_below = models.BooleanField(
         default=False,
         help_text="Allow non-standard resolutions below 720p (e.g. 520p, 360p, 240p). 480p is always included."
@@ -48,7 +47,7 @@ class UploadSettings(models.Model):
         super(UploadSettings, self).save(*args, **kwargs)
 
     def __str__(self):
-        return f"Upload Settings (Workers: {self.worker_count}, Folder: {self.upload_folder_id})"
+        return f"Upload Settings (Folder: {self.upload_folder_id})"
 
 
 class FlixBDSettings(models.Model):

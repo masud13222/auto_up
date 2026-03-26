@@ -14,12 +14,10 @@
                        placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs"
                        class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm font-mono placeholder:text-[#333]">
             </div>
-            <div>
-                <label class="block text-xs font-medium text-[#444] uppercase tracking-wider mb-1.5">Workers</label>
-                <input type="number" name="worker_count" min="1" max="10" value="{{ obj.worker_count|default:1 }}"
-                       class="w-24 bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-lg px-3.5 py-2.5 text-sm">
-                <p class="text-[11px] text-[#444] mt-1">Restart qcluster after changing.</p>
-            </div>
+            <p class="text-[11px] text-[#444] leading-relaxed">
+                Queue worker count: set environment variable <code class="text-[#888]">Q_CLUSTER_WORKERS</code>
+                (e.g. <code class="text-[#888]">2</code>) before starting <code class="text-[#888]">qcluster</code>; restart required.
+            </p>
 
             <!-- Resolution Settings -->
             <div class="border-t border-[#1e1e1e] pt-4">

@@ -165,9 +165,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DOWNLOADS_DIR = BASE_DIR / 'downloads'
 
 # Django-Q2 Queue Configuration (ORM Broker)
-# Default workers below; when you run ``manage.py qcluster``, upload.apps.UploadConfig.ready()
-# overwrites ``workers`` from settings.UploadSettings.worker_count (Panel → Settings).
-# Optional env override (highest priority): Q_CLUSTER_WORKERS=2
+# Worker count: set Q_CLUSTER_WORKERS before starting qcluster (e.g. 2). Conf.WORKERS is read
+# when django_q.conf is first imported, so the env var must be set at process start.
 # Gunicorn/web processes do not run qcluster — they keep this dict unchanged.
 _QC_WORKERS = int(os.environ.get("Q_CLUSTER_WORKERS", "1"))
 Q_CLUSTER = {
@@ -233,6 +232,7 @@ LOGGING = {
         'google_genai':               {'level': 'WARNING', 'propagate': True},
         'googleapiclient':            {'level': 'WARNING', 'propagate': True},
         'google_auth_httplib2':       {'level': 'WARNING', 'propagate': True},
-        'django-q':                   {'level': 'WARNING', 'propagate': True},
+        # INFO: see which Worker-1 / Worker-2 picked each task (parallelism check)
+        'django-q':                   {'level': 'INFO', 'propagate': True},
     },
 }
