@@ -66,10 +66,12 @@ movie_schema = {
         "is_adult": {
             "type": "boolean",
             "description": (
-                "True only if the page/release is clearly adult-only or explicit erotic content: "
-                "e.g. 18+, Age 18+, Adults only, A-rated adult/erotic, XXX, hentai/uncensored adult anime, "
+                "Hard rule: if the word 'Tagalog' appears in `title`, `website_movie_title`, or the page's main "
+                "visible title/heading (case-insensitive), MUST be true. "
+                "Otherwise true only if the page/release is clearly adult-only or explicit erotic content: "
+                "e.g. 18+, Age 18+, Adults only, A-rated adult/erotic, XXX, hentai/uncensored adult anime. "
                 "False for mainstream films (including horror, action, R-rated violence, or UNRATED director's cuts "
-                "that are not sold as adult/erotic). When unsure, false."
+                "that are not sold as adult/erotic). When unsure (and no Tagalog in title), false."
             ),
         },
     },
@@ -93,7 +95,7 @@ Your task is to analyze the provided HTML and extract movie details accurately.
 - cast: comma-separated actors if listed on page
 - languages: array of audio languages found on page (e.g. ["Hindi", "English"])
 - countries: array of production countries from the page (e.g. ["USA"])
-- **is_adult** (required boolean): `true` only for clear adult/explicit erotic releases (18+, Adults only, XXX, explicit adult UNRATED/NR marketing). `false` for normal movies including violent/horror/R-rated or UNRATED that is not adult erotica. If ambiguous → `false`.
+- **is_adult** (required boolean): **If `title`, `website_movie_title`, or the main page title contains `Tagalog` (any casing) → always `true`.** Else `true` only for clear adult/explicit erotic releases (18+, Adults only, XXX, explicit adult UNRATED/NR marketing). `false` for normal movies including violent/horror/R-rated or UNRATED that is not adult erotica. If ambiguous and no Tagalog in title → `false`.
 
 ## IMPORTANT - website_movie_title field (MUST generate in this exact format):
 `Title Year Source Language - {SITE_NAME}`
