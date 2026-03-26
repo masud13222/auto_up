@@ -1,12 +1,21 @@
 import logging
 import os
 import shutil
+import sys
 import threading
 
 from django.apps import AppConfig
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _is_server_or_queue_process():
+    """Stuck requeue / queue wipe only for real app processes, not one-off management commands."""
+    joined = " ".join(sys.argv).lower()
+    if "runserver" in joined or "qcluster" in joined or "gunicorn" in joined:
+        return True
+    return os.path.basename(sys.argv[0]).lower() == "gunicorn"
 
 
 def _clean_downloads_folder():
@@ -83,6 +92,8 @@ class UploadConfig(AppConfig):
 
     def ready(self):
         """Re-queue stuck tasks + clean downloads after app init (deferred — avoids DB during setup)."""
+        if not _is_server_or_queue_process():
+            return
         # Gunicorn workers: no stuck-task DB work (qcluster handles queue); only clean downloads
         if os.environ.get("GUNICORN_WORKER_PROCESS"):
             threading.Timer(0.5, _clean_downloads_folder).start()

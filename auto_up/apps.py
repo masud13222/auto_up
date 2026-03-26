@@ -1,10 +1,18 @@
 import logging
 import os
+import sys
 import threading
 
 from django.apps import AppConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _is_server_or_queue_process():
+    joined = " ".join(sys.argv).lower()
+    if "runserver" in joined or "qcluster" in joined or "gunicorn" in joined:
+        return True
+    return os.path.basename(sys.argv[0]).lower() == "gunicorn"
 
 
 def _ensure_scheduled_deferred():
@@ -27,5 +35,7 @@ class AutoUpConfig(AppConfig):
         Skipped in Gunicorn workers.
         """
         if os.environ.get("GUNICORN_WORKER_PROCESS"):
+            return
+        if not _is_server_or_queue_process():
             return
         threading.Timer(1.0, _ensure_scheduled_deferred).start()
