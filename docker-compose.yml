@@ -1,7 +1,32 @@
+# Local Postgres for web + worker. Override DATABASE_URL on web/worker to use Neon etc.
+# Password: set POSTGRES_PASSWORD in .env (default below is dev-only).
+
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: flixbd_db
+    restart: always
+    environment:
+      POSTGRES_USER: flixbd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flixbd_local_dev}
+      POSTGRES_DB: flixbd
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flixbd -d flixbd"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   web:
     build: .
     container_name: flixbd_app
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "5000:5000"
     volumes:
@@ -10,19 +35,23 @@ services:
       - DEBUG=False
       - ALLOWED_HOSTS=upload.gcloud.sbs,drivebot.gcloud.lol,72.18.215.205,localhost,upload.flixbd.xyz,*
       - CSRF_TRUSTED_ORIGINS=https://upload.gcloud.sbs,https://drivebot.gcloud.lol,http://72.18.215.205:5000,https://upload.flixbd.xyz
-      - DATABASE_URL=postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
+      - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
     restart: always
 
-  worker: # Uncomment to enable qcluster task worker
+  worker:
     build: .
     container_name: flixbd_worker
     command: python manage.py qcluster
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - flixbd_media:/app/media
     environment:
       - DEBUG=False
-      - DATABASE_URL=postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
+      - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
     restart: always
 
 volumes:
   flixbd_media:
+  postgres_data:

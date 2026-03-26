@@ -97,18 +97,21 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+#
+# Set DATABASE_URL in the environment (never commit secrets):
+#   - Docker Compose: set in docker-compose.yml or .env (e.g. postgres://user:pass@db:5432/flixbd)
+#   - Neon / cloud: postgresql://... ?sslmode=require
+#   - Local dev without Postgres: omit DATABASE_URL → SQLite file below
+#
+# DB_CONN_MAX_AGE: 0 is safest for Neon serverless pooler (stale connections). Use 600+ for long-lived Postgres.
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
+_default_database_url = f"sqlite:///{(BASE_DIR / 'db.sqlite3').as_posix()}"
 
-DATABASE_URL = "postgresql://neondb_owner:npg_tWQqLFaU38ne@ep-super-snow-adzli05y-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 DATABASES = {
-    # conn_max_age=0 is required for Neon serverless pooler to prevent stale connections
-    'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=0)
+    "default": dj_database_url.config(
+        default=_default_database_url,
+        conn_max_age=int(os.environ.get("DB_CONN_MAX_AGE", "0")),
+    )
 }
 
 
