@@ -15,6 +15,8 @@ _URL_WITH_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
 _MARKDOWN_DISCARD_FROM_LINE = (
     "### How to Download?",
     "## You May Also Like",
+    # Raw string: avoid invalid escapes (\_ \*); value must still match MarkItDown line exactly.
+    r"**\_\_\_\_\_\_\_ [ \*\*Play in VLC / Playit player if audio is not supporting in MX player\*\*⇓] \_\_\_\_\_\_\_**",
 )
 
 

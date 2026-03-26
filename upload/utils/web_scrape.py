@@ -38,6 +38,9 @@ from upload.utils.web_scrape_html import (
 logger = logging.getLogger(__name__)
 _markitdown = MarkItDown()
 
+# Main content wrapper (e.g. CineFreak). If missing, try PrimeHub-style layout.
+_CONTENT_SELECTOR_FALLBACK = "div.single-service-content"
+
 # Suppress pydoll internal CDP/websocket logs
 logging.getLogger("pydoll").setLevel(logging.WARNING)
 logging.getLogger("pydoll.browser.tab").setLevel(logging.ERROR)  # CF bypass WebSocket noise
@@ -331,17 +334,25 @@ class WebScrapeService:
         try:
             logger.info(f"[Scrape] get_page_content → {url}")
             html = _fetch_html(url, settle=5.0)
-            node = LexborHTMLParser(html).css_first(selector)
+            parser = LexborHTMLParser(html)
+            node = parser.css_first(selector)
+            used = selector
+            if not node:
+                node = parser.css_first(_CONTENT_SELECTOR_FALLBACK)
+                used = _CONTENT_SELECTOR_FALLBACK
             if node:
                 raw_html = node.html
                 raw_html = absolutize_resource_urls(raw_html, url)
                 cleaned = WebScrapeService.clean_html(raw_html)
                 logger.info(
                     f"[Scrape] Extracted {len(raw_html):,} → {len(cleaned):,} chars "
-                    f"({100 - len(cleaned)/len(raw_html)*100:.0f}% reduction)"
+                    f"({100 - len(cleaned)/len(raw_html)*100:.0f}% reduction) "
+                    f"[root={used!r}]"
                 )
                 return cleaned
-            logger.warning(f"[Scrape] Selector '{selector}' not found in {url}")
+            logger.warning(
+                f"[Scrape] Selectors {selector!r} and {_CONTENT_SELECTOR_FALLBACK!r} not found in {url}"
+            )
             return None
         except Exception as exc:
             logger.error(f"[Scrape] get_page_content({url}): {exc}", exc_info=True)
@@ -355,7 +366,10 @@ class WebScrapeService:
         try:
             logger.info(f"[Scrape] cinefreak_title → {url}")
             html = _fetch_html(url, settle=3.0)
-            node = LexborHTMLParser(html).css_first("div.content-grid.container h1")
+            parser = LexborHTMLParser(html)
+            node = parser.css_first("div.content-grid.container h1")
+            if not node:
+                node = parser.css_first(f"{_CONTENT_SELECTOR_FALLBACK} h1")
             if node:
                 title = node.text(strip=True)
                 logger.info(f"[Scrape] Title: {title}")
