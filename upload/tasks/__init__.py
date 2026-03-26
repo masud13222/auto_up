@@ -6,7 +6,7 @@ from multiprocessing import current_process
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
-from upload.service.duplicate_checker import _search_db, _get_existing_resolutions
+from upload.service.duplicate_checker import _search_db, _get_existing_resolutions, coerce_matched_task_pk
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from upload.utils.drive_file_delete import cleanup_old_drive_files
 from llm.utils.name_extractor import extract_title_info
@@ -107,6 +107,10 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
             clean = item_title[:year_match.start()].strip() if year_match else item_title
             score = fuzz.ratio(name_lower, clean.lower())
             if score >= min_score:  # skip low-relevance results — don't confuse LLM
+                fid = item.get("id")
+                if fid is None:
+                    logger.debug("FlixBD search: skipping hit without id: %r", item_title[:80])
+                    continue
                 download_links = item.get("download_links") or {}
                 qualities_raw = download_links.get("qualities")
                 qualities = []
@@ -119,7 +123,7 @@ def _fetch_flixbd_results(name: str, min_score: int = 40) -> list:
                 resolution_keys = _normalize_flixbd_resolution_keys(qualities)
 
                 results.append({
-                    "id": item["id"],
+                    "id": fid,
                     "title": item_title,
                     "match_score": score,
                     "download_links": download_links,
@@ -372,17 +376,18 @@ def _clean_result_keep_drive_links(result: dict) -> dict:
     return cleaned
 
 
-def _build_db_match_info(existing_task: MediaTask) -> dict:
-    """Build the DB match info dict to inject into the combined LLM prompt."""
-    result_data = existing_task.result or {}
-    existing_resolutions = _get_existing_resolutions(existing_task)
+def _build_db_candidate(task: MediaTask) -> dict:
+    """Build a single candidate dict (with PK) for the LLM duplicate prompt."""
+    result_data = task.result or {}
+    existing_resolutions = _get_existing_resolutions(task)
+    is_tvshow = task.content_type == 'tvshow' if task.content_type else bool(result_data.get("seasons"))
 
-    is_tvshow = existing_task.content_type == 'tvshow' if existing_task.content_type else bool(result_data.get("seasons"))
-
-    info = {
-        "existing_title": existing_task.title,
-        "existing_resolutions": existing_resolutions,
-        "existing_type": "tvshow" if is_tvshow else "movie",
+    candidate = {
+        "id": task.pk,
+        "title": task.title,
+        "year": result_data.get("year"),
+        "resolutions": existing_resolutions,
+        "type": "tvshow" if is_tvshow else "movie",
     }
 
     if is_tvshow:
@@ -393,10 +398,15 @@ def _build_db_match_info(existing_task: MediaTask) -> dict:
                 res = item.get("resolutions", {})
                 ep_res = sorted(k for k, v in res.items() if v)
                 episodes.append(f"{label}: {','.join(ep_res)}")
-        info["existing_episode_count"] = len(episodes)
-        info["existing_episodes"] = episodes
+        candidate["episode_count"] = len(episodes)
+        candidate["episodes"] = episodes
 
-    return info
+    return candidate
+
+
+def _build_db_match_candidates(matches: list[MediaTask]) -> list[dict]:
+    """Build a list of candidate dicts for the LLM duplicate prompt."""
+    return [_build_db_candidate(task) for task in matches]
 
 
 def process_media_task(task_pk: int) -> str:
@@ -440,14 +450,14 @@ def process_media_task(task_pk: int) -> str:
 
         # ── Step 0: Title fetch + DB search (no LLM call) ──
         website_title = WebScrapeService.cinefreak_title(url)
-        db_match_info = None
+        db_match_candidates = None
+        db_candidate_map = {}
         flixbd_results = []
         existing_task = None
         existing_result = {}
         resume_result_raw = _clean_result_keep_drive_links(media_task.result or {})
         has_existing_drive = _has_drive_links(resume_result_raw)
         resume_result = resume_result_raw if has_existing_drive else {}
-
 
         if website_title:
             logger.info(f"Website title: {website_title}")
@@ -458,12 +468,16 @@ def process_media_task(task_pk: int) -> str:
             if name:
                 matches = _search_db(name, year, exclude_pk=media_task.pk)
                 if matches:
-                    existing_task = matches[0]
-                    logger.info(f"Found existing match: [{existing_task.pk}] {existing_task.title}")
-                    db_match_info = _build_db_match_info(existing_task)
+                    db_match_candidates = _build_db_match_candidates(matches)
+                    db_candidate_map = {t.pk: t for t in matches}
+                    logger.info(
+                        f"Found {len(matches)} DB candidate(s): "
+                        + ", ".join(f"[{t.pk}] {t.title}" for t in matches)
+                    )
                 elif resume_result:
                     logger.info(f"No other match, but task has existing result (reused task). Using self for dup check.")
-                    db_match_info = _build_db_match_info(media_task)
+                    db_match_candidates = [_build_db_candidate(media_task)]
+                    db_candidate_map = {media_task.pk: media_task}
                 else:
                     logger.info(f"No existing match for '{name}'. New content.")
 
@@ -482,14 +496,39 @@ def process_media_task(task_pk: int) -> str:
         content_type, data, dup_result = get_content_info(
             url,
             on_progress=_on_progress,
-            db_match_info=db_match_info,
+            db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results if flixbd_results else None,
             existing_result=resume_result if resume_result else None,
         )
         title = data.get("title", "Unknown")
 
+        # ── Resolve existing_task from LLM's matched_task_id ──
+        if dup_result:
+            raw_matched = dup_result.get("matched_task_id")
+            matched_pk = coerce_matched_task_pk(raw_matched)
+            if raw_matched is not None and matched_pk is None:
+                logger.warning(
+                    "Invalid matched_task_id=%r (task pk=%s); treating as no DB match",
+                    raw_matched,
+                    media_task.pk,
+                )
+                dup_result["matched_task_id"] = None
+            elif matched_pk is not None:
+                dup_result["matched_task_id"] = matched_pk
+                existing_task = db_candidate_map.get(matched_pk)
+                if existing_task:
+                    logger.info(f"LLM matched candidate: [{existing_task.pk}] {existing_task.title}")
+                else:
+                    logger.warning(
+                        f"LLM returned matched_task_id={matched_pk} but not in candidates "
+                        f"{list(db_candidate_map.keys())}; treating as new content"
+                    )
+                    dup_result["action"] = "process"
+            else:
+                dup_result["matched_task_id"] = None
+                logger.info("LLM returned matched_task_id=null — treating as new content")
+
         # ── Merge resume drive links (restart recovery) ──
-        # If this task had partial uploads before restart, preserve those drive links
         if resume_result and not existing_task:
             data = _merge_drive_links(resume_result, data)
             logger.info("Checked for drive links from previous partial upload (resume)")
@@ -506,6 +545,29 @@ def process_media_task(task_pk: int) -> str:
                 reason = f"Invalid LLM action, defaulting to process: {dup_result}"
 
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
+
+            # Inconsistent LLM output — avoid wrong dup-update flags or deleting the new row
+            if action in ("update", "replace") and not existing_task:
+                logger.warning(
+                    "Duplicate action=%s but no resolved existing_task — forcing process (pk=%s)",
+                    action,
+                    media_task.pk,
+                )
+                action = "process"
+                dup_result["action"] = "process"
+            elif (
+                action == "skip"
+                and not resume_result
+                and db_candidate_map
+                and not existing_task
+            ):
+                logger.warning(
+                    "Duplicate skip without valid matched_task_id while DB candidates were sent — "
+                    "forcing process (pk=%s)",
+                    media_task.pk,
+                )
+                action = "process"
+                dup_result["action"] = "process"
 
             if dup_result and action == "skip":
                 if resume_result:
@@ -630,7 +692,7 @@ def process_media_task(task_pk: int) -> str:
         # ── Step 2: Route to appropriate pipeline ──
         dup_info = {
             "action": action,
-            "existing_task": existing_task if action != "process" else None,
+            "existing_task": existing_task if action != "process" and existing_task is not None else None,
         }
         if dup_result:
             mr = dup_result.get("missing_resolutions")

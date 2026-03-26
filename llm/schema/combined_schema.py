@@ -47,35 +47,42 @@ def _build_resolution_note(extra_below: bool = False, extra_above: bool = False,
     return "".join(parts)
 
 
-def _build_duplicate_section(db_match_info: dict, flixbd_results: list = None) -> str:
-    if not db_match_info and not flixbd_results:
+def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: list = None) -> str:
+    if not db_match_candidates and not flixbd_results:
         return ""
 
     ctx_parts = []
-    if db_match_info:
-        ctx_parts.append(f"### DB Match:\n```json\n{json.dumps(db_match_info, separators=(',',':'), ensure_ascii=False)}\n```")
+    if db_match_candidates:
+        ctx_parts.append(f"### DB Candidates ({len(db_match_candidates)}):\n```json\n{json.dumps(db_match_candidates, separators=(',',':'), ensure_ascii=False)}\n```")
     if flixbd_results:
         ctx_parts.append(
             f"### FlixBD Match (top {len(flixbd_results)}):\n"
             f"```json\n{json.dumps(flixbd_results, separators=(',',':'), ensure_ascii=False)}\n```\n"
-            "(If no DB Match, compare only to FlixBD `resolution_keys`.)"
+            "(If no DB Candidates, compare only to FlixBD `resolution_keys`.)"
         )
 
     return f"""## Duplicate Check
 {chr(10).join(ctx_parts)}
 
-Compare sources: DB `existing_resolutions` and/or FlixBD `resolution_keys`. Both must be covered for "skip".
+**CRITICAL: You MUST pick the correct candidate by matching BOTH title AND year.**
+- Each DB candidate has an `id`. Return that `id` as `matched_task_id`.
+- YEAR MUST MATCH EXACTLY. Different year = different content → action="process", matched_task_id=null.
+- If no candidate matches title+year → action="process", matched_task_id=null.
+
+Compare sources: DB candidate `resolutions` and/or FlixBD `resolution_keys`. Both must be covered for "skip".
 Do NOT use the page title line in the Markdown alone to determine what already exists on FlixBD/DB.
 
 Steps:
-1. Extracted = resolutions from your download_links with real URLs
-2. Existing = from DB/FlixBD above
-3. Missing = Extracted − Existing (check each one)
-4. Decision: Missing empty → skip | Missing non-empty → update (set missing_resolutions) | Quality upgrade (CAM→WEB-DL) → replace | Different content → process
+1. Pick candidate: match title AND year from DB candidates. No year match → process.
+2. Extracted = resolutions from your download_links with real URLs
+3. Existing = from matched candidate's resolutions / FlixBD resolution_keys
+4. Missing = Extracted − Existing (check each one)
+5. Decision: Missing empty → skip | Missing non-empty → update (set missing_resolutions) | Quality upgrade (CAM→WEB-DL) → replace | Different content → process
 
 TV shows: also check new episodes. New eps → update (has_new_episodes=true).
 
-reason format: "Extracted: [...]. Existing: [...]. Missing: [...]. Action: ... because ..."
+reason format: "Matched candidate id=X. Extracted: [...]. Existing: [...]. Missing: [...]. Action: ... because ..."
+If no match: "No candidate matches title+year. Action: process because this is new content."
 
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}
@@ -88,12 +95,12 @@ def get_combined_system_prompt(
     extra_below: bool = False,
     extra_above: bool = False,
     max_extra: int = 0,
-    db_match_info: dict = None,
+    db_match_candidates: list = None,
     flixbd_results: list = None,
 ) -> str:
     res_note = _build_resolution_note(extra_below, extra_above, max_extra)
-    has_dup = bool(db_match_info or flixbd_results)
-    dup_section = _build_duplicate_section(db_match_info, flixbd_results) if has_dup else ""
+    has_dup = bool(db_match_candidates or flixbd_results)
+    dup_section = _build_duplicate_section(db_match_candidates, flixbd_results) if has_dup else ""
 
     return f"""You are an expert web scraping assistant. Detect content type AND extract structured data in one step.
 

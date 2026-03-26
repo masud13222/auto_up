@@ -12,6 +12,10 @@ duplicate_schema = {
             "type": "boolean",
             "description": "True if new content is the same media as existing"
         },
+        "matched_task_id": {
+            "type": ["integer", "null"],
+            "description": "The 'id' of the DB candidate you matched against. REQUIRED for skip/update/replace. null only when action=process (no match)."
+        },
         "action": {
             "type": "string",
             "enum": ["skip", "update", "replace", "process"],
@@ -36,22 +40,33 @@ duplicate_schema = {
             "description": "True if the new URL has episode labels NOT present in existing_episodes. When true, new episodes will be APPENDED (not replaced)."
         }
     },
-    "required": ["is_duplicate", "action", "reason", "detected_new_type"]
+    "required": ["is_duplicate", "matched_task_id", "action", "reason", "detected_new_type"]
 }
 
 
-DUPLICATE_CHECK_PROMPT = f"""You are a media content deduplication expert. Compare a NEW incoming title against an EXISTING database entry.
+DUPLICATE_CHECK_PROMPT = f"""You are a media content deduplication expert. Compare a NEW incoming title against MULTIPLE existing database candidates.
 
 ## Input Format:
 You will receive JSON with:
 - `new_website_title`: Full raw title from the website (new)
 - `new_name`: Clean extracted name
 - `new_year`: Extracted year (if any)
-- `existing_title`: Title stored in our database
-- `existing_resolutions`: Resolutions the existing entry already has (e.g. ["720p", "1080p"]) — null values are already filtered out
-- `existing_type`: "movie" or "tvshow"
-- `existing_episode_count`: Number of download items in existing (TV shows only)
-- `existing_episodes`: Per-episode resolution info like ["Episode 01: 480p,720p,1080p", "Season 5 Episode 73-80: 720p,1080p"] (TV shows only)
+- `candidates`: Array of existing DB entries, each with:
+  - `id`: Database primary key (you MUST return this in `matched_task_id`)
+  - `title`: Title stored in our database
+  - `year`: Year stored in our database (from result JSON)
+  - `resolutions`: Resolutions the existing entry already has (e.g. ["720p", "1080p"]) — null values are already filtered out
+  - `type`: "movie" or "tvshow"
+  - `episode_count`: Number of download items in existing (TV shows only)
+  - `episodes`: Per-episode resolution info (TV shows only)
+
+## STEP 0: Pick the Correct Candidate — YEAR IS CRITICAL
+Look at ALL candidates. Find the one that matches BOTH title AND year.
+- YEAR MUST MATCH EXACTLY. "Love 2008" ≠ "Love Express 2016". Different year = different content.
+- If `new_year` is present, ONLY consider candidates whose `year` matches `new_year`.
+- If NO candidate matches both title and year → action="process", matched_task_id=null.
+- If exactly one matches → use that candidate for the remaining steps.
+- If multiple match title+year → prefer the one with the closest title match.
 
 ## STEP 1: Detect New Content Type
 From `new_website_title`, detect if the new content is a **movie** or **tvshow**.
@@ -60,7 +75,7 @@ From `new_website_title`, detect if the new content is a **movie** or **tvshow**
 - Set `detected_new_type` accordingly
 
 ## STEP 2: Type Mismatch Check
-If `detected_new_type` is different from `existing_type`:
+If `detected_new_type` is different from the matched candidate's `type`:
 - If SAME title/name → the existing entry was MISCLASSIFIED → action="replace"
 - If DIFFERENT title/name → genuinely different content → action="process"
 
@@ -71,7 +86,7 @@ From `new_website_title`, identify all resolutions mentioned (e.g. "480p, 720p &
 Write them out explicitly: Extracted = [480p, 720p, 1080p]
 
 **Step 3b — List EXISTING resolutions:**
-Copy `existing_resolutions` from the input JSON exactly.
+Copy `resolutions` from the matched candidate exactly.
 Write them out explicitly: Existing = [720p]
 
 **Step 3c — Check EACH extracted resolution ONE BY ONE:**
@@ -88,7 +103,7 @@ Missing = [480p, 1080p]
 - NEVER return "skip" if Missing is not empty
 
 ## STEP 4: Episode Comparison (TV shows only)
-- Compare episode labels in existing_episodes vs what the new title suggests
+- Compare episode labels in candidate's `episodes` vs what the new title suggests
 - New episode batch (e.g. existing ep 1-72, new ep 73-80) → has_new_episodes=true, action="update"
 - Same episode range → has_new_episodes=false
 - If you can't tell, default has_new_episodes=true for safety
@@ -96,39 +111,44 @@ Missing = [480p, 1080p]
 
 ## Action Definitions:
 
-**"skip"** — Nothing new. Same title+year AND every resolution in Extracted already exists in Existing. Even ONE missing resolution = NOT a skip.
+**"skip"** — Nothing new. Same title+year AND every resolution in Extracted already exists in Existing. Even ONE missing resolution = NOT a skip. Set matched_task_id to the candidate's id.
 
-**"update"** — Same title+year but at least one resolution is missing OR new episodes found. Set missing_resolutions to the missing list.
+**"update"** — Same title+year but at least one resolution is missing OR new episodes found. Set missing_resolutions to the missing list. Set matched_task_id to the candidate's id.
 
-**"replace"** — Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay). OR type mismatch with same title.
+**"replace"** — Existing is low quality (CAM/HDCAM/HDTS/DVDRip) and new is better (WEB-DL/BluRay). OR type mismatch with same title. Set matched_task_id to the candidate's id.
 
-**"process"** — Completely different content (different title, year, or season).
+**"process"** — Completely different content (different title, year, or season). Set matched_task_id=null.
+
+## matched_task_id Rules:
+- For skip/update/replace: MUST be the `id` of the candidate you matched against. Never null.
+- For process: MUST be null. No match found.
 
 ## Quality Hierarchy (lowest to highest):
 CAM < HDCAM < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX
 
 ## COMMON WRONG REASONING (never do this):
+WRONG: "Title contains 'Love' and candidate also has 'Love' → same content"
+WHY WRONG: "Love 2008" and "Love Express 2016" are COMPLETELY different movies. ALWAYS check year.
+
 WRONG: "Existing has 720p, new title also has 720p → resolutions match → skip"
 WHY WRONG: Ignores 480p and 1080p that are also in the new title. You MUST check ALL extracted resolutions individually.
 
-WRONG: "Content already exists with the same resolutions → skip"
-WHY WRONG: Database may only have 720p while the new title lists 480p+720p+1080p. Any resolution in the new title that is not in existing_resolutions is missing → "update".
+WRONG: Picking a candidate without verifying year match.
+WHY WRONG: You MUST verify title AND year match before choosing a candidate.
 
 ## CORRECT EXAMPLE:
-Input: new_website_title has "480p, 720p & 1080p", existing_resolutions = ["720p"]
-Step 3a: Extracted = [480p, 720p, 1080p]
-Step 3b: Existing = [720p]
-Step 3c: 480p in Existing? NO → MISSING. 720p in Existing? YES. 1080p in Existing? NO → MISSING. Missing = [480p, 1080p]
-Step 3d: Missing is NOT empty → action = "update", missing_resolutions = ["480p", "1080p"]
-Reason: "Extracted: [480p, 720p, 1080p]. Existing: [720p]. Missing: [480p, 1080p]. Action: update because 480p and 1080p are not on the site yet."
+Input: new_name="Love", new_year="2008", candidates=[{{"id":10,"title":"Love Express","year":2016,...}},{{"id":20,"title":"Love","year":2008,...}}]
+Step 0: Candidate id=10 year=2016 ≠ 2008 → SKIP. Candidate id=20 year=2008 = 2008, title matches → USE id=20.
+matched_task_id = 20
 
 ## The `reason` field MUST follow this format exactly:
-"Extracted: [list]. Existing: [list]. Missing: [list]. Action: [action] because [explanation]."
-Always show all three lists. Never write a vague sentence.
+"Matched candidate id=X. Extracted: [list]. Existing: [list]. Missing: [list]. Action: [action] because [explanation]."
+Always show matched id and all three lists. Never write a vague sentence.
+If no match: "No candidate matches title+year. Action: process because this is new content."
 
 ## Important:
-- Be STRICT about name matching
-- Year mismatch = different content → "process"
+- YEAR MISMATCH = DIFFERENT CONTENT → DO NOT MATCH
+- Be STRICT about name+year matching
 - SAME movie with more resolutions than the database = "update", NOT "process", NOT "skip"
 - Return ONLY valid JSON — no markdown, no backticks
 

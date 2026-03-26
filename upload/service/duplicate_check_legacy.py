@@ -20,7 +20,7 @@ from llm.utils.name_extractor import extract_title_info
 from upload.models import MediaTask
 from upload.utils.web_scrape import WebScrapeService
 
-from .duplicate_checker import _get_existing_resolutions, _search_db
+from .duplicate_checker import _get_existing_resolutions, _search_db, coerce_matched_task_pk
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +85,47 @@ def check_duplicate(url: str, current_task_pk: int = None) -> dict:
             "website_title": website_title,
         }
 
-    existing_task = matches[0]
-    logger.info("Found existing match: [%s] %s", existing_task.pk, existing_task.title)
+    logger.info(
+        "Found %d candidate(s): %s",
+        len(matches),
+        ", ".join(f"[{t.pk}] {t.title}" for t in matches),
+    )
 
-    result = _llm_compare(existing_task, name, year, website_title)
+    result = _llm_compare(matches, name, year, website_title)
+
+    raw_matched = result.get("matched_task_id")
+    matched_pk = coerce_matched_task_pk(raw_matched)
+    if raw_matched is not None and matched_pk is None:
+        logger.warning("Invalid matched_task_id=%r; treating as process", raw_matched)
+        result["matched_task_id"] = None
+        result["action"] = "process"
+    elif matched_pk is not None:
+        result["matched_task_id"] = matched_pk
+
+    existing_task = None
+    if matched_pk is not None:
+        candidate_map = {t.pk: t for t in matches}
+        existing_task = candidate_map.get(matched_pk)
+        if not existing_task:
+            logger.warning(
+                "LLM returned matched_task_id=%s not in candidates %s; treating as process",
+                matched_pk,
+                list(candidate_map.keys()),
+            )
+            result["action"] = "process"
+    else:
+        result["matched_task_id"] = None
+
+    if result["action"] in ("update", "replace") and existing_task is None:
+        logger.warning(
+            "duplicate_check_legacy: action=%s but no existing_task — forcing process",
+            result["action"],
+        )
+        result["action"] = "process"
+    elif result["action"] == "skip" and existing_task is None:
+        logger.warning("duplicate_check_legacy: skip without resolved existing_task — forcing process")
+        result["action"] = "process"
+
     result["existing_task"] = existing_task if result["action"] != "process" else None
     result["extracted_name"] = name
     result["extracted_year"] = year
@@ -98,48 +135,50 @@ def check_duplicate(url: str, current_task_pk: int = None) -> dict:
     return result
 
 
-def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_website_title: str) -> dict:
-    """Use LLM to compare new vs existing content (DUPLICATE_CHECK_PROMPT)."""
-    result_data = existing_task.result or {}
-    existing_resolutions = _get_existing_resolutions(existing_task)
+def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title: str) -> dict:
+    """Use LLM to compare new vs multiple existing candidates (DUPLICATE_CHECK_PROMPT)."""
+    candidates = []
+    for task in matches:
+        result_data = task.result or {}
+        resolutions = _get_existing_resolutions(task)
+        is_tvshow = task.content_type == "tvshow" if task.content_type else bool(result_data.get("seasons"))
 
-    if existing_task.content_type:
-        is_tvshow = existing_task.content_type == "tvshow"
-    else:
-        is_tvshow = bool(result_data.get("seasons"))
+        candidate = {
+            "id": task.pk,
+            "title": task.title,
+            "year": result_data.get("year"),
+            "resolutions": resolutions,
+            "type": "tvshow" if is_tvshow else "movie",
+        }
 
-    episode_count = 0
-    episodes = []
-    if is_tvshow:
-        for season in result_data.get("seasons", []):
-            for item in season.get("download_items", []):
-                episode_count += 1
-                label = item.get("label", "")
-                res = item.get("resolutions", {})
-                ep_res = sorted(k for k, v in res.items() if v)
-                episodes.append(f"{label}: {','.join(ep_res)}")
+        if is_tvshow:
+            episodes = []
+            for season in result_data.get("seasons", []):
+                for item in season.get("download_items", []):
+                    label = item.get("label", "")
+                    res = item.get("resolutions", {})
+                    ep_res = sorted(k for k, v in res.items() if v)
+                    episodes.append(f"{label}: {','.join(ep_res)}")
+            candidate["episode_count"] = len(episodes)
+            candidate["episodes"] = episodes
+
+        candidates.append(candidate)
 
     comparison_data = json.dumps(
         {
             "new_website_title": new_website_title,
             "new_name": new_name,
             "new_year": new_year,
-            "existing_title": existing_task.title,
-            "existing_resolutions": existing_resolutions,
-            "existing_type": "tvshow" if is_tvshow else "movie",
-            "existing_episode_count": episode_count,
-            "existing_episodes": episodes,
+            "candidates": candidates,
         },
         ensure_ascii=False,
     )
 
     logger.info(
-        "LLM comparing: %r vs existing %r (type=%s, res=%s, episodes=%s)",
+        "LLM comparing: %r (%s) vs %d candidate(s)",
         new_name,
-        existing_task.title,
-        "tvshow" if is_tvshow else "movie",
-        existing_resolutions,
-        episode_count,
+        new_year,
+        len(candidates),
     )
 
     try:
@@ -152,6 +191,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
 
         action = result.get("action", "process")
         reason = result.get("reason", "LLM decision")
+        matched_task_id = result.get("matched_task_id")
         detected_new_type = result.get("detected_new_type", "movie")
         missing_resolutions = result.get("missing_resolutions", [])
         has_new_episodes = result.get("has_new_episodes", False)
@@ -163,6 +203,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         return {
             "action": action,
             "reason": reason,
+            "matched_task_id": matched_task_id,
             "detected_new_type": detected_new_type,
             "missing_resolutions": missing_resolutions,
             "has_new_episodes": has_new_episodes,
@@ -173,6 +214,7 @@ def _llm_compare(existing_task: MediaTask, new_name: str, new_year: str, new_web
         return {
             "action": "process",
             "reason": f"LLM comparison error: {e}",
+            "matched_task_id": None,
             "detected_new_type": "movie",
             "missing_resolutions": [],
             "has_new_episodes": False,

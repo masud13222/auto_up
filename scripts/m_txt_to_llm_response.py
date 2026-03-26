@@ -144,17 +144,17 @@ def main() -> int:
             print(f"Input file not found: {path}", file=sys.stderr)
             raise SystemExit(2)
         user_content = path.read_text(encoding="utf-8", errors="replace")
-        db_match = None
+        db_candidates = None
         flixbd = None
         if args.dup:
-            db_match = {"existing_title": "Single Papa", "existing_resolutions": ["720p"]}
+            db_candidates = [{"id": 1, "title": "Single Papa", "year": 2025, "resolutions": ["720p"], "type": "tvshow"}]
             flixbd = [{"title": "Single Papa", "resolution_keys": ["720p"]}]
 
         system_prompt = get_combined_system_prompt(
             extra_below=False,
             extra_above=False,
             max_extra=0,
-            db_match_info=db_match,
+            db_match_candidates=db_candidates,
             flixbd_results=flixbd,
         )
         print(f"\n[{args.label}] model={args.model!r} mode=combined input={path}")

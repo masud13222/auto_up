@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 FUZZY_THRESHOLD = 85
 
 
+def coerce_matched_task_pk(value) -> int | None:
+    """
+    Normalize LLM `matched_task_id` for MediaTask.pk lookup.
+    Accepts positive int or numeric string; rejects bool, float, empty, junk.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if s.isdigit():
+            v = int(s)
+            return v if v > 0 else None
+    return None
+
+
 def _get_search_keywords(name: str) -> list[str]:
     """Generate progressively broader search keywords from a name."""
     words = name.strip().split()

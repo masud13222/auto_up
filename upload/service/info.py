@@ -16,10 +16,10 @@ def get_structured_output(llm_response: str) -> dict:
     return repair_json(llm_response)
 
 
-def detect_and_extract(html_content: str, db_match_info: dict = None, flixbd_results: list = None) -> tuple:
+def detect_and_extract(html_content: str, db_match_candidates: list = None, flixbd_results: list = None) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
-    If db_match_info or flixbd_results provided, also performs duplicate check in same call.
+    If db_match_candidates or flixbd_results provided, also performs duplicate check in same call.
     Reads resolution settings from UploadSettings.
     Returns: (content_type, data, duplicate_check_or_None)
     """
@@ -33,10 +33,10 @@ def detect_and_extract(html_content: str, db_match_info: dict = None, flixbd_res
         extra_below=extra_below,
         extra_above=extra_above,
         max_extra=max_extra,
-        db_match_info=db_match_info,
+        db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
     )
-    has_dup_ctx = bool(db_match_info or flixbd_results)
+    has_dup_ctx = bool(db_match_candidates or flixbd_results)
     dup_tag = " + duplicate check" if has_dup_ctx else ""
     logger.info(f"Detecting + extracting{dup_tag} (res: below={extra_below}, above={extra_above}, max={max_extra})...")
 
@@ -202,7 +202,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
     return tvshow_data
 
 
-def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=None, existing_result=None):
+def get_content_info(url, on_progress=None, db_match_candidates=None, flixbd_results=None, existing_result=None):
     """
     Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
     then resolves URLs. Scrapes only ONCE, then reuses the HTML.
@@ -211,7 +211,7 @@ def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=N
         url: Page URL to scrape
         on_progress: Optional callback(data) for incremental DB saves during
                      URL resolution. Called after each download item is resolved.
-        db_match_info: Optional dict with existing DB match info for duplicate check.
+        db_match_candidates: Optional list of candidate dicts (with id/pk) for duplicate check.
         flixbd_results: Optional list of FlixBD search results (typically max 3) for duplicate check.
         existing_result: Optional dict with previous task result containing
                          Drive links — used to skip resolving already-uploaded items.
@@ -228,7 +228,7 @@ def get_content_info(url, on_progress=None, db_match_info=None, flixbd_results=N
     # Step 2: Single LLM call — detect type + extract data + optional duplicate check
     content_type, data, dup_result = detect_and_extract(
         html_content,
-        db_match_info=db_match_info,
+        db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
     )
 
