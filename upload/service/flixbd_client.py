@@ -363,6 +363,76 @@ def add_movie_download_links(
     return created_ids
 
 
+def _parse_episode_range_field(raw) -> str | None:
+    """
+    Normalize ``download_item["episode_range"]`` for FlixBD (``01``, ``01-08``).
+
+    Accepts int/float (whole) or str. Empty / unparseable → None.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return str(raw).zfill(2) if raw >= 0 else None
+    if isinstance(raw, float) and raw.is_integer():
+        i = int(raw)
+        return str(i).zfill(2) if i >= 0 else None
+
+    s = str(raw).strip()
+    if not s:
+        return None
+    if "-" in s or "–" in s:
+        parts = re.split(r"[-–]", s, maxsplit=1)
+        if len(parts) == 2:
+            a, b = parts[0].strip(), parts[1].strip()
+            if a.isdigit() and b.isdigit():
+                return f"{int(a):02d}-{int(b):02d}"
+        return None
+    if s.isdigit():
+        return str(int(s)).zfill(2)
+    return None
+
+
+def _episode_number_for_flixbd_item(item: dict) -> str | None:
+    """
+    Value for FlixBD ``episode_number`` (``05``, ``01-08``) or ``None`` (combo pack).
+
+    * ``season_number`` on each season dict is the only season source for the API payload
+      (e.g. ``4`` → ``"04"``). Never infer season from the label.
+    * **Always** use ``episode_range`` first — extraction keeps it correct (``"01"``,
+      ``1``, ``"01-04"``). Only if it is missing or unparseable, fall back to the label
+      using ``Episode`` / ``EP`` (never the first ``\\d+`` in the whole string, which
+      would catch ``4`` from ``Season 4 Episode 01``).
+    """
+    item_type = item.get("type", "")
+    if item_type == "combo_pack":
+        return None
+
+    label = (item.get("label") or "").strip()
+
+    v = _parse_episode_range_field(item.get("episode_range"))
+    if v:
+        return v
+
+    if item_type == "single_episode":
+        m = re.search(r"(?i)(?:episode|ep\.?)\s*(\d+)", label)
+        if m:
+            return str(int(m.group(1))).zfill(2)
+        return None
+
+    if item_type == "partial_combo":
+        m = re.search(r"(?i)(?:episode|ep\.?)\s*(\d+)\s*[-–]\s*(\d+)", label)
+        if m:
+            return f"{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        m = re.search(r"(?i)(?:episode|ep\.?)\s*(\d+)", label)
+        if m:
+            return str(int(m.group(1))).zfill(2)
+        return None
+
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Add Download Links -- Series
 # ──────────────────────────────────────────────────────────────────────────────
@@ -398,7 +468,6 @@ def add_series_download_links(
         season_num = season.get("season_number")
         for item in season.get("download_items", []):
             item_label = item.get("label", "")
-            item_type = item.get("type", "")
             resolutions = item.get("resolutions", {})
 
             for quality, drive_url in resolutions.items():
@@ -410,24 +479,14 @@ def add_series_download_links(
                     "server_name": server_name,
                     "download_link": drive_url,
                     "quality": quality,
-                    "season_number": str(season_num).zfill(2),  # "01", "02", etc.
+                    # Season only from structured field (e.g. 4 → "04"), not from label text.
+                    "season_number": str(season_num).zfill(2),
                 }
 
-                # episode_number field (string, supports ranges):
-                #   single_episode → extract from label ("Episode 05" → "05")
-                #   partial_combo  → extract from label ("Episode 01-08" → "01-08")
-                #   combo_pack     → omit (null = full-season pack)
-                if item_type == "single_episode":
-                    m = re.search(r"(\d+)", item_label)
-                    if m:
-                        payload["episode_number"] = str(int(m.group(1))).zfill(2)
-                elif item_type == "partial_combo":
-                    nums = re.findall(r"\d+", item_label)
-                    if len(nums) >= 2:
-                        payload["episode_number"] = f"{int(nums[0]):02d}-{int(nums[-1]):02d}"
-                    elif len(nums) == 1:
-                        payload["episode_number"] = str(int(nums[0])).zfill(2)
-                # combo_pack: no episode_number — full-season pack
+                # episode_number: always episode_range first; label only if range missing (see _episode_number_for_flixbd_item).
+                ep_val = _episode_number_for_flixbd_item(item)
+                if ep_val is not None:
+                    payload["episode_number"] = ep_val
 
                 if language:
                     payload["language"] = language

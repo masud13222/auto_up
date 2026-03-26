@@ -75,7 +75,15 @@ tvshow_schema = {
                                     "enum": ["combo_pack", "partial_combo", "single_episode"]
                                 },
                                 "label":         {"type": "string", "description": "E.g. 'Season 1 Combo Pack', 'Season 2 Episode 01-08', 'Season 3 Episode 05'"},
-                                "episode_range": {"type": "string", "description": "E.g. '01-08' or '05'. Omit for combo_pack."},
+                                "episode_range": {
+                                    "type": "string",
+                                    "description": (
+                                        "REQUIRED for type single_episode and partial_combo — omit the key entirely only for combo_pack. "
+                                        "Episode number(s) for this download row only, zero-padded 2 digits: single → '01', '12'; "
+                                        "range (partial_combo) → '01-08', '10-12'. "
+                                        "Never put the season index here (season is seasons[].season_number on the parent)."
+                                    ),
+                                },
                                 "resolutions": {
                                     "type": "object",
                                     "additionalProperties": {"type": "string"},
@@ -130,7 +138,7 @@ Rules:
 - **Language**: e.g. `Dual Audio [Hindi ORG. + English]`, `Bengali`
 - **{SITE_NAME}**: always ` - {SITE_NAME}` at the end
 
-Derive NN and EP from your `seasons[].season_number` and `download_items[].episode_range` / labels. If several items in the **same** season, mirror the **page’s main** batch; do not invent ranges.
+Derive NN for `Season NN` from `seasons[].season_number`. Derive EP segment from `download_items[].episode_range` when set (preferred); use labels only if range is absent. If several items in the **same** season, mirror the **page’s main** batch; do not invent ranges.
 
 Examples:
 - `Single Papa 2025 Season 01 EP01-03 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
@@ -170,6 +178,12 @@ Classify each download item based ENTIRELY on the page's HTML structure — not 
 1. Heading covers the WHOLE season without episode breakdown → `combo_pack`
 2. Heading contains a RANGE (any two episode identifiers connected) → `partial_combo`; set `episode_range` to that range as-is from the page
 3. Heading refers to exactly ONE episode → `single_episode`
+
+### ✅ episode_range (must be present for every non-combo row):
+- **`single_episode`**: always set `episode_range` to that episode only, **zero-padded** (e.g. `"01"`, `"09"`, `"12"`). Downstream APIs use this field — do not rely on the label alone.
+- **`partial_combo`**: always set `episode_range` to the inclusive range, **zero-padded both ends** (e.g. `"01-08"`, `"10-12"`).
+- **`combo_pack`**: **omit** `episode_range` (whole season; no per-episode row).
+- Season belongs in `seasons[].season_number` only — **never** encode season inside `episode_range`.
 
 ### ⚠️ Strict rules:
 - Resolution button count (1, 2, or 3+) NEVER changes the type — a range heading is always `partial_combo`
