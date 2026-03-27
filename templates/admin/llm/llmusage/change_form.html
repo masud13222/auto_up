@@ -1,0 +1,30 @@
+{% extends "admin/change_form.html" %}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .llm-usage-response-wrap {
+    margin-top: 0.25em;
+  }
+  .llm-usage-response-pre {
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: min(70vh, 880px);
+    overflow: auto;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 1rem 1.25rem;
+    border-radius: 6px;
+    border: 1px solid #30363d;
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    tab-size: 2;
+  }
+  .field-response_display .readonly {
+    width: 100%;
+  }
+</style>
+{% endblock %}

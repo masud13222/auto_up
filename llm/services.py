@@ -120,13 +120,27 @@ SDK_CALLERS = {
 }
 
 
-def _save_usage(config: LLMConfig, response, duration_ms: int, success: bool = True, purpose: str = ''):
-    """Save token usage from LLM response to database."""
+def _save_usage(
+    config: LLMConfig,
+    response,
+    duration_ms: int,
+    success: bool = True,
+    purpose: str = "",
+    response_text: str = "",
+):
+    """Save token usage and completion text from LLM response to database."""
     try:
         extractor = USAGE_EXTRACTORS.get(config.sdk)
         usage = extractor(response) if extractor else {}
 
         if not usage:
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        body = (response_text or "").strip()
+        has_tokens = any(
+            int(usage.get(k, 0) or 0) > 0 for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+        )
+        if not has_tokens and not body:
             return
 
         LLMUsage.objects.create(
@@ -134,12 +148,13 @@ def _save_usage(config: LLMConfig, response, duration_ms: int, success: bool = T
             config_name=config.name,
             model_name=config.model_name,
             sdk=config.sdk,
-            prompt_tokens=usage.get('prompt_tokens', 0),
-            completion_tokens=usage.get('completion_tokens', 0),
-            total_tokens=usage.get('total_tokens', 0),
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
             purpose=purpose,
             success=success,
             duration_ms=duration_ms,
+            response_text=response_text or "",
         )
         logger.debug(
             f"[{config.name}] Usage: {usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)}"
@@ -209,7 +224,14 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                 raise Exception("LLM returned empty response after all retries")
 
             # Save usage on success
-            _save_usage(config, response, duration_ms, success=True, purpose=purpose)
+            _save_usage(
+                config,
+                response,
+                duration_ms,
+                success=True,
+                purpose=purpose,
+                response_text=content,
+            )
 
             logger.info(
                 f"[{config.name}] LLM raw output: {len(content)} characters "

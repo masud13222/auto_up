@@ -1,0 +1,18 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block content %}
+<div style="display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap;">
+    <div style="background: #5c1a1a; color: #fecaca; padding: 14px 22px; border-radius: 8px; min-width: 200px; border: 1px solid #7f1d1d;">
+        <h3 style="margin: 0 0 6px; font-size: 13px; opacity: 0.85; font-weight: 600;">Failed tasks</h3>
+        <div style="font-size: 26px; font-weight: bold; color: #fff;">{{ mt_failed_total }}</div>
+        <div style="font-size: 11px; opacity: 0.75; margin-top: 6px;">status = failed (all rows)</div>
+    </div>
+    <div style="background: #1e3a2f; color: #a7f3d0; padding: 14px 22px; border-radius: 8px; min-width: 200px; border: 1px solid #065f46;">
+        <h3 style="margin: 0 0 6px; font-size: 13px; opacity: 0.85; font-weight: 600;">With extra URLs</h3>
+        <div style="font-size: 26px; font-weight: bold; color: #fff;">{{ mt_extra_urls_total }}</div>
+        <div style="font-size: 11px; opacity: 0.75; margin-top: 6px;">extra_urls non-empty (all rows)</div>
+    </div>
+</div>
+{{ block.super }}
+{% endblock %}

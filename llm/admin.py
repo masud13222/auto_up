@@ -1,6 +1,10 @@
+import json
+
 from django.contrib import admin
 from django.db.models import Sum, Count
 from django.utils import timezone
+from django.utils.html import escape
+from django.utils.safestring import mark_safe
 from datetime import timedelta
 from .models import LLMConfig, LLMUsage
 
@@ -15,10 +19,78 @@ class LLMConfigAdmin(admin.ModelAdmin):
 @admin.register(LLMUsage)
 class LLMUsageAdmin(admin.ModelAdmin):
     change_list_template = 'llm/usage_change_list.html'
-    list_display = ('created_at', 'config_name', 'model_name', 'purpose', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'duration_ms', 'success')
+    change_form_template = 'admin/llm/llmusage/change_form.html'
+    list_display = (
+        'created_at',
+        'config_name',
+        'model_name',
+        'purpose',
+        'prompt_tokens',
+        'completion_tokens',
+        'total_tokens',
+        'duration_ms',
+        'success',
+    )
     list_filter = ('sdk', 'config_name', 'purpose', 'success', 'created_at')
-    readonly_fields = ('config', 'config_name', 'model_name', 'sdk', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'purpose', 'success', 'duration_ms', 'created_at')
+    readonly_fields = (
+        'config',
+        'config_name',
+        'model_name',
+        'sdk',
+        'prompt_tokens',
+        'completion_tokens',
+        'total_tokens',
+        'purpose',
+        'success',
+        'duration_ms',
+        'created_at',
+        'response_display',
+    )
+    fieldsets = (
+        (
+            None,
+            {
+                'fields': (
+                    'created_at',
+                    'config_name',
+                    'model_name',
+                    'sdk',
+                    'purpose',
+                    'success',
+                    'duration_ms',
+                    'prompt_tokens',
+                    'completion_tokens',
+                    'total_tokens',
+                    'config',
+                ),
+            },
+        ),
+        (
+            'Full response',
+            {
+                'description': 'Model output for this call (JSON is pretty-printed when valid).',
+                'fields': ('response_display',),
+            },
+        ),
+    )
     date_hierarchy = 'created_at'
+
+    @admin.display(description='Full response')
+    def response_display(self, obj):
+        if not obj or not (obj.response_text or '').strip():
+            return '—'
+        raw = obj.response_text.strip()
+        try:
+            parsed = json.loads(raw)
+            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pretty = raw
+        inner = escape(pretty)
+        return mark_safe(
+            '<div class="llm-usage-response-wrap">'
+            f'<pre class="llm-usage-response-pre">{inner}</pre>'
+            '</div>'
+        )
 
     def has_add_permission(self, request):
         return False

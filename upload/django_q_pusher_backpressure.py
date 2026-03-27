@@ -2,8 +2,13 @@
 django-q stock pusher calls broker.dequeue() in a tight loop and fills the multiprocessing
 Queue faster than workers pop. That FIFO buffer ignores later high-priority OrmQ rows.
 
-Wait until task_queue has fewer than Conf.WORKERS pending items before each dequeue so the
-next pull re-reads DB order (PriorityORM: -priority, id).
+Wait until the in-memory ``task_queue`` has **fewer than 1** pending item before each
+``dequeue()``, so the next pull always re-reads DB order (PriorityORM: -priority, id).
+
+**Why not ``Conf.WORKERS``?** Using ``WORKERS`` as the buffer depth lets the pusher prefetch
+N low-priority tasks while workers are busy; a later high-priority OrmQ row stays behind
+that FIFO buffer until enough workers drain the queue. ``max_pending=1`` keeps only one
+task waiting between DB and workers; multiple workers still run jobs in parallel.
 
 Caveat: if ``Q_CLUSTER['bulk']`` is ever raised above 1, a single dequeue can add more than
 one task and briefly exceed this bound; keep ``bulk`` at 1 (default here) for strict priority.
@@ -42,7 +47,7 @@ _installed = False
 
 
 def _wait_queue_room(task_queue: Queue, max_pending: int) -> None:
-    """Block until fewer than max_pending tasks are waiting in the in-memory queue."""
+    """Block until fewer than ``max_pending`` tasks are waiting in the in-memory queue."""
     if max_pending <= 0:
         return
     while True:
@@ -65,7 +70,8 @@ def priority_aware_pusher(task_queue: Queue, event: Event, broker: Broker = None
         _("%(name)s pushing tasks at %(id)s")
         % {"name": proc_name, "id": current_process().pid}
     )
-    max_pending = max(1, int(Conf.WORKERS))
+    # Strict priority: never buffer more than one task ahead of workers (see module docstring).
+    max_pending = 1
     while True:
         try:
             _wait_queue_room(task_queue, max_pending)

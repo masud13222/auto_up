@@ -55,6 +55,12 @@ class LLMUsage(models.Model):
     success = models.BooleanField(default=True)
     duration_ms = models.IntegerField(default=0, help_text="Call duration in milliseconds")
 
+    response_text = models.TextField(
+        blank=True,
+        default="",
+        help_text="Full model completion text for this call (shown read-only in admin).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

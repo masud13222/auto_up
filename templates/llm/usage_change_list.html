@@ -25,5 +25,9 @@
         <div style="font-size: 12px; opacity: 0.6; margin-top: 4px;">{{ usage_month.calls }} calls</div>
     </div>
 </div>
+<p style="font-size: 12px; color: #888; margin: 0 0 16px;">
+    Rows older than 7 days are deleted automatically by the daily django-q schedule
+    <code>llm.cleanup_old_usage</code> (Admin → Django Q → Scheduled tasks). First run is 24h after the schedule is created.
+</p>
 {{ block.super }}
 {% endblock %}

@@ -18,8 +18,8 @@ Priority semantics (django-q):
 
 Stock django-q ``pusher`` prefetches many broker tasks into a FIFO multiprocessing Queue before
 workers consume them, which can reorder behind later high-priority inserts. See
-``upload.django_q_pusher_backpressure`` — limits in-memory queue depth to Conf.WORKERS so each
-new dequeue sees up-to-date DB ordering.
+``upload.django_q_pusher_backpressure`` — limits in-memory queue depth to **one** pending task
+so each new dequeue sees up-to-date DB ordering (independent of ``Conf.WORKERS``).
 """
 
 from __future__ import annotations
