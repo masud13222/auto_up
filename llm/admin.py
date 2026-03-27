@@ -9,6 +9,76 @@ from datetime import timedelta
 from .models import LLMConfig, LLMUsage
 
 
+def _highlight_json_html(obj) -> str:
+    """Pretty JSON as HTML spans (keys/strings/numbers/bool/null) for admin display."""
+    parts: list[str] = []
+
+    def scalar(v) -> None:
+        if v is None:
+            parts.append('<span class="json-lit json-null">null</span>')
+        elif isinstance(v, bool):
+            parts.append(
+                f'<span class="json-lit json-bool">{str(v).lower()}</span>'
+            )
+        elif isinstance(v, (int, float)):
+            parts.append(
+                f'<span class="json-lit json-number">{escape(str(v))}</span>'
+            )
+        elif isinstance(v, str):
+            parts.append(
+                '<span class="json-lit json-string">'
+                f'{escape(json.dumps(v, ensure_ascii=False))}'
+                "</span>"
+            )
+        else:
+            parts.append(escape(str(v)))
+
+    def walk(v, ind: str) -> None:
+        if isinstance(v, dict):
+            if not v:
+                parts.append("{}")
+                return
+            parts.append("{\n")
+            items = list(v.items())
+            for i, (k, val) in enumerate(items):
+                parts.append(ind + "  ")
+                parts.append(
+                    '<span class="json-key">'
+                    f'{escape(json.dumps(k, ensure_ascii=False))}'
+                    "</span>"
+                )
+                parts.append(": ")
+                if isinstance(val, (dict, list)):
+                    walk(val, ind + "  ")
+                else:
+                    scalar(val)
+                if i < len(items) - 1:
+                    parts.append(",")
+                parts.append("\n")
+            parts.append(ind + "}")
+            return
+        if isinstance(v, list):
+            if not v:
+                parts.append("[]")
+                return
+            parts.append("[\n")
+            for i, item in enumerate(v):
+                parts.append(ind + "  ")
+                if isinstance(item, (dict, list)):
+                    walk(item, ind + "  ")
+                else:
+                    scalar(item)
+                if i < len(v) - 1:
+                    parts.append(",")
+                parts.append("\n")
+            parts.append(ind + "]")
+            return
+        scalar(v)
+
+    walk(obj, "")
+    return "".join(parts)
+
+
 @admin.register(LLMConfig)
 class LLMConfigAdmin(admin.ModelAdmin):
     list_display = ('name', 'sdk', 'model_name', 'is_primary', 'is_active', 'updated_at')
@@ -68,7 +138,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         (
             'Full response',
             {
-                'description': 'Model output for this call (JSON is pretty-printed when valid).',
+                'description': 'Model output for this call (syntax-highlighted when valid JSON).',
                 'fields': ('response_display',),
             },
         ),
@@ -82,7 +152,13 @@ class LLMUsageAdmin(admin.ModelAdmin):
         raw = obj.response_text.strip()
         try:
             parsed = json.loads(raw)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
         except (json.JSONDecodeError, TypeError, ValueError):
             pretty = raw
         inner = escape(pretty)

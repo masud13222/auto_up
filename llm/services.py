@@ -8,6 +8,14 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAYS = [3, 8, 15]
 
+# Per-request completion cap sent to the API. Model datasheets (e.g. gpt-oss 65K max output)
+# do NOT apply automatically: OpenAI-compatible servers often default to a small limit (~512–4096)
+# when max_tokens is omitted, which truncates long JSON (Belaseshe-style cut at "download_...").
+# Raise this if your gateway allows (e.g. 32768 or 65536 for self-hosted gpt-oss).
+MAX_COMPLETION_TOKENS = 32768
+# If the first response hits the output cap (finish_reason=length), retry once with this limit.
+MAX_COMPLETION_TOKENS_TRUNCATION_RETRY = 65536
+
 
 def _extract_usage_openai(response) -> dict:
     """Extract token usage from OpenAI-compatible response."""
@@ -52,10 +60,44 @@ USAGE_EXTRACTORS = {
 }
 
 
-def _call_openai(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+def _completion_truncated(response, sdk: str) -> bool:
+    """True if the provider stopped because of output length (partial JSON possible)."""
+    try:
+        sdk = (sdk or "").lower()
+        if sdk == "openai":
+            choices = getattr(response, "choices", None) or []
+            if choices and getattr(choices[0], "finish_reason", None) == "length":
+                return True
+        if sdk == "mistral":
+            choices = getattr(response, "choices", None) or []
+            if choices and getattr(choices[0], "finish_reason", None) == "length":
+                return True
+        if sdk == "google":
+            for c in getattr(response, "candidates", None) or []:
+                fr = getattr(c, "finish_reason", None)
+                if fr is not None and "MAX" in str(fr).upper():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _call_openai(
+    config: LLMConfig,
+    prompt: str,
+    system_prompt: str,
+    temperature: float = 0.1,
+    *,
+    max_completion_tokens: int | None = None,
+):
     """Call OpenAI-compatible API. Returns (content, response)."""
     from openai import OpenAI
 
+    mt = (
+        max_completion_tokens
+        if max_completion_tokens is not None
+        else MAX_COMPLETION_TOKENS
+    )
     client = OpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com/v1")
     response = client.chat.completions.create(
         model=config.model_name,
@@ -64,11 +106,19 @@ def _call_openai(config: LLMConfig, prompt: str, system_prompt: str, temperature
             {"role": "user", "content": prompt}
         ],
         temperature=temperature,
+        max_tokens=mt,
     )
     return response.choices[0].message.content or "", response
 
 
-def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+def _call_google(
+    config: LLMConfig,
+    prompt: str,
+    system_prompt: str,
+    temperature: float = 0.1,
+    *,
+    max_completion_tokens: int | None = None,
+):
     """Call Google Gemini API. Returns (content, response)."""
     from google import genai
     from google.genai import types
@@ -85,21 +135,39 @@ def _call_google(config: LLMConfig, prompt: str, system_prompt: str, temperature
         api_key=config.api_key,
         http_options=http_options,
     )
+    mt = (
+        max_completion_tokens
+        if max_completion_tokens is not None
+        else MAX_COMPLETION_TOKENS
+    )
     response = client.models.generate_content(
         model=config.model_name,
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=temperature,
+            max_output_tokens=mt,
         ),
     )
     return response.text or "", response
 
 
-def _call_mistral(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1):
+def _call_mistral(
+    config: LLMConfig,
+    prompt: str,
+    system_prompt: str,
+    temperature: float = 0.1,
+    *,
+    max_completion_tokens: int | None = None,
+):
     """Call Mistral AI API. Returns (content, response)."""
     from mistralai import Mistral
 
+    mt = (
+        max_completion_tokens
+        if max_completion_tokens is not None
+        else MAX_COMPLETION_TOKENS
+    )
     client = Mistral(api_key=config.api_key)
     response = client.chat.complete(
         model=config.model_name,
@@ -108,11 +176,47 @@ def _call_mistral(config: LLMConfig, prompt: str, system_prompt: str, temperatur
             {"role": "user", "content": prompt}
         ],
         temperature=temperature,
+        max_tokens=mt,
     )
     return response.choices[0].message.content or "", response
 
 
-# SDK dispatcher
+def _invoke_llm(
+    config: LLMConfig,
+    prompt: str,
+    system_prompt: str,
+    temperature: float,
+    max_completion_tokens: int,
+) -> tuple[str, object]:
+    sdk = (config.sdk or "").strip().lower()
+    if sdk == "openai":
+        return _call_openai(
+            config,
+            prompt,
+            system_prompt,
+            temperature,
+            max_completion_tokens=max_completion_tokens,
+        )
+    if sdk == "google":
+        return _call_google(
+            config,
+            prompt,
+            system_prompt,
+            temperature,
+            max_completion_tokens=max_completion_tokens,
+        )
+    if sdk == "mistral":
+        return _call_mistral(
+            config,
+            prompt,
+            system_prompt,
+            temperature,
+            max_completion_tokens=max_completion_tokens,
+        )
+    raise ValueError(f"Unknown SDK type: {config.sdk}")
+
+
+# SDK dispatcher (default completion cap; truncation retry uses _invoke_llm directly)
 SDK_CALLERS = {
     'openai': _call_openai,
     'google': _call_google,
@@ -202,16 +306,32 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
     Try a single config with retries.
     Returns content string on success, raises on final failure.
     """
-    caller = SDK_CALLERS.get(config.sdk)
-    if not caller:
-        raise ValueError(f"Unknown SDK type: {config.sdk}")
-
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            start = time.time()
-            content, response = caller(config, prompt, system_prompt, temperature)
-            duration_ms = int((time.time() - start) * 1000)
+            llm_start = time.time()
+            caps = (MAX_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_TRUNCATION_RETRY)
+            content = None
+            response = None
+            for cap_idx, cap in enumerate(caps):
+                content, response = _invoke_llm(
+                    config, prompt, system_prompt, temperature, cap
+                )
+                if _completion_truncated(response, config.sdk):
+                    if cap_idx == 0 and caps[1] > caps[0]:
+                        logger.warning(
+                            "[%s] Completion truncated (finish_reason=length) — "
+                            "retrying once with max_tokens=%s",
+                            config.name,
+                            caps[1],
+                        )
+                        continue
+                    if cap_idx == 1:
+                        raise RuntimeError(
+                            "LLM output still truncated after one retry with higher max_tokens."
+                        )
+                break
+            duration_ms = int((time.time() - llm_start) * 1000)
 
             # Check for empty response
             if not content or not content.strip():

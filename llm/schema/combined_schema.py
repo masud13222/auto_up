@@ -146,9 +146,11 @@ def get_combined_system_prompt(
 - Remove blocked site names from every field: {_blocked_names_str}
 - Prefer x264 encodes when multiple options exist.
 - languages: array (e.g. ["Hindi","English"]). countries: array. cast / cast_info: comma-separated. Omit if absent.
-- **Download / gateway URLs (strict):** Every `download_links` / `resolutions` value MUST be a valid absolute URL with a **complete hostname** (e.g. `https://www.example.com/generate.php?id=...`). **INVALID — never output:** `https://www./...`, `https:///...`, or a host that is only `www` / `www.` with **no domain** after it. If Markdown gives an absolute `https://` link, **copy that string exactly** (do not shorten the host). If Markdown gives a relative path (`/generate.php?...`), prepend the **full origin** taken from other links on the same page (same scheme + full hostname as those links — never invent or truncate the domain).
+- - Absolute URLs only; relative links → prepend the page domain.
 - Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8 — omit that resolution.
 - Do not decode, resolve, or alter query strings or paths; keep gateway links intact.
+- Blocked site name rule applies to TEXT FIELDS ONLY (title, filenames, etc.). Download URLs must be copied exactly as-is — even if the URL contains a blocked domain name.
+- **Download / gateway URLs (strict):** Every `download_links` / `resolutions` value MUST be a valid absolute URL with a **complete hostname** 
 
 ## Title Format:
 - Movie: `Title Year Source Language - {SITE_NAME}` (no Season/EP). Source = WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution).
