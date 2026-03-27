@@ -131,13 +131,12 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         return quality, file_path, size_str
 
     def _upload_and_delete(quality, file_path):
-        """Upload to Drive + delete local (runs in thread)."""
+        """Upload to Drive with retries; delete local after final outcome."""
         if not file_path or not os.path.exists(file_path):
             return quality, None
         logger.info(f"Uploading {quality} to Drive")
         try:
-            thread_service = DriveUploader._get_drive_service()
-            link = DriveUploader._upload_file(thread_service, file_path, movie_folder_id)
+            link = DriveUploader.upload_file_with_retry(file_path, movie_folder_id)
         except Exception as e:
             logger.error(f"Upload failed for {quality}: {e}")
             link = None
@@ -249,12 +248,27 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No files could be downloaded or uploaded', result=movie_data)
         return json.dumps({"status": "error", "message": "Pipeline failed"})
 
-    save_task(media_task, status='completed', result=movie_data, error_message='')
-    logger.info(f"Movie pipeline complete for: {title}")
+    missing_targets = [q for q, _, _ in to_process if q not in drive_links]
+    if missing_targets:
+        movie_data["partial_upload"] = True
+        movie_data["partial_upload_missing_resolutions"] = missing_targets
+        msg = (
+            "Partial upload: some qualities failed after all retries: "
+            + ", ".join(missing_targets)
+        )
+        save_task(media_task, status='partial', result=movie_data, error_message=msg)
+        logger.warning(msg)
+    else:
+        movie_data.pop("partial_upload", None)
+        movie_data.pop("partial_upload_missing_resolutions", None)
+        save_task(media_task, status='completed', result=movie_data, error_message='')
+        logger.info(f"Movie pipeline complete for: {title}")
 
     # Step 5: Publish to FlixBD
     _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, dup_info=dup_info)
 
+    if missing_targets:
+        return json.dumps({"status": "partial", "type": "movie", "data": movie_data})
     return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
 

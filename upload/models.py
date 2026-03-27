@@ -15,6 +15,7 @@ class MediaTask(models.Model):
         ('pending', 'Pending'),
         ('processing', 'Processing'),
         ('completed', 'Completed'),
+        ('partial', 'Partial'),
         ('failed', 'Failed'),
     ]
 

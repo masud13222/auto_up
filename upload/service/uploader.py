@@ -3,6 +3,7 @@ import json
 import random
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from django.core.files.base import ContentFile
 from googleapiclient.discovery import build
@@ -105,11 +106,12 @@ class DriveUploader:
         Uses per-config locks to prevent concurrent refresh of the same token.
         """
         config_id = DriveUploader._get_random_config_id()
-        config = GoogleConfig.objects.get(pk=config_id)
-        logger.info(f"Using Google Config: {config.name} (ID: {config.pk})")
-
         # Thread-safe token refresh with per-config lock
         with _get_refresh_lock(config_id):
+            # Re-fetch inside the lock so concurrent refresh/save cannot leave us
+            # with a stale FileField path for the token JSON.
+            config = GoogleConfig.objects.get(pk=config_id)
+            logger.info(f"Using Google Config: {config.name} (ID: {config.pk})")
             token_data = DriveUploader._load_token_data(config)
 
             if DriveUploader._is_token_expired(token_data) or not token_data.get('token'):
@@ -184,8 +186,6 @@ class DriveUploader:
 
     @staticmethod
     def _upload_file(service, file_path: str, folder_id: str, max_retries: int = 5) -> str:
-        import time
-
         filename = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
         logger.info(f"Uploading: {filename} ({file_size / (1024 * 1024):.1f} MB)")
@@ -268,6 +268,38 @@ class DriveUploader:
 
         logger.info(f"Done: {filename} → {web_link}")
         return web_link
+
+    @staticmethod
+    def upload_file_with_retry(file_path: str, folder_id: str, max_attempts: int = 3) -> str:
+        """
+        Full upload retry wrapper:
+        - rebuild Drive service on each attempt
+        - retry credential/service creation failures
+        - retry upload failures that occur before or during resumable upload
+        """
+        filename = os.path.basename(file_path)
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                service = DriveUploader._get_drive_service()
+                return DriveUploader._upload_file(service, file_path, folder_id)
+            except Exception as e:
+                last_error = e
+                if attempt >= max_attempts:
+                    break
+                wait = min(2 ** attempt, 15)
+                logger.warning(
+                    "Upload attempt %s/%s failed for %s; retrying in %ss: %s",
+                    attempt,
+                    max_attempts,
+                    filename,
+                    wait,
+                    e,
+                )
+                time.sleep(wait)
+
+        raise Exception(f"Upload failed after {max_attempts} attempts: {filename}: {last_error}")
 
     @staticmethod
     def upload_movie(movie_data: dict, downloaded_files: dict) -> dict:

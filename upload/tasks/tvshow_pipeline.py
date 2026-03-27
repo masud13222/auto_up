@@ -166,18 +166,16 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         return file_path
 
     def _upload_one(quality, file_path, season_folder_id, season_num, item_label):
-        """Upload to Drive + delete -- runs in PARALLEL thread."""
+        """Upload to Drive with retries; delete local after final outcome."""
         log_memory(f"Before upload {quality}")
         try:
-            # Each thread gets its OWN service (google-api-python-client is NOT thread-safe)
-            thread_service = DriveUploader._get_drive_service()
-            link = DriveUploader._upload_file(thread_service, file_path, season_folder_id)
+            link = DriveUploader.upload_file_with_retry(file_path, season_folder_id)
             logger.info(f"Uploaded S{season_num} {item_label} {quality}")
         except Exception as e:
             logger.error(f"Upload failed for S{season_num} {item_label} {quality}: {e}")
             link = None
 
-        # Delete local file after upload
+        # Delete local file after final upload outcome
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
@@ -195,6 +193,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     # {(season_num, label, quality): "2.1 GB"} -- collected across all items
     file_sizes_map = {}
+    expected_upload_targets = set()
 
     logger.info(f"Processing {total_items} TV show item(s)")
     log_memory("Pipeline start")
@@ -233,6 +232,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
             if urls and fname:
                 to_process.append((quality, urls, fname))
+                expected_upload_targets.add((season_num, item_label, quality))
 
         if not to_process:
             if already_uploaded:
@@ -368,17 +368,44 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No files could be downloaded or uploaded', result=tvshow_data)
         return json.dumps({"status": "error", "message": "Pipeline failed"})
 
+    uploaded_targets = set()
+    for season in tvshow_data.get("seasons", []):
+        snum = season.get("season_number")
+        for item in season.get("download_items", []):
+            label = item.get("label")
+            for quality, link in (item.get("resolutions") or {}).items():
+                if is_drive_link(link):
+                    uploaded_targets.add((snum, label, quality))
+    missing = sorted(expected_upload_targets - uploaded_targets)
+
     # Final save
-    save_task(media_task, status='completed', result=tvshow_data, error_message='')
+    if missing:
+        tvshow_data["partial_upload"] = True
+        tvshow_data["partial_upload_missing_items"] = [
+            {"season_number": s, "label": label, "quality": q}
+            for s, label, q in missing
+        ]
+        msg = (
+            "Partial upload: some TV items failed after all retries: "
+            + ", ".join(f"S{s} {label} {q}" for s, label, q in missing)
+        )
+        save_task(media_task, status='partial', result=tvshow_data, error_message=msg)
+        logger.warning(msg)
+    else:
+        tvshow_data.pop("partial_upload", None)
+        tvshow_data.pop("partial_upload_missing_items", None)
+        save_task(media_task, status='completed', result=tvshow_data, error_message='')
+        logger.info(f"TV Show pipeline complete for: {title}. Uploaded {uploaded_count}/{total_items} items.")
 
     log_memory("Pipeline complete")
-    logger.info(f"TV Show pipeline complete for: {title}. Uploaded {uploaded_count}/{total_items} items.")
 
     # Step 5: Publish to FlixBD
     _publish_to_flixbd_series(
         media_task, tvshow_data, file_sizes_map, dup_info=dup_info
     )
 
+    if missing:
+        return json.dumps({"status": "partial", "type": "tvshow", "data": tvshow_data})
     return json.dumps({"status": "success", "type": "tvshow", "data": tvshow_data})
 
 
