@@ -70,8 +70,9 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - `matched_task_id` = **null** (no MediaTask row).
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON when title+year match; else null.
 - Extracted = resolution keys from your `data.download_links` (with real URLs). Existing = that row's `resolution_keys`.
-- Missing non-empty → **update** + `missing_resolutions`.
-- Missing empty → compare source tier: clearly better source → **replace**, otherwise **skip**.
+- Also inspect the matched row `title` for source tier.
+- If the matched row clearly shows lower source (example: old `HDTC`, new `WEB-DL`), prefer **replace** even when `Existing` is empty or `Missing` is non-empty.
+- Use **update** only for genuine add-missing-resolutions cases, not for clear low-source -> high-source upgrades.
 - No title+year match → **process**.
 
 """
@@ -98,16 +99,18 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
 
 **Source upgrade (replace only):**
-- Only when title+year match and Missing is empty.
+- Run whenever title+year match and source tiers are visible, even if Missing is non-empty.
 - Use source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - Same resolutions but clearly higher source -> `replace`
+- Lower old source in matched site row title -> higher new source also -> `replace`
 - Same/lower/unclear source -> `skip`
 - Never replace from codec alone.
 
 Steps:
 1. Match title+year to DB candidate (if any) and/or {site} row (if any).
 2. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
-3. Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
+3. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
+4. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
 
 TV shows:
 - `has_new_episodes=true` only when explicit higher episode numbers are visible.

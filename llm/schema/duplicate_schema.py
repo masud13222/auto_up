@@ -104,13 +104,15 @@ Step 4: resolution comparison
 - Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`
 - Ignore codec alone for `replace`
 - `Extracted` = normalized new tiers
-- `Existing` = matched candidate `resolutions`
+- `Existing` = matched candidate `resolutions`; if surrounding instructions include target-site rows, also use that row's `resolution_keys`
 - `Missing` = tiers in `Extracted` but not in `Existing`
 - If no resolution is found -> `Extracted=[]` and default to `process` unless duplicate evidence is overwhelming
-- If `Missing` is non-empty -> `action="update"` and `missing_resolutions=Missing`
+- If `Missing` is non-empty, do NOT auto-pick `update` yet when the matched site row/title clearly shows a lower source tier
+- If site title/source tags show old low quality (e.g. `CAM`, `HDTC`, `HDTS`, `HDRip`) and new title clearly shows higher source (e.g. `WEB-DL`, `BluRay`, `REMUX`), prefer `replace`
+- Use `update` for Missing only when this is genuinely an add-missing-resolutions case, not a clear low-source -> high-source replacement
 
 Step 5: source upgrade check
-- Only run this when title+year match and `Missing` is empty
+- Run this whenever title+year match and source tiers are visible, even if `Missing` is non-empty
 - Source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - If new source is clearly higher for the same content -> `replace`
 - If same/lower/unclear -> `skip`
@@ -136,7 +138,7 @@ TV pack upgrade rules:
 
 Action table:
 - `skip`: same title+year, nothing new, no clear upgrade
-- `update`: same title+year, missing resolutions or explicit new episodes
+- `update`: same title+year, missing resolutions or explicit new episodes, without a clear low-source -> high-source replacement
 - `replace`: same title+year, same coverage, clearly better source or clear type misclassification
 - `replace_items`: TV only; same title+year, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match or ambiguous case
