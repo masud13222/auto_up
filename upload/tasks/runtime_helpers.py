@@ -117,13 +117,13 @@ def fetch_flixbd_results(name: str, min_score: int = 40) -> list:
             elif isinstance(qualities_raw, list):
                 qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
 
+            # Slim payload for LLM + duplicate_context_json: avoid duplicate strings (qualities vs
+            # resolution_keys vs download_links) — saves prompt tokens; rules use resolution_keys + title.
             results.append(
                 {
                     "id": fid,
                     "title": item_title,
                     "match_score": score,
-                    "download_links": download_links,
-                    "qualities": qualities,
                     "resolution_keys": normalize_flixbd_resolution_keys(qualities),
                 }
             )

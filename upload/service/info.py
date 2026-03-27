@@ -16,6 +16,10 @@ from llm.schema.blocked_names import (
 
 logger = logging.getLogger(__name__)
 
+# Pretty JSON for DB/admin only (readability). LLM prompt is built separately with compact JSON
+# in llm/schema/combined_schema.py — this does not add tokens to the model call.
+_JSON_FOR_DB = {"indent": 2, "ensure_ascii": False}
+
 
 def _save_duplicate_usage_snapshot_to_latest_usage(
     *,
@@ -42,7 +46,7 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
             return
         update_fields = []
         if has_dup:
-            row.duplicate_check_json = json.dumps(dup_result, ensure_ascii=False)
+            row.duplicate_check_json = json.dumps(dup_result, **_JSON_FOR_DB)
             update_fields.append("duplicate_check_json")
         if has_ctx:
             ctx = {}
@@ -50,7 +54,7 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
                 ctx["db_match_candidates"] = db_match_candidates
             if flixbd_results:
                 ctx["flixbd_results"] = flixbd_results
-            row.duplicate_context_json = json.dumps(ctx, ensure_ascii=False)
+            row.duplicate_context_json = json.dumps(ctx, **_JSON_FOR_DB)
             update_fields.append("duplicate_context_json")
         if update_fields:
             row.save(update_fields=update_fields)
