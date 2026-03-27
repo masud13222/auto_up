@@ -65,6 +65,11 @@ class LLMUsage(models.Model):
         default="",
         help_text="When present: duplicate_check object from combined extract+dup_check (JSON text).",
     )
+    duplicate_context_json = models.TextField(
+        blank=True,
+        default="",
+        help_text="When present: DB candidates + target-site search results snapshot sent to the combined duplicate check prompt.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

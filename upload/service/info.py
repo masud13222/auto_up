@@ -17,9 +17,17 @@ from llm.schema.blocked_names import (
 logger = logging.getLogger(__name__)
 
 
-def _save_duplicate_check_to_latest_usage(dup_result: dict | None, purpose: str) -> None:
-    """Persist duplicate_check JSON on the most recent LLMUsage row for this call."""
-    if not dup_result or not purpose:
+def _save_duplicate_usage_snapshot_to_latest_usage(
+    *,
+    dup_result: dict | None,
+    db_match_candidates: list | None,
+    flixbd_results: list | None,
+    purpose: str,
+) -> None:
+    """Persist duplicate-check output and prompt context on the latest LLMUsage row."""
+    has_dup = bool(dup_result)
+    has_ctx = bool(db_match_candidates or flixbd_results)
+    if not purpose or (not has_dup and not has_ctx):
         return
     try:
         from llm.models import LLMUsage
@@ -32,10 +40,22 @@ def _save_duplicate_check_to_latest_usage(dup_result: dict | None, purpose: str)
         )
         if not row:
             return
-        row.duplicate_check_json = json.dumps(dup_result, ensure_ascii=False)
-        row.save(update_fields=["duplicate_check_json"])
+        update_fields = []
+        if has_dup:
+            row.duplicate_check_json = json.dumps(dup_result, ensure_ascii=False)
+            update_fields.append("duplicate_check_json")
+        if has_ctx:
+            ctx = {}
+            if db_match_candidates:
+                ctx["db_match_candidates"] = db_match_candidates
+            if flixbd_results:
+                ctx["flixbd_results"] = flixbd_results
+            row.duplicate_context_json = json.dumps(ctx, ensure_ascii=False)
+            update_fields.append("duplicate_context_json")
+        if update_fields:
+            row.save(update_fields=update_fields)
     except Exception as e:
-        logger.warning("Could not save duplicate_check_json to LLMUsage: %s", e)
+        logger.warning("Could not save duplicate snapshot to LLMUsage: %s", e)
 
 
 def get_structured_output(llm_response: str) -> dict:
@@ -93,8 +113,13 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
         if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
             dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
 
-    if has_dup_ctx and dup_result:
-        _save_duplicate_check_to_latest_usage(dup_result, "extract+dup_check")
+    if has_dup_ctx:
+        _save_duplicate_usage_snapshot_to_latest_usage(
+            dup_result=dup_result,
+            db_match_candidates=db_match_candidates,
+            flixbd_results=flixbd_results,
+            purpose="extract+dup_check",
+        )
 
     title = data.get("title", "Unknown")
     logger.info(f"Detected: {content_type} — Title: {title}")

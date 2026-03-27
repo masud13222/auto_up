@@ -116,6 +116,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'created_at',
         'response_display',
         'duplicate_check_display',
+        'duplicate_context_display',
     )
     fieldsets = (
         (
@@ -150,6 +151,13 @@ class LLMUsageAdmin(admin.ModelAdmin):
                 'fields': ('duplicate_check_display',),
             },
         ),
+        (
+            'Duplicate prompt context',
+            {
+                'description': 'DB candidates + target-site search results snapshot sent to the combined duplicate check prompt.',
+                'fields': ('duplicate_context_display',),
+            },
+        ),
     )
     date_hierarchy = 'created_at'
 
@@ -181,6 +189,28 @@ class LLMUsageAdmin(admin.ModelAdmin):
         if not obj or not (obj.duplicate_check_json or '').strip():
             return '—'
         raw = obj.duplicate_check_json.strip()
+        try:
+            parsed = json.loads(raw)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            inner = escape(raw)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                f'<pre class="llm-usage-response-pre">{inner}</pre>'
+                '</div>'
+            )
+
+    @admin.display(description='Duplicate prompt context (JSON)')
+    def duplicate_context_display(self, obj):
+        if not obj or not (obj.duplicate_context_json or '').strip():
+            return '—'
+        raw = obj.duplicate_context_json.strip()
         try:
             parsed = json.loads(raw)
             inner = _highlight_json_html(parsed)
