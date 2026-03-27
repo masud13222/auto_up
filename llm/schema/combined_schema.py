@@ -112,6 +112,12 @@ Steps:
 TV shows:
 - `has_new_episodes=true` only when explicit higher episode numbers are visible.
 - If episode numbers are unclear, set `has_new_episodes=false`.
+- Use explicit `episode_range` when available:
+  - genuinely NEW later episode range -> **update**
+  - same covered range in a better pack form (single -> partial, partial -> combo, same range better source) -> **replace**
+  - do not guess missing ranges from loose label text
+ - if only the overlapping incoming TV items/range should replace old ones while the rest of the show stays untouched, use **`replace_items`** (TV only) instead of full **`replace`**
+ - use **`replace_items`** only when the replace scope is explicit and no whole-season combo pack is involved; otherwise prefer full **`replace`**
 
 Reason format:
 - Single line only.

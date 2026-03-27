@@ -175,7 +175,13 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             movie_data["download_links"] = drive_links
             save_task(media_task, status='completed', result=movie_data, error_message='')
             logger.info(f"Movie already fully uploaded: {title}")
-            _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes)
+            _publish_to_flixbd_movie(
+                media_task,
+                movie_data,
+                drive_links,
+                file_sizes,
+                dup_info=dup_info,
+            )
             return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
         logger.warning(f"No valid download links found for: {title}")

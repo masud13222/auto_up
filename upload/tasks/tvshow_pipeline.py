@@ -70,7 +70,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     save_task(media_task, result=tvshow_data)
     logger.info(f"Saved LLM extraction result for TV show: {title}")
 
-    is_dup_update = bool(dup_info and dup_info.get("action") == "update")
+    is_dup_update = bool(dup_info and dup_info.get("action") in ("update", "replace_items"))
     if not is_dup_update:
         tvshow_data.pop("screen_shots_url", None)
 
@@ -426,6 +426,16 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
                 n = fx.clear_series_download_links(content_id)
                 logger.info(
                     "FlixBD: replace — cleared %s existing download row(s) for series id=%s",
+                    n,
+                    content_id,
+                )
+            elif dup_info and dup_info.get("clear_flixbd_scope"):
+                n = fx.clear_series_download_links_for_scope(
+                    content_id,
+                    dup_info["clear_flixbd_scope"].get("seasons", []),
+                )
+                logger.info(
+                    "FlixBD: replace_items — cleared %s overlapping download row(s) for series id=%s",
                     n,
                     content_id,
                 )

@@ -20,8 +20,8 @@ _dup_props = {
     },
     "action": {
         "type": "string",
-        "enum": ["skip", "update", "replace", "process"],
-        "description": "skip=identical, update=add missing parts/episodes, replace=quality upgrade, process=new content",
+        "enum": ["skip", "update", "replace", "replace_items", "process"],
+        "description": "skip=identical, update=add missing parts/episodes, replace=full replacement, replace_items=replace only overlapping TV items/ranges, process=new content",
     },
     "reason": {
         "type": "string",
@@ -120,11 +120,25 @@ Step 6: TV episodes
 - Set `has_new_episodes=true` ONLY when explicit higher episode numbers are visible
 - If episode numbers are unclear, set `has_new_episodes=false`
 - Never use `replace` for new episode batches
+- Use explicit `episode_range` logic:
+  - genuinely NEW higher range/batch -> `update`
+  - same range covered in a better pack form (e.g. old singles -> new partial combo, old partial -> new combo, old combo reissued better) -> `replace`
+  - same or overlapping range without clear upgrade -> avoid guessing; prefer `skip`
+
+TV pack upgrade rules:
+- single_episode -> partial_combo for the SAME covered episode range = usually `replace`
+- single_episode/partial_combo -> combo_pack for the SAME season coverage = usually `replace`
+- same episode coverage with clearly better source = `replace`
+- only additional later episodes = `update`
+- do NOT invent episode math from labels if explicit `episode_range` is missing; rely on explicit range when available
+- If only the incoming overlapping TV items should be replaced (for example old singles `09`,`10`,`11` replaced by new partial `09-11` while `01-08` stays untouched), use `action="replace_items"` instead of full `replace`
+- Use `replace_items` only when the replace scope is explicit and NOT a whole-season combo pack on either side; if a combo/complete-season pack is involved, prefer full `replace`
 
 Action table:
 - `skip`: same title+year, nothing new, no clear upgrade
 - `update`: same title+year, missing resolutions or explicit new episodes
 - `replace`: same title+year, same coverage, clearly better source or clear type misclassification
+- `replace_items`: TV only; same title+year, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match or ambiguous case
 
 Reason format:

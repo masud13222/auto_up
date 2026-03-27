@@ -36,7 +36,7 @@ def check_duplicate(url: str, current_task_pk: int = None) -> dict:
 
     Returns:
         {
-            "action": "skip" | "process" | "replace" | "update",
+            "action": "skip" | "process" | "replace" | "replace_items" | "update",
             "reason": "...",
             "existing_task": MediaTask or None,
             "extracted_name": "...",
@@ -156,14 +156,30 @@ def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title:
 
         if is_tvshow:
             episodes = []
+            tv_items = []
             for season in result_data.get("seasons", []):
+                season_num = season.get("season_number")
                 for item in season.get("download_items", []):
                     label = item.get("label", "")
+                    item_type = item.get("type")
+                    episode_range = item.get("episode_range")
                     res = item.get("resolutions", {})
                     ep_res = sorted(k for k, v in res.items() if v)
-                    episodes.append(f"{label}: {','.join(ep_res)}")
-            candidate["episode_count"] = len(episodes)
+                    episodes.append(
+                        f"S{season_num} {item_type} {episode_range or '-'} {label}: {','.join(ep_res)}"
+                    )
+                    tv_items.append(
+                        {
+                            "season_number": season_num,
+                            "type": item_type,
+                            "episode_range": episode_range,
+                            "label": label,
+                            "resolutions": ep_res,
+                        }
+                    )
+            candidate["episode_count"] = len(tv_items)
             candidate["episodes"] = episodes
+            candidate["tv_items"] = tv_items
 
         candidates.append(candidate)
 
@@ -199,7 +215,7 @@ def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title:
         missing_resolutions = result.get("missing_resolutions", [])
         has_new_episodes = result.get("has_new_episodes", False)
 
-        if action not in ("skip", "update", "replace", "process"):
+        if action not in ("skip", "update", "replace", "replace_items", "process"):
             action = "process"
             reason = f"Invalid LLM action, defaulting to process: {result}"
 

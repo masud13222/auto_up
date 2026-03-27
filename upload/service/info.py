@@ -5,6 +5,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from upload.utils.web_scrape import WebScrapeService
+from upload.utils.tv_items import tv_item_key
 from llm.services import LLMService
 from llm.json_repair import repair_json
 from llm.schema import get_combined_system_prompt
@@ -165,19 +166,16 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
     if not seasons:
         return tvshow_data
 
-    # Build lookup of existing drive links: {(season_num, label, quality): drive_link}
+    # Build lookup of existing drive links by exact TV item key.
     existing_links = {}
     if existing_result:
         for season in existing_result.get("seasons", []):
             snum = season.get("season_number")
             for item in season.get("download_items", []):
-                label = item.get("label", "")
-                item_type = item.get("type", "")
+                key = tv_item_key(item)
                 for q, link in item.get("resolutions", {}).items():
                     if is_drive_link(link):
-                        existing_links[(snum, label, q)] = link
-                        # Also index by type for flexible matching
-                        existing_links[(snum, item_type, q)] = link
+                        existing_links[(snum, key, q)] = link
 
     total_skipped = 0
     total_resolved = 0
@@ -191,20 +189,19 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
 
         for item in download_items:
             item_label = item.get("label", "Unknown")
-            item_type = item.get("type", "")
+            item_key = tv_item_key(item)
             resolutions = item.get("resolutions", {})
 
             # Check if ALL resolutions for this item already have drive links
             all_uploaded = all(
-                (season_num, item_label, q) in existing_links
-                or (season_num, item_type, q) in existing_links
+                (season_num, item_key, q) in existing_links
                 for q in resolutions
             ) if resolutions and existing_links else False
 
             if all_uploaded:
                 # Restore all drive links from existing result
                 for q in list(resolutions.keys()):
-                    link = existing_links.get((season_num, item_label, q)) or existing_links.get((season_num, item_type, q))
+                    link = existing_links.get((season_num, item_key, q))
                     if link:
                         item["resolutions"][q] = link
                         total_skipped += 1
@@ -215,7 +212,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
 
             pending: list[tuple[str, str]] = []
             for quality, url in list(resolutions.items()):
-                existing_link = existing_links.get((season_num, item_label, quality)) or existing_links.get((season_num, item_type, quality))
+                existing_link = existing_links.get((season_num, item_key, quality))
                 if existing_link:
                     item["resolutions"][quality] = existing_link
                     total_skipped += 1
