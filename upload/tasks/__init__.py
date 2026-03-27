@@ -329,15 +329,32 @@ def process_media_task(task_pk: int) -> str:
                     dup_result["action"] = "replace"
                     replace_scope_data = None
                 else:
-                    logger.warning(
-                        "%s=%s: no donor MediaTask and no API drive map — "
-                        "cannot hydrate existing qualities; running full downloads (pk=%s)",
-                        TARGET_SITE_ROW_ID_JSON_KEY,
-                        target_site_row_id,
-                        media_task.pk,
-                    )
-                    if dup_result and isinstance(dup_result.get("missing_resolutions"), list):
-                        dup_result["missing_resolutions"] = []
+                    mr = dup_result.get("missing_resolutions") if dup_result else None
+                    if (
+                        action == "update"
+                        and content_type == "movie"
+                        and isinstance(mr, list)
+                        and mr
+                    ):
+                        logger.warning(
+                            "%s=%s: no donor MediaTask and no API drive map — "
+                            "cannot hydrate existing movie qualities, but will still process only "
+                            "LLM missing_resolutions=%s (pk=%s)",
+                            TARGET_SITE_ROW_ID_JSON_KEY,
+                            target_site_row_id,
+                            mr,
+                            media_task.pk,
+                        )
+                    else:
+                        logger.warning(
+                            "%s=%s: no donor MediaTask and no API drive map — "
+                            "cannot hydrate existing qualities; running full downloads (pk=%s)",
+                            TARGET_SITE_ROW_ID_JSON_KEY,
+                            target_site_row_id,
+                            media_task.pk,
+                        )
+                        if dup_result and isinstance(dup_result.get("missing_resolutions"), list):
+                            dup_result["missing_resolutions"] = []
 
         if action == "replace_items" and content_type == "tvshow" and existing_result:
             if replace_scope_data is None:
