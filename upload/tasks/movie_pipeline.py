@@ -297,16 +297,19 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, du
         )
 
         if cid:
-            logger.info(f"FlixBD: existing row id={cid} — PATCH title then add links")
-            fx.patch_movie_title(int(cid), movie_data)
+            logger.info(f"FlixBD: existing row id={cid} — update existing movie then add links")
             content_id = int(cid)
             if dup_info and dup_info.get("clear_flixbd_links"):
+                if not fx.update_movie(content_id, movie_data):
+                    fx.patch_movie_title(content_id, movie_data)
                 n = fx.clear_movie_download_links(content_id)
                 logger.info(
                     "FlixBD: replace — cleared %s existing download row(s) for movie id=%s",
                     n,
                     content_id,
                 )
+            else:
+                fx.patch_movie_title(content_id, movie_data)
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_movie (title will be set on new row only; "

@@ -419,10 +419,11 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
         )
 
         if cid:
-            logger.info(f"FlixBD: existing series id={cid} — PATCH title then add links")
-            fx.patch_series_title(int(cid), tvshow_data)
+            logger.info(f"FlixBD: existing series id={cid} — update existing series then add links")
             content_id = int(cid)
             if dup_info and dup_info.get("clear_flixbd_links"):
+                if not fx.update_series(content_id, tvshow_data):
+                    fx.patch_series_title(content_id, tvshow_data)
                 n = fx.clear_series_download_links(content_id)
                 logger.info(
                     "FlixBD: replace — cleared %s existing download row(s) for series id=%s",
@@ -439,6 +440,9 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
                     n,
                     content_id,
                 )
+                fx.patch_series_title(content_id, tvshow_data)
+            else:
+                fx.patch_series_title(content_id, tvshow_data)
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_series (existing row title not updated)",

@@ -34,6 +34,8 @@ from .flixbd_api_content import (
     patch_series_title,
     search,
     series_website_title,
+    update_movie,
+    update_series,
 )
 from .flixbd_api_downloads import (
     _coerce_season_number,

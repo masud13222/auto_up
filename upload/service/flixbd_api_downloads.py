@@ -108,7 +108,7 @@ def list_movie_downloads(content_id: int) -> list[dict]:
 def delete_movie_download(content_id: int, download_row_id: int) -> bool:
     """DELETE one movie download row. False on failure."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads/{download_row_id}"
+    endpoint = f"{api_url}/api/v1/downloads/{download_row_id}"
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.delete(endpoint, headers=_headers(api_key))
@@ -195,7 +195,7 @@ def list_series_downloads(content_id: int) -> list[dict]:
 def delete_series_download(content_id: int, download_row_id: int) -> bool:
     """DELETE one series download row. False on failure."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series/{content_id}/downloads/{download_row_id}"
+    endpoint = f"{api_url}/api/v1/downloads/{download_row_id}"
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.delete(endpoint, headers=_headers(api_key))

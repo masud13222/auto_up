@@ -195,6 +195,40 @@ def patch_movie_title(content_id: int, movie_data: dict) -> bool:
         return False
 
 
+def update_movie(content_id: int, movie_data: dict) -> bool:
+    """PATCH full movie payload on an existing movie row."""
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/movies/{content_id}"
+    payload = _build_movie_payload(movie_data)
+    logger.info(
+        "FlixBD: PATCH movie id=%s full payload title=%r",
+        content_id,
+        payload.get("title", "")[:100],
+    )
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+
+        if resp.status_code in (404, 405):
+            logger.warning(
+                "FlixBD: movie full PATCH not available (HTTP %s) id=%s",
+                resp.status_code,
+                content_id,
+            )
+            return False
+        if resp.status_code in (400, 422):
+            logger.warning("FlixBD: update_movie id=%s: %s", content_id, resp.text[:500])
+            return False
+
+        resp.raise_for_status()
+        logger.info("FlixBD: movie id=%s full payload updated", content_id)
+        return True
+    except Exception as e:
+        logger.warning("FlixBD: update_movie failed id=%s: %s", content_id, e)
+        return False
+
+
 def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
     """PATCH only the display title on an existing series."""
     api_url, api_key = _get_config()
@@ -223,6 +257,40 @@ def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
         return True
     except Exception as e:
         logger.warning("FlixBD: patch_series_title failed id=%s: %s", content_id, e)
+        return False
+
+
+def update_series(content_id: int, tvshow_data: dict) -> bool:
+    """PATCH full series payload on an existing series row."""
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/series/{content_id}"
+    payload = _build_series_payload(tvshow_data)
+    logger.info(
+        "FlixBD: PATCH series id=%s full payload title=%r",
+        content_id,
+        payload.get("title", "")[:100],
+    )
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+
+        if resp.status_code in (404, 405):
+            logger.warning(
+                "FlixBD: series full PATCH not available (HTTP %s) id=%s",
+                resp.status_code,
+                content_id,
+            )
+            return False
+        if resp.status_code in (400, 422):
+            logger.warning("FlixBD: update_series id=%s: %s", content_id, resp.text[:500])
+            return False
+
+        resp.raise_for_status()
+        logger.info("FlixBD: series id=%s full payload updated", content_id)
+        return True
+    except Exception as e:
+        logger.warning("FlixBD: update_series failed id=%s: %s", content_id, e)
         return False
 
 
