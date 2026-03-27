@@ -115,6 +115,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'duration_ms',
         'created_at',
         'response_display',
+        'duplicate_check_display',
     )
     fieldsets = (
         (
@@ -142,6 +143,13 @@ class LLMUsageAdmin(admin.ModelAdmin):
                 'fields': ('response_display',),
             },
         ),
+        (
+            'Duplicate check (extract+dup_check)',
+            {
+                'description': 'Parsed duplicate_check object stored separately when present.',
+                'fields': ('duplicate_check_display',),
+            },
+        ),
     )
     date_hierarchy = 'created_at'
 
@@ -167,6 +175,28 @@ class LLMUsageAdmin(admin.ModelAdmin):
             f'<pre class="llm-usage-response-pre">{inner}</pre>'
             '</div>'
         )
+
+    @admin.display(description='Duplicate check (JSON)')
+    def duplicate_check_display(self, obj):
+        if not obj or not (obj.duplicate_check_json or '').strip():
+            return '—'
+        raw = obj.duplicate_check_json.strip()
+        try:
+            parsed = json.loads(raw)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            inner = escape(raw)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                f'<pre class="llm-usage-response-pre">{inner}</pre>'
+                '</div>'
+            )
 
     def has_add_permission(self, request):
         return False

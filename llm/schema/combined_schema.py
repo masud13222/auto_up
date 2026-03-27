@@ -1,5 +1,5 @@
 import json
-from .blocked_names import BLOCKED_SITE_NAMES, SITE_NAME
+from .blocked_names import BLOCKED_SITE_NAMES, SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 from .movie_schema import movie_schema
 from .tvshow_schema import tvshow_schema
 from .duplicate_schema import duplicate_schema
@@ -59,7 +59,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
         ctx_parts.append(
             f"### {site} (target site) search results (top {len(flixbd_results)}):\n"
             f"```json\n{json.dumps(flixbd_results, separators=(',',':'), ensure_ascii=False)}\n```\n"
-            f"(Each row has site `id` — do NOT use that as `matched_task_id`; it is NOT our MediaTask pk.)"
+            f"(Each row `id` → use as **`{TARGET_SITE_ROW_ID_JSON_KEY}`** when that row matches; never as **matched_task_id**.)"
         )
 
     has_db = bool(db_match_candidates)
@@ -67,44 +67,56 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
     if not has_db and flixbd_results:
         no_db_rules = f"""
 **No DB Candidates (only {site} rows above):**
-- `matched_task_id` MUST always be **null** — there is no MediaTask id to return; never copy site `id` from the JSON.
-- Pick the **one** {site} row that matches **both** extracted movie/show title AND year (from row `title` vs your extracted `data`).
-- Extracted = resolution keys from your `data.download_links` that have real URLs.
-- Existing = that row's `resolution_keys`.
-- If Missing is **empty** (every Extracted is in Existing) → **skip** (already on {site}; no upload needed).
-- If title+year match but Missing is **non-empty** → **update** with `missing_resolutions` (pipeline will add those qualities to the existing {site} row).
-- If **no** row matches title+year → **process**, matched_task_id=null.
+- `matched_task_id` = **null** (no MediaTask row).
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON when title+year match; else null.
+- Extracted = resolution keys from your `data.download_links` (with real URLs). Existing = that row's `resolution_keys`.
+- Missing non-empty → **update** + `missing_resolutions`.
+- Missing empty → compare source tier: clearly better source → **replace**, otherwise **skip**.
+- No title+year match → **process**.
 
 """
     db_rules = ""
     if has_db:
         db_rules = f"""
-**DB Candidates present — title + year + id:**
-- `matched_task_id` = ONLY an `id` from **### DB Candidates** when you skip/update/replace **that** DB row. NEVER use **{site}** row `id`.
-- YEAR MUST MATCH EXACTLY for the DB row you attach to (e.g. same year in candidate `year` / title vs extracted `data`).
-- If no DB candidate matches title+year → matched_task_id=null; then use {site} rows only as in "no DB" rules if shown above.
+**DB Candidates present:**
+- `matched_task_id` = DB candidate `id` only when you attach to that row; else null.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = matching {site} row `id` when you also identify a site row (same title+year); else null.
+- Never swap the two id spaces.
 
 """
 
     return f"""## Duplicate Check
 {chr(10).join(ctx_parts)}
 {no_db_rules}{db_rules}
-**Resolutions (always):**
-- Extracted = from your extracted `data.download_links` (movie) / items (tvshow) — only keys with real URLs.
-- Existing = matched DB candidate `resolutions` and/or matched {site} row `resolution_keys`.
-- For **skip**, both DB and {site} coverage must agree with the rules: every Extracted resolution must exist in Existing.
-- Do NOT use only the page heading line in the Markdown; use extracted `data` + the JSON blocks above.
+**Resolutions (strict):**
+- Extract only normalized resolution tiers: `480p`, `720p`, `1080p`, `1440p`, `2160p` (`4K` -> `2160p`).
+- If a clear tier appears without `p` (e.g. `720`), normalize to `720p`.
+- Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
+- Extracted = normalized keys from extracted `data` links.
+- Existing = matched DB `resolutions` and/or matched {site} `resolution_keys`.
+- If Extracted is empty -> default `action=process` unless duplicate evidence is overwhelming.
+- Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
+
+**Source upgrade (replace only):**
+- Only when title+year match and Missing is empty.
+- Use source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
+- Same resolutions but clearly higher source -> `replace`
+- Same/lower/unclear source -> `skip`
+- Never replace from codec alone.
 
 Steps:
-1. Match **title AND year** to a DB candidate (if any) and/or a {site} row (if any).
-2. `matched_task_id`: only a **DB Candidates** `id`, or **null** if no DB block or no matching DB row — never a {site} row `id`.
-3. **skip** only if Missing is empty: every Extracted resolution exists in Existing (use DB `resolutions` and, when a {site} row matches the same title+year, also require coverage by that row's `resolution_keys`).
-4. **update** if title+year match but some Extracted resolutions are missing from Existing. **process** if different title/year or no match.
+1. Match title+year to DB candidate (if any) and/or {site} row (if any).
+2. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
+3. Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
 
-TV shows: also check new episodes. New eps → update (has_new_episodes=true).
+TV shows:
+- `has_new_episodes=true` only when explicit higher episode numbers are visible.
+- If episode numbers are unclear, set `has_new_episodes=false`.
 
-reason format: include Matched DB id or "DB: none", Extracted, Existing, Missing, Action.
-If no DB match: "matched_task_id=null. ..."
+Reason format:
+- Single line only.
+- Must start with `Matched candidate id=` or `No candidate matches title+year.`
+- Must include `Extracted`, `Existing`, `Missing` lists even when empty, then `Action: ... because ...`
 
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}

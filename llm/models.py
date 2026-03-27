@@ -60,6 +60,11 @@ class LLMUsage(models.Model):
         default="",
         help_text="Full model completion text for this call (shown read-only in admin).",
     )
+    duplicate_check_json = models.TextField(
+        blank=True,
+        default="",
+        help_text="When present: duplicate_check object from combined extract+dup_check (JSON text).",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

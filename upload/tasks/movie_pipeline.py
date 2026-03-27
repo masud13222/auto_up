@@ -247,18 +247,17 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     logger.info(f"Movie pipeline complete for: {title}")
 
     # Step 5: Publish to FlixBD
-    _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes)
+    _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, dup_info=dup_info)
 
     return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
 
-def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
+def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, dup_info=None):
     """
     Add Drive links to FlixBD after upload completes.
 
-    **Duplicate / update path (main process):** ``process_media_task`` sets
-    ``media_task.site_content_id`` from the existing DB row or from FlixBD search
-    (``Pre-publishing FlixBD reuse``). Then this function runs ``patch_movie_title`` so
+    **Duplicate / update path:** ``process_media_task`` sets ``site_content_id`` from the
+    LLM duplicate_check target site row id or an existing DB row. Then this function runs ``patch_movie_title`` so
     ``website_movie_title`` from the **latest** LLM merge hits FlixBD. If
     ``site_content_id`` is still null, we **create** a new movie (no PATCH) — title
     will not update an existing row.
@@ -295,6 +294,13 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes):
             logger.info(f"FlixBD: existing row id={cid} — PATCH title then add links")
             fx.patch_movie_title(int(cid), movie_data)
             content_id = int(cid)
+            if dup_info and dup_info.get("clear_flixbd_links"):
+                n = fx.clear_movie_download_links(content_id)
+                logger.info(
+                    "FlixBD: replace — cleared %s existing download row(s) for movie id=%s",
+                    n,
+                    content_id,
+                )
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_movie (title will be set on new row only; "

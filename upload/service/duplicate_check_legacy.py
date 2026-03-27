@@ -14,6 +14,7 @@ import json
 import logging
 
 from llm.json_repair import repair_json
+from llm.schema.blocked_names import TARGET_SITE_ROW_ID_JSON_KEY
 from llm.schema.duplicate_schema import DUPLICATE_CHECK_PROMPT
 from llm.services import LLMService
 from llm.utils.name_extractor import extract_title_info
@@ -206,6 +207,8 @@ def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title:
             "action": action,
             "reason": reason,
             "matched_task_id": matched_task_id,
+            TARGET_SITE_ROW_ID_JSON_KEY: result.get(TARGET_SITE_ROW_ID_JSON_KEY)
+            or result.get("flixbd_task_id"),
             "detected_new_type": detected_new_type,
             "missing_resolutions": missing_resolutions,
             "has_new_episodes": has_new_episodes,
@@ -217,6 +220,7 @@ def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title:
             "action": "process",
             "reason": f"LLM comparison error: {e}",
             "matched_task_id": None,
+            TARGET_SITE_ROW_ID_JSON_KEY: None,
             "detected_new_type": "movie",
             "missing_resolutions": [],
             "has_new_episodes": False,

@@ -13,6 +13,10 @@ import logging
 from django.db.models import Q
 
 from upload.models import MediaTask
+from llm.schema.blocked_names import (
+    LEGACY_SITE_ROW_ID_JSON_KEY,
+    TARGET_SITE_ROW_ID_JSON_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,26 @@ def coerce_matched_task_pk(value) -> int | None:
             v = int(s)
             return v if v > 0 else None
     return None
+
+
+def coerce_target_site_row_id(value) -> int | None:
+    """Normalize LLM target site row id (duplicate_check). Same rules as positive int coercion."""
+    return coerce_matched_task_pk(value)
+
+
+def coerce_flixbd_task_id(value) -> int | None:
+    """Backward-compatible alias for coerce_target_site_row_id."""
+    return coerce_target_site_row_id(value)
+
+
+def site_row_id_from_duplicate_result(dup: dict | None) -> int | None:
+    """Read site row id from duplicate_check; accepts current and legacy JSON keys."""
+    if not dup or not isinstance(dup, dict):
+        return None
+    v = dup.get(TARGET_SITE_ROW_ID_JSON_KEY)
+    if v is None:
+        v = dup.get(LEGACY_SITE_ROW_ID_JSON_KEY)
+    return coerce_target_site_row_id(v)
 
 
 def _get_search_keywords(name: str) -> list[str]:

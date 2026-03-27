@@ -1,11 +1,40 @@
 import json
 import logging
+from datetime import timedelta
+
+from django.utils import timezone
+
 from upload.utils.web_scrape import WebScrapeService
 from llm.services import LLMService
 from llm.json_repair import repair_json
 from llm.schema import get_combined_system_prompt
+from llm.schema.blocked_names import (
+    LEGACY_SITE_ROW_ID_JSON_KEY,
+    TARGET_SITE_ROW_ID_JSON_KEY,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _save_duplicate_check_to_latest_usage(dup_result: dict | None, purpose: str) -> None:
+    """Persist duplicate_check JSON on the most recent LLMUsage row for this call."""
+    if not dup_result or not purpose:
+        return
+    try:
+        from llm.models import LLMUsage
+
+        cutoff = timezone.now() - timedelta(seconds=120)
+        row = (
+            LLMUsage.objects.filter(purpose=purpose, created_at__gte=cutoff)
+            .order_by("-pk")
+            .first()
+        )
+        if not row:
+            return
+        row.duplicate_check_json = json.dumps(dup_result, ensure_ascii=False)
+        row.save(update_fields=["duplicate_check_json"])
+    except Exception as e:
+        logger.warning("Could not save duplicate_check_json to LLMUsage: %s", e)
 
 
 def get_structured_output(llm_response: str) -> dict:
@@ -50,6 +79,21 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
     content_type = result.get("content_type", "movie")
     data = result.get("data", {})
     dup_result = result.get("duplicate_check", None)
+    if dup_result is not None and not isinstance(dup_result, dict):
+        dup_result = None
+    if isinstance(dup_result, dict):
+        if (
+            TARGET_SITE_ROW_ID_JSON_KEY not in dup_result
+            and LEGACY_SITE_ROW_ID_JSON_KEY in dup_result
+        ):
+            dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = dup_result.get(
+                LEGACY_SITE_ROW_ID_JSON_KEY
+            )
+        if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
+            dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
+
+    if has_dup_ctx and dup_result:
+        _save_duplicate_check_to_latest_usage(dup_result, "extract+dup_check")
 
     title = data.get("title", "Unknown")
     logger.info(f"Detected: {content_type} — Title: {title}")

@@ -375,17 +375,19 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     logger.info(f"TV Show pipeline complete for: {title}. Uploaded {uploaded_count}/{total_items} items.")
 
     # Step 5: Publish to FlixBD
-    _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map)
+    _publish_to_flixbd_series(
+        media_task, tvshow_data, file_sizes_map, dup_info=dup_info
+    )
 
     return json.dumps({"status": "success", "type": "tvshow", "data": tvshow_data})
 
 
-def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
+def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=None):
     """
     Add Drive links to FlixBD after upload completes.
 
-    **Update path:** same as movie — ``site_content_id`` on the task (from DB row or
-    pre-publish FlixBD reuse) triggers ``patch_series_title`` with latest
+    **Update path:** same as movie — ``site_content_id`` (LLM duplicate_check site row id or DB row)
+    triggers ``patch_series_title`` with latest
     ``website_tvshow_title``. Without id, POST ``create_series`` only.
 
     Never raises -- errors are logged only.
@@ -420,6 +422,13 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map):
             logger.info(f"FlixBD: existing series id={cid} — PATCH title then add links")
             fx.patch_series_title(int(cid), tvshow_data)
             content_id = int(cid)
+            if dup_info and dup_info.get("clear_flixbd_links"):
+                n = fx.clear_series_download_links(content_id)
+                logger.info(
+                    "FlixBD: replace — cleared %s existing download row(s) for series id=%s",
+                    n,
+                    content_id,
+                )
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_series (existing row title not updated)",

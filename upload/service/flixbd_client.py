@@ -399,6 +399,162 @@ def add_movie_download_links(
     return created_ids
 
 
+def list_movie_downloads(content_id: int) -> list[dict]:
+    """
+    GET /api/v1/movies/{id}/downloads — returns list of download rows (best-effort parsing).
+    Empty list on 404/parse failure (caller may use other hydration).
+    """
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads"
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.get(endpoint, headers=_headers(api_key))
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        body = _safe_json(resp, f"movie {content_id} list_downloads")
+        data = body.get("data", body.get("downloads"))
+        if data is None:
+            return []
+        if isinstance(data, dict):
+            inner = data.get("data") or data.get("items")
+            data = inner if isinstance(inner, list) else []
+        if not isinstance(data, list):
+            return []
+        return [x for x in data if isinstance(x, dict)]
+    except Exception as e:
+        logger.warning("FlixBD list_movie_downloads id=%s: %s", content_id, e)
+        return []
+
+
+def delete_movie_download(content_id: int, download_row_id: int) -> bool:
+    """DELETE one movie download row. False on failure."""
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads/{download_row_id}"
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.delete(endpoint, headers=_headers(api_key))
+        if resp.status_code in (404, 405):
+            logger.warning(
+                "FlixBD delete_movie_download movie=%s dl=%s HTTP %s",
+                content_id,
+                download_row_id,
+                resp.status_code,
+            )
+            return resp.status_code == 404
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.warning(
+            "FlixBD delete_movie_download movie=%s dl=%s: %s",
+            content_id,
+            download_row_id,
+            e,
+        )
+        return False
+
+
+def clear_movie_download_links(content_id: int) -> int:
+    """Remove all download rows for a movie. Returns count deleted (best-effort)."""
+    rows = list_movie_downloads(content_id)
+    n = 0
+    for row in rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if delete_movie_download(content_id, rid):
+            n += 1
+    if n:
+        logger.info("FlixBD: cleared %s download row(s) for movie id=%s", n, content_id)
+    return n
+
+
+def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, str]:
+    """
+    Build {quality: drive_url} from list_movie_downloads rows.
+    Only https://drive.google.com links are kept.
+    """
+    out: dict[str, str] = {}
+    for row in list_movie_downloads(content_id):
+        link = row.get("download_link") or row.get("url") or row.get("link")
+        if not link or "drive.google.com" not in str(link):
+            continue
+        q = row.get("quality")
+        if not q:
+            continue
+        q = str(q).strip()
+        if q and q not in out:
+            out[q] = str(link).strip()
+    return out
+
+
+def list_series_downloads(content_id: int) -> list[dict]:
+    """GET series downloads list (best-effort)."""
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/series/{content_id}/downloads"
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.get(endpoint, headers=_headers(api_key))
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        body = _safe_json(resp, f"series {content_id} list_downloads")
+        data = body.get("data", body.get("downloads"))
+        if data is None:
+            return []
+        if isinstance(data, dict):
+            inner = data.get("data") or data.get("items")
+            data = inner if isinstance(inner, list) else []
+        if not isinstance(data, list):
+            return []
+        return [x for x in data if isinstance(x, dict)]
+    except Exception as e:
+        logger.warning("FlixBD list_series_downloads id=%s: %s", content_id, e)
+        return []
+
+
+def delete_series_download(content_id: int, download_row_id: int) -> bool:
+    api_url, api_key = _get_config()
+    endpoint = f"{api_url}/api/v1/series/{content_id}/downloads/{download_row_id}"
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.delete(endpoint, headers=_headers(api_key))
+        if resp.status_code in (404, 405):
+            return resp.status_code == 404
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.warning(
+            "FlixBD delete_series_download series=%s dl=%s: %s",
+            content_id,
+            download_row_id,
+            e,
+        )
+        return False
+
+
+def clear_series_download_links(content_id: int) -> int:
+    rows = list_series_downloads(content_id)
+    n = 0
+    for row in rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if delete_series_download(content_id, rid):
+            n += 1
+    if n:
+        logger.info("FlixBD: cleared %s download row(s) for series id=%s", n, content_id)
+    return n
+
+
 def _parse_episode_range_field(raw) -> str | None:
     """
     Normalize ``download_item["episode_range"]`` for FlixBD (``01``, ``01-08``).

@@ -6,11 +6,21 @@ from multiprocessing import current_process
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
-from upload.service.duplicate_checker import _search_db, _get_existing_resolutions, coerce_matched_task_pk
+from upload.service.duplicate_checker import (
+    _search_db,
+    _get_existing_resolutions,
+    coerce_matched_task_pk,
+    site_row_id_from_duplicate_result,
+    coerce_target_site_row_id,
+)
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from upload.utils.drive_file_delete import cleanup_old_drive_files
 from llm.utils.name_extractor import extract_title_info
-from llm.schema.blocked_names import SITE_NAME
+from llm.schema.blocked_names import (
+    SITE_NAME,
+    TARGET_SITE_ROW_ID_JSON_KEY,
+    LEGACY_SITE_ROW_ID_JSON_KEY,
+)
 
 from .helpers import save_task, is_drive_link
 from .movie_pipeline import process_movie_pipeline
@@ -424,33 +434,81 @@ def _flixbd_site_id_set(flixbd_results: list | None) -> set[int]:
     return out
 
 
-def _pick_flixbd_site_content_id(flixbd_results: list | None, extracted_year) -> int | None:
-    """
-    First FlixBD hit whose title contains the same year as extracted_year.
-    If extracted_year is missing/invalid, use the first row with an id (legacy behavior).
-    """
-    if not flixbd_results:
-        return None
-    has_year = isinstance(extracted_year, int) and extracted_year > 0
+def _normalize_duplicate_response(
+    dup_result: dict | None,
+    db_candidate_map: dict,
+    flixbd_results: list,
+    media_task_pk: int,
+) -> None:
+    """Canonicalize duplicate_check keys; promote site id wrongly placed in matched_task_id."""
+    if not dup_result or not isinstance(dup_result, dict):
+        return
+    leg = dup_result.get(LEGACY_SITE_ROW_ID_JSON_KEY)
+    cur = dup_result.get(TARGET_SITE_ROW_ID_JSON_KEY)
+    if cur is None and leg is not None:
+        dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = leg
+    dup_result.pop(LEGACY_SITE_ROW_ID_JSON_KEY, None)
+    if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
+        dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
 
-    for candidate in flixbd_results:
-        cid = candidate.get("id")
-        if cid is None:
-            continue
-        if not has_year:
-            try:
-                return int(cid)
-            except (TypeError, ValueError):
-                continue
-        cand_title = (candidate.get("title") or "") or ""
-        m = re.search(r"\b(19|20)\d{2}\b", cand_title)
-        if m and int(m.group(0)) == extracted_year:
-            try:
-                return int(cid)
-            except (TypeError, ValueError):
-                continue
+    flix_ids = _flixbd_site_id_set(flixbd_results)
+    mt = coerce_matched_task_pk(dup_result.get("matched_task_id"))
+    fd = coerce_target_site_row_id(dup_result.get(TARGET_SITE_ROW_ID_JSON_KEY))
 
-    return None
+    if mt is not None and mt not in db_candidate_map:
+        if mt in flix_ids and fd is None:
+            dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = mt
+            dup_result["matched_task_id"] = None
+            logger.info(
+                "Duplicate: promoted matched_task_id=%s to %s (namespace fix, task pk=%s)",
+                mt,
+                TARGET_SITE_ROW_ID_JSON_KEY,
+                media_task_pk,
+            )
+        else:
+            dup_result["matched_task_id"] = None
+            logger.warning(
+                "Duplicate: invalid matched_task_id=%s not in DB candidates %s (task pk=%s); cleared",
+                mt,
+                list(db_candidate_map.keys()),
+                media_task_pk,
+            )
+
+
+def _donor_result_for_site_content(
+    site_content_id: int,
+    exclude_pk: int | None,
+    content_type: str,
+) -> dict:
+    """Drive metadata from another MediaTask row or FlixBD API (movies)."""
+    q = MediaTask.objects.filter(site_content_id=site_content_id, status="completed")
+    if exclude_pk is not None:
+        q = q.exclude(pk=exclude_pk)
+    donor = q.order_by("-updated_at").first()
+    if donor and isinstance(donor.result, dict) and donor.result:
+        logger.info(
+            "Donor MediaTask pk=%s for %s site_content_id=%s (merge drive links)",
+            donor.pk,
+            SITE_NAME,
+            site_content_id,
+        )
+        return dict(donor.result)
+    if content_type != "tvshow":
+        try:
+            from upload.service import flixbd_client as fx
+
+            m = fx.fetch_movie_drive_links_by_quality(int(site_content_id))
+            if m:
+                logger.info(
+                    "Hydrated %s drive link(s) from %s API for movie id=%s",
+                    len(m),
+                    SITE_NAME,
+                    site_content_id,
+                )
+                return {"download_links": m}
+        except Exception as e:
+            logger.warning("%s hydrate drive links id=%s: %s", SITE_NAME, site_content_id, e)
+    return {}
 
 
 def process_media_task(task_pk: int) -> str:
@@ -546,41 +604,37 @@ def process_media_task(task_pk: int) -> str:
         )
         title = data.get("title", "Unknown")
 
-        # ── Resolve existing_task from LLM's matched_task_id ──
+        # ── Normalize duplicate_check (split MediaTask pk vs FlixBD site id) ──
+        _flix_ctx = flixbd_results if flixbd_results else []
         if dup_result:
-            raw_matched = dup_result.get("matched_task_id")
-            matched_pk = coerce_matched_task_pk(raw_matched)
-            if raw_matched is not None and matched_pk is None:
-                logger.warning(
-                    "Invalid matched_task_id=%r (task pk=%s); treating as no DB match",
-                    raw_matched,
-                    media_task.pk,
-                )
-                dup_result["matched_task_id"] = None
-            elif matched_pk is not None:
-                dup_result["matched_task_id"] = matched_pk
+            _normalize_duplicate_response(
+                dup_result, db_candidate_map, _flix_ctx, media_task.pk
+            )
+
+        target_site_row_id = site_row_id_from_duplicate_result(dup_result) if dup_result else None
+
+        # ── Resolve existing_task from matched_task_id (DB only) ──
+        existing_task = None
+        if dup_result:
+            matched_pk = coerce_matched_task_pk(dup_result.get("matched_task_id"))
+            if matched_pk is not None:
                 existing_task = db_candidate_map.get(matched_pk)
                 if existing_task:
-                    logger.info(f"LLM matched candidate: [{existing_task.pk}] {existing_task.title}")
-                else:
-                    flix_ids = _flixbd_site_id_set(flixbd_results)
-                    if matched_pk in flix_ids:
-                        logger.warning(
-                            "matched_task_id=%s is a %s site content id, not a DB candidate id "
-                            "(LLM confused namespaces). Clearing matched_task_id (pk=%s).",
-                            matched_pk,
-                            SITE_NAME,
-                            media_task.pk,
-                        )
-                        dup_result["matched_task_id"] = None
-                    logger.warning(
-                        f"LLM returned matched_task_id={matched_pk} but not in candidates "
-                        f"{list(db_candidate_map.keys())}; treating as new content"
+                    logger.info(
+                        "LLM matched DB candidate: [%s] %s",
+                        existing_task.pk,
+                        existing_task.title,
                     )
-                    dup_result["action"] = "process"
+                else:
+                    dup_result["matched_task_id"] = None
+                    logger.warning(
+                        "matched_task_id=%s not in DB candidates %s (task pk=%s)",
+                        matched_pk,
+                        list(db_candidate_map.keys()),
+                        media_task.pk,
+                    )
             else:
-                dup_result["matched_task_id"] = None
-                logger.info("LLM returned matched_task_id=null — treating as new content")
+                logger.info("matched_task_id=null — no DB row targeted for merge")
 
         # ── Merge resume drive links (restart recovery) ──
         if resume_result and not existing_task:
@@ -600,14 +654,13 @@ def process_media_task(task_pk: int) -> str:
 
             logger.info(f"Duplicate check result: action={action}, reason={reason}")
 
-            # update/replace without a merge target: never apply partial missing_resolutions
-            # (avoids skipping 720p etc. on bogus LLM "Existing").
-            if action in ("update", "replace") and not existing_task:
+            # update/replace without DB merge: require LLM target site row id for site-targeted partial flows
+            if action in ("update", "replace") and not existing_task and target_site_row_id is None:
                 logger.warning(
-                    "PipelineWarning: duplicate action=%s but no resolved MediaTask — "
-                    "running full process (all qualities), not partial update. "
-                    "Clearing LLM missing_resolutions (pk=%s).",
+                    "PipelineWarning: duplicate action=%s but no MediaTask match and no %s — "
+                    "full process (pk=%s).",
                     action,
+                    TARGET_SITE_ROW_ID_JSON_KEY,
                     media_task.pk,
                 )
                 action = "process"
@@ -616,24 +669,16 @@ def process_media_task(task_pk: int) -> str:
             elif (
                 action == "skip"
                 and not resume_result
-                and db_candidate_map
                 and not existing_task
+                and target_site_row_id is None
             ):
-                # LLM may skip with matched_task_id=null when only the target site matches (no DB row) —
-                # keep skip if we can attach site_content_id; else avoid wrongful delete by forcing process.
-                skip_sid = (
-                    _pick_flixbd_site_content_id(flixbd_results, data.get("year"))
-                    if flixbd_results
-                    else None
+                logger.warning(
+                    "Duplicate skip without %s — forcing process (pk=%s)",
+                    TARGET_SITE_ROW_ID_JSON_KEY,
+                    media_task.pk,
                 )
-                if skip_sid is None:
-                    logger.warning(
-                        "Duplicate skip without DB match and no resolvable target-site row — "
-                        "forcing process (pk=%s)",
-                        media_task.pk,
-                    )
-                    action = "process"
-                    dup_result["action"] = "process"
+                action = "process"
+                dup_result["action"] = "process"
 
             if dup_result and action == "skip":
                 if resume_result:
@@ -641,15 +686,10 @@ def process_media_task(task_pk: int) -> str:
                     logger.info(f"DUPLICATE SKIP: {reason} — restoring reused task to completed (pk={media_task.pk})")
                     save_task(media_task, status='completed', result=data)
                 else:
-                    # New task: if DB doesn't have existing entry but FlixBD has it,
-                    # keep the task as completed and save site_content_id.
-                    if not existing_task and flixbd_results:
-                        extracted_year = data.get("year")
-                        sid = _pick_flixbd_site_content_id(flixbd_results, extracted_year)
-
+                    if not existing_task:
+                        sid = target_site_row_id
                         if sid is not None:
                             web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
-                            # Do not store generate.php etc. as final artifacts; keep metadata + FlixBD id on row.
                             result_skip = _result_strip_non_drive_download_links(data)
                             result_skip = {
                                 **result_skip,
@@ -668,14 +708,21 @@ def process_media_task(task_pk: int) -> str:
                                 site_content_id=sid,
                             )
                             logger.info(
-                                f"DUPLICATE SKIP: {reason} — saved {SITE_NAME} site id={sid} to DB (pk={media_task.pk})"
+                                "DUPLICATE SKIP: %s — saved %s site id=%s to DB (pk=%s)",
+                                reason,
+                                SITE_NAME,
+                                sid,
+                                media_task.pk,
                             )
                         else:
-                            # New task — safe to delete
-                            logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
+                            logger.info(
+                                "DUPLICATE SKIP: %s — deleting task (no %s) (pk=%s)",
+                                reason,
+                                TARGET_SITE_ROW_ID_JSON_KEY,
+                                media_task.pk,
+                            )
                             media_task.delete()
                     else:
-                        # DB already has existing entry — safe to delete
                         logger.info(f"DUPLICATE SKIP: {reason} — deleting task (pk={media_task.pk})")
                         media_task.delete()
                 return json.dumps({"status": "skipped", "message": reason})
@@ -701,37 +748,57 @@ def process_media_task(task_pk: int) -> str:
                 media_task.error_message = ''
                 media_task.save(update_fields=['status', 'error_message', 'updated_at'])
 
-        # If DB has no existing task but FlixBD already has the content,
-        # set site_content_id so the pipeline can PATCH title + add links to the existing row.
+        # LLM target site row id → site_content_id for update/replace only (not plain process)
         if (
-            action in ("process", "update", "replace")
-            and not existing_task
+            target_site_row_id is not None
             and not media_task.site_content_id
-            and flixbd_results
+            and action in ("update", "replace")
         ):
-            extracted_year = data.get("year")
-            cand_id = _pick_flixbd_site_content_id(flixbd_results, extracted_year)
-            if cand_id is not None:
-                media_task.site_content_id = cand_id
-                save_task(media_task, site_content_id=media_task.site_content_id)
-                logger.info(
-                    f"Pre-publishing {SITE_NAME} reuse: set site_content_id={media_task.site_content_id} "
-                    f"for '{title}' (pk={media_task.pk})"
-                )
+            media_task.site_content_id = target_site_row_id
+            save_task(media_task, site_content_id=target_site_row_id)
+            logger.info(
+                "LLM %s site_content_id=%s for '%s' (pk=%s)",
+                SITE_NAME,
+                target_site_row_id,
+                title,
+                media_task.pk,
+            )
 
-        # ── Merge existing data for update action ──
+        # ── Merge existing data for update (DB row and/or donor / API by site id) ──
+        if action == "update" and not existing_result and target_site_row_id:
+            existing_result = _donor_result_for_site_content(
+                target_site_row_id, media_task.pk, content_type
+            )
+            if not existing_result:
+                logger.warning(
+                    "%s=%s: no donor MediaTask and no API drive map — "
+                    "cannot hydrate existing qualities; running full downloads (pk=%s)",
+                    TARGET_SITE_ROW_ID_JSON_KEY,
+                    target_site_row_id,
+                    media_task.pk,
+                )
+                if dup_result and isinstance(dup_result.get("missing_resolutions"), list):
+                    dup_result["missing_resolutions"] = []
+
         if action == "update" and existing_result:
             is_tvshow = content_type == "tvshow" or bool(existing_result.get("seasons"))
             has_new_eps = dup_result.get("has_new_episodes", False) if dup_result else False
 
             if is_tvshow and has_new_eps:
-                # TV show with new episodes: merge new episodes INTO existing (do NOT replace)
                 data = _merge_new_episodes(existing_result, data)
-                logger.info(f"Merged new episodes into existing TV show seasons")
+                logger.info("Merged new episodes into existing TV show seasons")
             else:
-                # Movie or TV show resolution update: just preserve existing drive links
                 data = _merge_drive_links(existing_result, data)
-                logger.info(f"Merged existing drive links into new extraction data")
+                logger.info("Merged existing drive links into new extraction data")
+
+            from upload.service.info import resolve_movie_links, resolve_tvshow_links
+
+            if content_type == "movie":
+                data = resolve_movie_links(data, existing_result=existing_result)
+            else:
+                data = resolve_tvshow_links(
+                    data, on_item_resolved=None, existing_result=existing_result
+                )
 
         web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
         save_task(media_task, content_type=content_type, title=title, website_title=web_title, result=data)
@@ -741,6 +808,7 @@ def process_media_task(task_pk: int) -> str:
         dup_info = {
             "action": action,
             "existing_task": existing_task if action != "process" and existing_task is not None else None,
+            "clear_flixbd_links": action == "replace",
         }
         if dup_result:
             mr = dup_result.get("missing_resolutions")
