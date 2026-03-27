@@ -111,8 +111,45 @@ class LLMUsageAdmin(admin.ModelAdmin):
             )
             return {k: v or 0 for k, v in agg.items()}
 
-        extra_context['usage_today'] = _stats(LLMUsage.objects.filter(created_at__gte=today_start))
-        extra_context['usage_week'] = _stats(LLMUsage.objects.filter(created_at__gte=week_start))
-        extra_context['usage_month'] = _stats(LLMUsage.objects.filter(created_at__gte=month_start))
+        def _fmt_int(n: int) -> str:
+            return f"{int(n or 0):,}"
+
+        def _compact_tokens(n: int) -> str:
+            """Short form: 1.2M, 30.3K for dashboard hero."""
+            n = int(n or 0)
+            sign = "-" if n < 0 else ""
+            a = abs(n)
+            if a >= 1_000_000:
+                v = a / 1_000_000
+                s = f"{v:.2f}".rstrip("0").rstrip(".")
+                return f"{sign}{s}M"
+            if a >= 1_000:
+                v = a / 1_000
+                s = f"{v:.1f}".rstrip("0").rstrip(".")
+                return f"{sign}{s}K"
+            return f"{sign}{a}"
+
+        def _stats_block(qs):
+            s = _stats(qs)
+            t, p, c = s["total"], s["prompt"], s["completion"]
+            return {
+                **s,
+                "total_fmt": _fmt_int(t),
+                "prompt_fmt": _fmt_int(p),
+                "completion_fmt": _fmt_int(c),
+                "total_compact": _compact_tokens(t),
+                "prompt_compact": _compact_tokens(p),
+                "completion_compact": _compact_tokens(c),
+            }
+
+        extra_context["usage_today"] = _stats_block(
+            LLMUsage.objects.filter(created_at__gte=today_start)
+        )
+        extra_context["usage_week"] = _stats_block(
+            LLMUsage.objects.filter(created_at__gte=week_start)
+        )
+        extra_context["usage_month"] = _stats_block(
+            LLMUsage.objects.filter(created_at__gte=month_start)
+        )
 
         return super().changelist_view(request, extra_context=extra_context)

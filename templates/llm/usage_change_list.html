@@ -1,33 +1,235 @@
 {% extends "admin/change_list.html" %}
 {% load i18n %}
 
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .llm-usage-dash {
+    --llm-card-radius: 14px;
+    --llm-muted: rgba(255, 255, 255, 0.62);
+    --llm-faint: rgba(255, 255, 255, 0.38);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin-bottom: 1.5rem;
+  }
+  .llm-usage-dash__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+  }
+  .llm-usage-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--llm-card-radius);
+    padding: 1.15rem 1.25rem 1.05rem;
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 12px 40px rgba(0, 0, 0, 0.35);
+    background: linear-gradient(145deg, var(--llm-a) 0%, var(--llm-b) 100%);
+  }
+  .llm-usage-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(120% 80% at 100% 0%, rgba(255, 255, 255, 0.12), transparent 55%);
+    pointer-events: none;
+  }
+  .llm-usage-card > * {
+    position: relative;
+    z-index: 1;
+  }
+  .llm-usage-card--today {
+    --llm-a: #0f3d2a;
+    --llm-b: #062a1c;
+  }
+  .llm-usage-card--week {
+    --llm-a: #1a3a5c;
+    --llm-b: #0f2440;
+  }
+  .llm-usage-card--month {
+    --llm-a: #4a1a5c;
+    --llm-b: #2a0f38;
+  }
+  .llm-usage-card__label {
+    margin: 0 0 0.65rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--llm-muted);
+  }
+  .llm-usage-card__hero {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.5rem;
+    margin-bottom: 0.2rem;
+  }
+  .llm-usage-card__compact {
+    font-size: 2rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    background: linear-gradient(180deg, #fff 30%, rgba(255, 255, 255, 0.82));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .llm-usage-card__suffix {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--llm-muted);
+  }
+  .llm-usage-card__exact {
+    font-size: 0.72rem;
+    color: var(--llm-faint);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 0.85rem;
+  }
+  .llm-usage-card__rows {
+    display: grid;
+    gap: 0.45rem;
+    font-size: 0.8125rem;
+  }
+  .llm-usage-card__row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.35rem 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .llm-usage-card__row:first-of-type {
+    border-top: none;
+    padding-top: 0;
+  }
+  .llm-usage-card__row-k {
+    color: var(--llm-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .llm-usage-card__row-v {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    text-align: right;
+  }
+  .llm-usage-card__row-v small {
+    display: block;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--llm-faint);
+    margin-top: 0.15rem;
+  }
+  .llm-usage-card__calls {
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.75rem;
+    color: var(--llm-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .llm-usage-footnote {
+    font-size: 0.75rem;
+    color: var(--body-quiet-color, #888);
+    line-height: 1.45;
+    max-width: 52rem;
+    margin: 0 0 1rem;
+    padding: 0.65rem 0.85rem;
+    border-radius: 8px;
+    background: rgba(127, 127, 127, 0.08);
+    border: 1px solid rgba(127, 127, 127, 0.12);
+  }
+  .llm-usage-footnote code {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.2);
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
-    <div style="background: #1a472a; color: white; padding: 15px 25px; border-radius: 8px; min-width: 220px;">
-        <h3 style="margin: 0 0 8px; font-size: 14px; opacity: 0.8;">📅 Today</h3>
-        <div style="font-size: 22px; font-weight: bold;">{{ usage_today.total|default:"0" }} tokens</div>
-        <div style="font-size: 13px; opacity: 0.85; margin-top: 6px;">📥 Input: {{ usage_today.prompt|default:"0" }}</div>
-        <div style="font-size: 13px; opacity: 0.85;">📤 Output: {{ usage_today.completion|default:"0" }}</div>
-        <div style="font-size: 12px; opacity: 0.6; margin-top: 4px;">{{ usage_today.calls }} calls</div>
-    </div>
-    <div style="background: #1a3a5c; color: white; padding: 15px 25px; border-radius: 8px; min-width: 220px;">
-        <h3 style="margin: 0 0 8px; font-size: 14px; opacity: 0.8;">📊 This Week</h3>
-        <div style="font-size: 22px; font-weight: bold;">{{ usage_week.total|default:"0" }} tokens</div>
-        <div style="font-size: 13px; opacity: 0.85; margin-top: 6px;">📥 Input: {{ usage_week.prompt|default:"0" }}</div>
-        <div style="font-size: 13px; opacity: 0.85;">📤 Output: {{ usage_week.completion|default:"0" }}</div>
-        <div style="font-size: 12px; opacity: 0.6; margin-top: 4px;">{{ usage_week.calls }} calls</div>
-    </div>
-    <div style="background: #4a1a5c; color: white; padding: 15px 25px; border-radius: 8px; min-width: 220px;">
-        <h3 style="margin: 0 0 8px; font-size: 14px; opacity: 0.8;">📈 This Month</h3>
-        <div style="font-size: 22px; font-weight: bold;">{{ usage_month.total|default:"0" }} tokens</div>
-        <div style="font-size: 13px; opacity: 0.85; margin-top: 6px;">📥 Input: {{ usage_month.prompt|default:"0" }}</div>
-        <div style="font-size: 13px; opacity: 0.85;">📤 Output: {{ usage_month.completion|default:"0" }}</div>
-        <div style="font-size: 12px; opacity: 0.6; margin-top: 4px;">{{ usage_month.calls }} calls</div>
-    </div>
-</div>
-<p style="font-size: 12px; color: #888; margin: 0 0 16px;">
-    Rows older than 7 days are deleted automatically by the daily django-q schedule
-    <code>llm.cleanup_old_usage</code> (Admin → Django Q → Scheduled tasks). First run is 24h after the schedule is created.
+<section class="llm-usage-dash" aria-label="LLM usage summary">
+  <div class="llm-usage-dash__grid">
+    <article class="llm-usage-card llm-usage-card--today">
+      <h2 class="llm-usage-card__label">Today</h2>
+      <div class="llm-usage-card__hero">
+        <span class="llm-usage-card__compact">{{ usage_today.total_compact }}</span>
+        <span class="llm-usage-card__suffix">tokens</span>
+      </div>
+      <div class="llm-usage-card__exact" title="Exact total tokens">{{ usage_today.total_fmt }} total</div>
+      <div class="llm-usage-card__rows">
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↓</span> Input</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_today.prompt_compact }}<small>{{ usage_today.prompt_fmt }}</small>
+          </span>
+        </div>
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↑</span> Output</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_today.completion_compact }}<small>{{ usage_today.completion_fmt }}</small>
+          </span>
+        </div>
+      </div>
+      <div class="llm-usage-card__calls">{{ usage_today.calls }} API call{% if usage_today.calls != 1 %}s{% endif %}</div>
+    </article>
+
+    <article class="llm-usage-card llm-usage-card--week">
+      <h2 class="llm-usage-card__label">This week</h2>
+      <div class="llm-usage-card__hero">
+        <span class="llm-usage-card__compact">{{ usage_week.total_compact }}</span>
+        <span class="llm-usage-card__suffix">tokens</span>
+      </div>
+      <div class="llm-usage-card__exact" title="Exact total tokens">{{ usage_week.total_fmt }} total</div>
+      <div class="llm-usage-card__rows">
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↓</span> Input</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_week.prompt_compact }}<small>{{ usage_week.prompt_fmt }}</small>
+          </span>
+        </div>
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↑</span> Output</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_week.completion_compact }}<small>{{ usage_week.completion_fmt }}</small>
+          </span>
+        </div>
+      </div>
+      <div class="llm-usage-card__calls">{{ usage_week.calls }} API call{% if usage_week.calls != 1 %}s{% endif %}</div>
+    </article>
+
+    <article class="llm-usage-card llm-usage-card--month">
+      <h2 class="llm-usage-card__label">This month</h2>
+      <div class="llm-usage-card__hero">
+        <span class="llm-usage-card__compact">{{ usage_month.total_compact }}</span>
+        <span class="llm-usage-card__suffix">tokens</span>
+      </div>
+      <div class="llm-usage-card__exact" title="Exact total tokens">{{ usage_month.total_fmt }} total</div>
+      <div class="llm-usage-card__rows">
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↓</span> Input</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_month.prompt_compact }}<small>{{ usage_month.prompt_fmt }}</small>
+          </span>
+        </div>
+        <div class="llm-usage-card__row">
+          <span class="llm-usage-card__row-k"><span aria-hidden="true">↑</span> Output</span>
+          <span class="llm-usage-card__row-v">
+            {{ usage_month.completion_compact }}<small>{{ usage_month.completion_fmt }}</small>
+          </span>
+        </div>
+      </div>
+      <div class="llm-usage-card__calls">{{ usage_month.calls }} API call{% if usage_month.calls != 1 %}s{% endif %}</div>
+    </article>
+  </div>
+</section>
+<p class="llm-usage-footnote">
+  Rows older than 7 days are removed automatically by the daily django-q schedule
+  <code>llm.cleanup_old_usage</code> (Admin → Django Q → Scheduled tasks). First run is 24h after the schedule is created.
 </p>
 {{ block.super }}
 {% endblock %}
