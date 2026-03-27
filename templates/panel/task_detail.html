@@ -25,9 +25,22 @@
             </div>
         </template>
 
-        <template x-if="status === 'failed' && error">
+        <template x-if="status === 'failed'">
             <div class="mt-4 bg-red-500/5 border border-red-500/10 rounded-lg p-3">
-                <p class="text-xs text-red-400 break-words" x-text="error"></p>
+                <p class="text-[10px] font-semibold text-red-400/80 uppercase tracking-wide mb-1">Failure reason</p>
+                <p class="text-xs text-red-300 break-words whitespace-pre-wrap" x-text="errorReasonText()"></p>
+                <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="mt-2 flex flex-wrap items-center gap-2">{% csrf_token %}
+                    <label class="text-[10px] text-[#555] uppercase tracking-wide">Priority</label>
+                    <input type="number" name="q_priority" value="10" min="0" max="999999" step="1" class="w-20 text-xs bg-[#0e0e0e] border border-[#333] rounded px-2 py-1 text-[#ccc] font-mono" title="Higher runs sooner in queue">
+                    <button type="submit" class="text-xs accent hover:underline">↺ Retry</button>
+                </form>
+            </div>
+        </template>
+
+        <template x-if="status === 'partial'">
+            <div class="mt-4 bg-amber-500/5 border border-amber-500/15 rounded-lg p-3">
+                <p class="text-[10px] font-semibold text-amber-400/90 uppercase tracking-wide mb-1">Partial completion</p>
+                <p class="text-xs text-amber-200/90 break-words whitespace-pre-wrap" x-text="partialNoteText()"></p>
                 <form method="post" action="{% url 'panel:requeue_task' task.pk %}" class="mt-2 flex flex-wrap items-center gap-2">{% csrf_token %}
                     <label class="text-[10px] text-[#555] uppercase tracking-wide">Priority</label>
                     <input type="number" name="q_priority" value="10" min="0" max="999999" step="1" class="w-20 text-xs bg-[#0e0e0e] border border-[#333] rounded px-2 py-1 text-[#ccc] font-mono" title="Higher runs sooner in queue">
@@ -38,8 +51,12 @@
     </div>
 
     <!-- Result -->
-    <template x-if="status === 'completed' && result">
+    <template x-if="result && (status === 'completed' || status === 'partial')">
         <div class="space-y-4">
+
+            <template x-if="status === 'partial'">
+                <p class="text-[11px] text-amber-400/80">Some steps finished; details below. See the note above for what did not complete.</p>
+            </template>
 
             <!-- Media Info -->
             <div class="card p-5">
@@ -124,9 +141,9 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 this.status = d.status || this.status;
                 if (d.title) this.title = d.title;
-                if (d.error) this.error = d.error;
+                if (typeof d.error === 'string') this.error = d.error;
                 if (d.result && typeof d.result === 'object') this.result = d.result;
-                if (d.status === 'completed' || d.status === 'failed') clearInterval(this.timer);
+                if (d.status === 'completed' || d.status === 'failed' || d.status === 'partial') clearInterval(this.timer);
             } catch(_) {}
         },
 
@@ -153,14 +170,25 @@ document.addEventListener('alpine:init', () => {
             });
         },
 
+        errorReasonText() {
+            const t = (this.error || '').trim();
+            return t || 'No error message was recorded for this failure.';
+        },
+
+        partialNoteText() {
+            const t = (this.error || '').trim();
+            return t || 'The pipeline stopped before all steps finished. Retry if you want to run the task again.';
+        },
+
         badge() {
             const m = {
                 completed: '<span class="text-xs font-semibold text-green-400">✓ Done</span>',
                 processing: '<span class="text-xs font-semibold accent animate-pulse">● Running</span>',
                 pending: '<span class="text-xs font-semibold text-blue-400 animate-pulse">● Pending</span>',
+                partial: '<span class="text-xs font-semibold text-amber-400">◐ Partial</span>',
                 failed: '<span class="text-xs font-semibold text-red-400">✗ Failed</span>',
             };
-            return m[this.status] || this.status;
+            return m[this.status] || '<span class="text-xs font-semibold text-[#888]">' + this.status + '</span>';
         }
     }));
 });

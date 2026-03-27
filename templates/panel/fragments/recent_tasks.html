@@ -4,7 +4,9 @@
         {% if task.status == 'completed' %}bg-green-400
         {% elif task.status == 'processing' %}bg-yellow-400 animate-pulse
         {% elif task.status == 'pending' %}bg-blue-400 animate-pulse
-        {% else %}bg-red-400{% endif %}"></span>
+        {% elif task.status == 'partial' %}bg-amber-400
+        {% elif task.status == 'failed' %}bg-red-400
+        {% else %}bg-[#666]{% endif %}"></span>
     <span class="text-sm text-[#ccc] truncate flex-1">{{ task.title|default:task.url|truncatechars:50 }}</span>
     <span class="text-[10px] font-semibold text-[#555] flex-shrink-0">{{ task.created_at|timesince }} ago</span>
 </a>

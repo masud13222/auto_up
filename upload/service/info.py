@@ -13,6 +13,7 @@ from llm.schema.blocked_names import (
     LEGACY_SITE_ROW_ID_JSON_KEY,
     TARGET_SITE_ROW_ID_JSON_KEY,
 )
+from upload.utils.resolution_policy import apply_upload_resolution_policy
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,18 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
             )
         if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
             dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
+
+    # Same tiers as system prompt; strip disallowed qualities before DB snapshot + pipeline.
+    if not isinstance(data, dict):
+        data = {}
+    data, dup_result = apply_upload_resolution_policy(
+        content_type,
+        data,
+        dup_result,
+        extra_below=extra_below,
+        extra_above=extra_above,
+        max_extra=max_extra,
+    )
 
     if has_dup_ctx:
         _save_duplicate_usage_snapshot_to_latest_usage(

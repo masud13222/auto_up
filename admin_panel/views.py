@@ -19,6 +19,7 @@ def _get_stats():
         'completed': qs.filter(status='completed').count(),
         'processing': qs.filter(status='processing').count(),
         'pending': qs.filter(status='pending').count(),
+        'partial': qs.filter(status='partial').count(),
         'failed': qs.filter(status='failed').count(),
     }
 
@@ -59,6 +60,7 @@ def queue(request):
         ('pending', 'Pending', ''),
         ('processing', 'Processing', ''),
         ('completed', 'Completed', ''),
+        ('partial', 'Partial', ''),
         ('failed', 'Failed', ''),
     ]
 
