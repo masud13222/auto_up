@@ -165,20 +165,20 @@ def create_series(tvshow_data: dict) -> int:
 
 
 def patch_movie_title(content_id: int, movie_data: dict) -> bool:
-    """PATCH only the display title on an existing movie."""
+    """PUT title-only payload on an existing movie."""
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/movies/{content_id}"
     display = _display_movie_title(movie_data)
     payload = {"title": display}
-    logger.info("FlixBD: PATCH movie id=%s title-only -> %r", content_id, display[:100])
+    logger.info("FlixBD: PUT movie id=%s title-only -> %r", content_id, display[:100])
 
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+            resp = client.put(endpoint, json=payload, headers=_headers(api_key))
 
         if resp.status_code in (404, 405):
             logger.warning(
-                "FlixBD: movie title PATCH not available (HTTP %s) id=%s",
+                "FlixBD: movie title PUT not available (HTTP %s) id=%s",
                 resp.status_code,
                 content_id,
             )
@@ -196,23 +196,23 @@ def patch_movie_title(content_id: int, movie_data: dict) -> bool:
 
 
 def update_movie(content_id: int, movie_data: dict) -> bool:
-    """PATCH full movie payload on an existing movie row."""
+    """PUT full movie payload on an existing movie row."""
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/movies/{content_id}"
     payload = _build_movie_payload(movie_data)
     logger.info(
-        "FlixBD: PATCH movie id=%s full payload title=%r",
+        "FlixBD: PUT movie id=%s full payload title=%r",
         content_id,
         payload.get("title", "")[:100],
     )
 
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+            resp = client.put(endpoint, json=payload, headers=_headers(api_key))
 
         if resp.status_code in (404, 405):
             logger.warning(
-                "FlixBD: movie full PATCH not available (HTTP %s) id=%s",
+                "FlixBD: movie full PUT not available (HTTP %s) id=%s",
                 resp.status_code,
                 content_id,
             )
@@ -230,20 +230,20 @@ def update_movie(content_id: int, movie_data: dict) -> bool:
 
 
 def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
-    """PATCH only the display title on an existing series."""
+    """PUT title-only payload on an existing series."""
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/series/{content_id}"
     display = _display_series_title(tvshow_data)
     payload = {"title": display}
-    logger.info("FlixBD: PATCH series id=%s title-only -> %r", content_id, display[:100])
+    logger.info("FlixBD: PUT series id=%s title-only -> %r", content_id, display[:100])
 
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+            resp = client.put(endpoint, json=payload, headers=_headers(api_key))
 
         if resp.status_code in (404, 405):
             logger.warning(
-                "FlixBD: series title PATCH not available (HTTP %s) id=%s",
+                "FlixBD: series title PUT not available (HTTP %s) id=%s",
                 resp.status_code,
                 content_id,
             )
@@ -261,23 +261,23 @@ def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
 
 
 def update_series(content_id: int, tvshow_data: dict) -> bool:
-    """PATCH full series payload on an existing series row."""
+    """PUT full series payload on an existing series row."""
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/series/{content_id}"
     payload = _build_series_payload(tvshow_data)
     logger.info(
-        "FlixBD: PATCH series id=%s full payload title=%r",
+        "FlixBD: PUT series id=%s full payload title=%r",
         content_id,
         payload.get("title", "")[:100],
     )
 
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.patch(endpoint, json=payload, headers=_headers(api_key))
+            resp = client.put(endpoint, json=payload, headers=_headers(api_key))
 
         if resp.status_code in (404, 405):
             logger.warning(
-                "FlixBD: series full PATCH not available (HTTP %s) id=%s",
+                "FlixBD: series full PUT not available (HTTP %s) id=%s",
                 resp.status_code,
                 content_id,
             )
