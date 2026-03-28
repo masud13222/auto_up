@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from multiprocessing import current_process
+from urllib.parse import urlparse
 
 from upload.models import MediaTask
 from upload.service.info import get_content_info
@@ -35,6 +36,22 @@ from .tvshow_pipeline import process_tvshow_pipeline
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_task_url(url: str) -> bool:
+    """Reject malformed task URLs early so the worker fails gracefully."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    tail = url.split("://", 1)[1] if "://" in url else url
+    if "http://" in tail or "https://" in tail:
+        return False
+    return True
+
+
 def process_media_task(task_pk: int) -> str:
     """
     Background task: Full pipeline from URL to Google Drive upload.
@@ -66,6 +83,12 @@ def process_media_task(task_pk: int) -> str:
             media_task.url = url
             media_task.save(update_fields=["url", "updated_at"])
             logger.info(f"Normalized task URL saved: {url}")
+
+        if not _is_valid_task_url(url):
+            msg = f"Invalid URL: {url}"
+            logger.warning(msg)
+            save_task(media_task, status='failed', error_message=msg)
+            return json.dumps({"status": "error", "message": msg})
 
         logger.info(
             "Task started for URL: %s (pid=%s worker=%s)",

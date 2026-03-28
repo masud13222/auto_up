@@ -104,7 +104,7 @@ Download item types (classify by Markdown section structure — headings, labels
 Priority: combo > partial > single (never duplicate coverage).
 
 Each `resolutions` value must be a list like:
-`[{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"},{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}]`
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}},{{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}}]`
 Do not return a separate `download_filenames` object.
 - combo: `Title.Year.Hindi.S01.Complete.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
 - partial: `Title.Year.Hindi.S01E01-E08.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`

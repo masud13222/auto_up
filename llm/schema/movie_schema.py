@@ -69,7 +69,7 @@ SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars nat
 
 download_links: keys must be pure resolutions only, for example `480p`, `720p`, `1080p`.
 Each resolution value must be a list like:
-`[{"u":"ABSOLUTE_URL","l":"Hindi","f":"Title.Year.Src.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"},{"u":"ABSOLUTE_URL","l":"English","f":"Title.Year.Src.English.480p.WEB-DL.x264.{SITE_NAME}.mkv"}]`
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"Title.Year.Src.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}},{{"u":"ABSOLUTE_URL","l":"English","f":"Title.Year.Src.English.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
 `u`=url, `l`=language, `f`=filename basename only (no / \\ :). Do not return a separate `download_filenames` object.
 Src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 / else omit extra src. Ext .mkv default.
 

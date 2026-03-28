@@ -190,7 +190,7 @@ TV: true only for explicit adult. false for mainstream.
 ## File Download Entries (required):
 Movie `download_links` and TV item `resolutions` must use pure resolution keys only: `480p`, `720p`, `1080p`.
 Each resolution value must be a list of per-file objects:
-`[{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"},{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}]`
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}},{{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}}]`
 Do not return a separate `download_filenames` object for movie or TV when these fields are already inside each file entry.
 `u`=url, `l`=language, `f`=filename. `f` is basename only — no `/` `\\` `:`.
 Pattern (dots not spaces): `Title.Year.<segment>.<language>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
@@ -199,7 +199,7 @@ Pattern (dots not spaces): `Title.Year.<segment>.<language>.<res>.<src>.WEB-DL.x
 - src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 — if clearly in title; else omit extra src token
 - ext: .mkv default; archives → match ext
 Example movie:
-`"download_links":{"720p":[{"u":"https://...","l":"Hindi","f":"War.Machine.2026.Hindi.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"},{"u":"https://...","l":"English","f":"War.Machine.2026.English.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}]}`
+`"download_links":{{"720p":[{{"u":"https://...","l":"Hindi","f":"War.Machine.2026.Hindi.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}},{{"u":"https://...","l":"English","f":"War.Machine.2026.English.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}`
 
 ---
 
