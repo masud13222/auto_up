@@ -53,8 +53,8 @@ def cleanup_old_drive_files(existing_result: dict) -> int:
     Used during 'replace' action to remove old quality files.
 
     Handles both movie and tvshow formats:
-      - Movie: result.download_links = {res: drive_link}
-      - TV Show: result.seasons[].download_items[].resolutions = {res: drive_link}
+      - Movie: result.download_links = {res: [{u, l, f}, ...]}
+      - TV Show: result.seasons[].download_items[].resolutions = {res: [{u, l, f}, ...]}
 
     Returns count of deleted files.
     """
@@ -64,24 +64,30 @@ def cleanup_old_drive_files(existing_result: dict) -> int:
     file_ids = set()
 
     # Movie: download_links
-    for res, link in existing_result.get("download_links", {}).items():
-        if is_drive_link(link):
-            fid = extract_file_id(link)
-            if fid:
-                file_ids.add(fid)
-                logger.debug(f"Found old movie file: {res} → {fid}")
+    for res, entries in existing_result.get("download_links", {}).items():
+        for entry in entries if isinstance(entries, list) else []:
+            drive_link = str((entry or {}).get("u") or "").strip()
+            if is_drive_link(drive_link):
+                fid = extract_file_id(drive_link)
+                if fid:
+                    file_ids.add(fid)
+                    logger.debug(f"Found old movie file: {res} [{entry.get('language')}] → {fid}")
 
     # TV Show: seasons → download_items → resolutions
     for season in existing_result.get("seasons", []):
         snum = season.get("season_number", "?")
         for item in season.get("download_items", []):
             label = item.get("label", "")
-            for res, link in item.get("resolutions", {}).items():
-                if is_drive_link(link):
-                    fid = extract_file_id(link)
-                    if fid:
-                        file_ids.add(fid)
-                        logger.debug(f"Found old tvshow file: S{snum} {label} {res} → {fid}")
+            for res, entries in item.get("resolutions", {}).items():
+                for entry in entries if isinstance(entries, list) else []:
+                    drive_link = str((entry or {}).get("u") or "").strip()
+                    if is_drive_link(drive_link):
+                        fid = extract_file_id(drive_link)
+                        if fid:
+                            file_ids.add(fid)
+                            logger.debug(
+                                f"Found old tvshow file: S{snum} {label} {res} [{entry.get('language')}] → {fid}"
+                            )
 
     if not file_ids:
         logger.info("No old Drive files to clean up.")

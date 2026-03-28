@@ -30,20 +30,19 @@ combined_schema = {
 
 
 def _build_resolution_note(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
-    base = "- Base: always include 480p, 720p, 1080p if present in the Markdown.\n"
-    if not extra_below and not extra_above:
-        return base + "- ONLY 480p/720p/1080p. No others.\n"
-    parts = [base]
+    parts = ["- Base: 480p, 720p, 1080p always included when present in the Markdown.\n"]
     if extra_below:
-        parts.append("- Also include sub-720p non-standard (360p, 520p, etc.).\n")
+        parts.append("- Below 720p: enabled. Include 520p, 360p, 240p and similar if present.\n")
     else:
-        parts.append("- No sub-720p extras (only 480p).\n")
+        parts.append("- Below 720p: disabled. Do not include extra tiers below 480p/720p base set.\n")
     if extra_above:
-        parts.append("- Also include above 1080p (2160p, 4K).\n")
+        parts.append("- Above 1080p: enabled. Include 2160p / 4K and similar if present.\n")
     else:
-        parts.append("- No above-1080p.\n")
+        parts.append("- Above 1080p: disabled. Do not include tiers above 1080p.\n")
     if max_extra > 0:
-        parts.append(f"- Max {max_extra} extra beyond base.\n")
+        parts.append(f"- Max Extra Resolutions: {max_extra}. This limits extra tiers beyond 480p/720p/1080p.\n")
+    else:
+        parts.append("- Max Extra Resolutions: 0 means unlimited extras beyond 480p/720p/1080p.\n")
     return "".join(parts)
 
 
@@ -69,7 +68,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 **No DB Candidates (only {site} rows above):**
 - `matched_task_id` = **null** (no MediaTask row).
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON when title+year match; else null.
-- Extracted = resolution keys from your `data.download_links` (with real URLs). Existing = that row's `resolution_keys`.
+- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys`.
 - Also inspect the matched row `title` for source tier.
 - If the matched row clearly shows lower source (example: old `HDTC`, new `WEB-DL`), prefer **replace** even when `Existing` is empty or `Missing` is non-empty.
 - Use **update** only for genuine add-missing-resolutions cases, not for clear low-source -> high-source upgrades.
@@ -171,7 +170,7 @@ def get_combined_system_prompt(
 - Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8 — omit that resolution.
 - Do not decode, resolve, or alter query strings or paths; keep gateway links intact.
 - Blocked site name rule applies to TEXT FIELDS ONLY (title, filenames, etc.). Download URLs must be copied exactly as-is — even if the URL contains a blocked domain name.
-- **Download / gateway URLs (strict):** Every `download_links` / `resolutions` value MUST be a valid absolute URL with a **complete hostname** 
+- **Download / gateway URLs (strict):** Every movie `download_links.<resolution>[i].u` and TV `resolutions.<resolution>[i].u` value MUST be a valid absolute URL with a **complete hostname**.
 
 ## Title Format:
 - Movie: `Title Year Source Language - {SITE_NAME}` (no Season/EP). Source = WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution).
@@ -188,14 +187,19 @@ TV: true only for explicit adult. false for mainstream.
 - meta_description: 140-160 chars, natural CTA
 - meta_keywords: 10-15 comma-separated
 
-## download_filenames (required):
-Keys MUST exactly match download_links (movie) or resolutions (TV item). Basename only — no `/` `\\` `:`.
-Pattern (dots not spaces): `Title.Year.<segment>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
-- Movie segment: (none — just Title.Year.Res...)
+## File Download Entries (required):
+Movie `download_links` and TV item `resolutions` must use pure resolution keys only: `480p`, `720p`, `1080p`.
+Each resolution value must be a list of per-file objects:
+`[{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"},{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}]`
+Do not return a separate `download_filenames` object for movie or TV when these fields are already inside each file entry.
+`u`=url, `l`=language, `f`=filename. `f` is basename only — no `/` `\\` `:`.
+Pattern (dots not spaces): `Title.Year.<segment>.<language>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
+- Movie segment: (none — just Title.Year.Language.Res...)
 - TV combo: S01.Complete | partial: S01E01-E08 | single: S01E05
 - src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 — if clearly in title; else omit extra src token
 - ext: .mkv default; archives → match ext
-Example: `War.Machine.2026.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv`
+Example movie:
+`"download_links":{"720p":[{"u":"https://...","l":"Hindi","f":"War.Machine.2026.Hindi.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"},{"u":"https://...","l":"English","f":"War.Machine.2026.English.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}]}`
 
 ---
 

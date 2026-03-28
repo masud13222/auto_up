@@ -6,9 +6,12 @@ import httpx
 from upload.utils.tv_items import tv_items_overlap
 
 from .flixbd_api_base import _TIMEOUT, _get_config, _headers, _safe_json
-from .flixbd_api_content import _derive_language_string
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_resolution_key(value) -> str:
+    return str(value or "").strip().lower()
 
 
 def add_movie_download_links(
@@ -22,60 +25,76 @@ def add_movie_download_links(
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads"
     created_ids = []
-    language = _derive_language_string(movie_data)
 
-    for quality, drive_url in drive_links.items():
-        payload = {
-            "server_name": server_name,
-            "download_link": drive_url,
-            "quality": quality,
-        }
-        if language:
-            payload["language"] = language
-        size = file_sizes.get(quality)
-        if size:
-            payload["size"] = size
-
-        try:
-            with httpx.Client(timeout=_TIMEOUT) as client:
-                resp = client.post(endpoint, json=payload, headers=_headers(api_key))
-
-            if resp.status_code == 409:
-                body = _safe_json(resp, f"movie {content_id} downloads 409")
-                existing_id = body.get("errors", {}).get("existing_download_id")
-                logger.info(
-                    "FlixBD: duplicate link for movie %s %s (existing id=%s)",
-                    content_id,
-                    quality,
-                    existing_id,
-                )
-                if existing_id:
-                    created_ids.append(existing_id)
+    for quality, entries in drive_links.items():
+        for drive_item in entries if isinstance(entries, list) else []:
+            drive_url = str(drive_item.get("u") or "").strip()
+            if not drive_url:
                 continue
-
-            if resp.status_code in (400, 422):
-                logger.warning(
-                    "FlixBD: add download link error for movie %s %s: %s",
-                    content_id,
-                    quality,
-                    resp.text,
-                )
-                continue
-
-            resp.raise_for_status()
-            dl_id = _safe_json(resp, f"movie {content_id} add_download {quality}")["data"]["id"]
-            created_ids.append(dl_id)
-            logger.info(
-                "FlixBD: added download link id=%s movie=%s quality=%s",
-                dl_id,
-                content_id,
-                quality,
+            payload = {
+                "server_name": server_name,
+                "download_link": drive_url,
+                "quality": _normalized_resolution_key(quality),
+            }
+            entry_language = str(drive_item.get("l") or "").strip()
+            if entry_language:
+                payload["language"] = entry_language
+            size = (
+                file_sizes.get((quality, entry_language, str(drive_item.get("f") or "").strip()))
+                or str(drive_item.get("s") or "").strip()
             )
+            if size:
+                payload["size"] = size
 
-        except RuntimeError:
-            raise
-        except Exception as e:
-            logger.error("FlixBD: failed to add link for movie %s %s: %s", content_id, quality, e)
+            try:
+                with httpx.Client(timeout=_TIMEOUT) as client:
+                    resp = client.post(endpoint, json=payload, headers=_headers(api_key))
+
+                if resp.status_code == 409:
+                    body = _safe_json(resp, f"movie {content_id} downloads 409")
+                    existing_id = body.get("errors", {}).get("existing_download_id")
+                    logger.info(
+                        "FlixBD: duplicate link for movie %s %s [%s] (existing id=%s)",
+                        content_id,
+                        quality,
+                        entry_language,
+                        existing_id,
+                    )
+                    if existing_id:
+                        created_ids.append(existing_id)
+                    continue
+
+                if resp.status_code in (400, 422):
+                    logger.warning(
+                        "FlixBD: add download link error for movie %s %s [%s]: %s",
+                        content_id,
+                        quality,
+                        entry_language,
+                        resp.text,
+                    )
+                    continue
+
+                resp.raise_for_status()
+                dl_id = _safe_json(resp, f"movie {content_id} add_download {quality}")["data"]["id"]
+                created_ids.append(dl_id)
+                logger.info(
+                    "FlixBD: added download link id=%s movie=%s quality=%s language=%s",
+                    dl_id,
+                    content_id,
+                    quality,
+                    entry_language,
+                )
+
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.error(
+                    "FlixBD: failed to add link for movie %s %s [%s]: %s",
+                    content_id,
+                    quality,
+                    entry_language,
+                    e,
+                )
 
     return created_ids
 
@@ -151,9 +170,9 @@ def clear_movie_download_links(content_id: int) -> int:
     return deleted
 
 
-def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, str]:
-    """Build ``{quality: drive_url}`` from movie download rows."""
-    out: dict[str, str] = {}
+def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, list[dict]]:
+    """Build ``{quality: [{u, l, s?}]}`` from movie download rows."""
+    out: dict[str, list[dict]] = {}
     for row in list_movie_downloads(content_id):
         link = row.get("download_link") or row.get("url") or row.get("link")
         if not link or "drive.google.com" not in str(link):
@@ -161,9 +180,17 @@ def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, str]:
         quality = row.get("quality")
         if not quality:
             continue
-        quality = str(quality).strip()
-        if quality and quality not in out:
-            out[quality] = str(link).strip()
+        language = str(row.get("language") or "").strip()
+        quality_key = _normalized_resolution_key(quality)
+        if not quality_key:
+            continue
+        entry = {"u": str(link).strip()}
+        if language:
+            entry["l"] = language
+        size = str(row.get("size") or "").strip()
+        if size:
+            entry["s"] = size
+        out.setdefault(quality_key, []).append(entry)
     return out
 
 
@@ -260,6 +287,8 @@ def fetch_series_drive_links_tree(content_id: int) -> list[dict]:
         quality = str(row.get("quality") or "").strip()
         if not quality:
             continue
+        language = str(row.get("language") or "").strip()
+        quality_key = _normalized_resolution_key(quality)
         episode_range = _parse_episode_range_field(row.get("episode_number") or row.get("episode"))
         item_type = "combo_pack" if episode_range is None else (
             "partial_combo" if "-" in episode_range else "single_episode"
@@ -276,11 +305,13 @@ def fetch_series_drive_links_tree(content_id: int) -> list[dict]:
         )
         if episode_range is not None:
             item["episode_range"] = episode_range
-        item["resolutions"][quality] = str(link).strip()
+        entry = {"u": str(link).strip()}
+        if language:
+            entry["l"] = language
         size = row.get("size")
         if size:
-            sizes = item.setdefault("sizes", {})
-            sizes[quality] = str(size).strip()
+            entry["s"] = str(size).strip()
+        item["resolutions"].setdefault(quality_key, []).append(entry)
 
     out: list[dict] = []
     for season_num in sorted(grouped.keys()):
@@ -433,7 +464,6 @@ def add_series_download_links(
     api_url, api_key = _get_config()
     endpoint = f"{api_url}/api/v1/series/{content_id}/downloads"
     created_ids = []
-    language = _derive_language_string(tvshow_data)
 
     for season in seasons_data:
         season_num = season.get("season_number")
@@ -441,81 +471,99 @@ def add_series_download_links(
             item_label = item.get("label", "")
             resolutions = item.get("resolutions", {})
 
-            for quality, drive_url in resolutions.items():
-                if not drive_url or not drive_url.startswith("https://drive.google.com"):
-                    continue
+            for quality, entries in resolutions.items():
+                for drive_item in entries if isinstance(entries, list) else []:
+                    drive_url = str(drive_item.get("u") or "").strip()
+                    if not drive_url or not drive_url.startswith("https://drive.google.com"):
+                        continue
 
-                payload = {
-                    "server_name": server_name,
-                    "download_link": drive_url,
-                    "quality": quality,
-                    "season_number": str(season_num).zfill(2),
-                }
+                    payload = {
+                        "server_name": server_name,
+                        "download_link": drive_url,
+                        "quality": _normalized_resolution_key(quality),
+                        "season_number": str(season_num).zfill(2),
+                    }
 
-                ep_val = _episode_number_for_flixbd_item(item)
-                if ep_val is not None:
-                    payload["episode_number"] = ep_val
+                    ep_val = _episode_number_for_flixbd_item(item)
+                    if ep_val is not None:
+                        payload["episode_number"] = ep_val
 
-                if language:
-                    payload["language"] = language
+                    entry_language = str(drive_item.get("l") or "").strip()
+                    if entry_language:
+                        payload["language"] = entry_language
 
-                size = file_sizes_map.get((season_num, item_label, quality)) or item.get("sizes", {}).get(quality)
-                if size:
-                    payload["size"] = size
+                    size = (
+                        file_sizes_map.get(
+                            (
+                                season_num,
+                                item_label,
+                                quality,
+                                entry_language,
+                                str(drive_item.get("f") or "").strip(),
+                            )
+                        )
+                        or str(drive_item.get("s") or "").strip()
+                    )
+                    if size:
+                        payload["size"] = size
 
-                try:
-                    with httpx.Client(timeout=_TIMEOUT) as client:
-                        resp = client.post(endpoint, json=payload, headers=_headers(api_key))
+                    try:
+                        with httpx.Client(timeout=_TIMEOUT) as client:
+                            resp = client.post(endpoint, json=payload, headers=_headers(api_key))
 
-                    if resp.status_code == 409:
-                        body = _safe_json(resp, f"series {content_id} S{season_num} downloads 409")
-                        existing_id = body.get("errors", {}).get("existing_download_id")
+                        if resp.status_code == 409:
+                            body = _safe_json(resp, f"series {content_id} S{season_num} downloads 409")
+                            existing_id = body.get("errors", {}).get("existing_download_id")
+                            logger.info(
+                                "FlixBD: duplicate link series %s S%s %r %s [%s] (existing id=%s)",
+                                content_id,
+                                season_num,
+                                item_label,
+                                quality,
+                                entry_language,
+                                existing_id,
+                            )
+                            if existing_id:
+                                created_ids.append(existing_id)
+                            continue
+
+                        if resp.status_code in (400, 422):
+                            logger.warning(
+                                "FlixBD: add series link error S%s %r %s [%s]: %s",
+                                season_num,
+                                item_label,
+                                quality,
+                                entry_language,
+                                resp.text,
+                            )
+                            continue
+
+                        resp.raise_for_status()
+                        dl_id = _safe_json(
+                            resp,
+                            f"series {content_id} add_download S{season_num} {quality}",
+                        )["data"]["id"]
+                        created_ids.append(dl_id)
                         logger.info(
-                            "FlixBD: duplicate link series %s S%s %r %s (existing id=%s)",
+                            "FlixBD: added series link id=%s series=%s S%s %r %s [%s]",
+                            dl_id,
                             content_id,
                             season_num,
                             item_label,
                             quality,
-                            existing_id,
+                            entry_language,
                         )
-                        if existing_id:
-                            created_ids.append(existing_id)
-                        continue
 
-                    if resp.status_code in (400, 422):
-                        logger.warning(
-                            "FlixBD: add series link error S%s %r %s: %s",
+                    except RuntimeError:
+                        raise
+                    except Exception as e:
+                        logger.error(
+                            "FlixBD: failed to add series link S%s %r %s [%s]: %s",
                             season_num,
                             item_label,
                             quality,
-                            resp.text,
+                            entry_language,
+                            e,
                         )
-                        continue
-
-                    resp.raise_for_status()
-                    dl_id = _safe_json(
-                        resp,
-                        f"series {content_id} add_download S{season_num} {quality}",
-                    )["data"]["id"]
-                    created_ids.append(dl_id)
-                    logger.info(
-                        "FlixBD: added series link id=%s series=%s S%s %r %s",
-                        dl_id,
-                        content_id,
-                        season_num,
-                        item_label,
-                        quality,
-                    )
-
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    logger.error(
-                        "FlixBD: failed to add series link S%s %r %s: %s",
-                        season_num,
-                        item_label,
-                        quality,
-                        e,
-                    )
 
     return created_ids

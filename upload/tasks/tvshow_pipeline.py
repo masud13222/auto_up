@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from upload.service.downloader import Downloader
@@ -13,32 +14,63 @@ from django.conf import settings
 from .helpers import save_task, is_drive_link, log_memory, validate_llm_download_basename
 
 logger = logging.getLogger(__name__)
+_RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
 
 
-def _tv_item_filenames_from_llm(item: dict, season_num) -> dict:
-    """Use LLM output only; raise ValueError if any resolution lacks a safe non-empty basename."""
-    raw = item.get("download_filenames")
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"S{season_num} {item.get('label')!r}: download_filenames must be a JSON object"
-        )
+def _tv_item_download_entries_from_llm(item: dict, season_num) -> dict:
+    """Use strict pure-resolution keys and file-entry lists from LLM output."""
     resolutions = item.get("resolutions") or {}
+    if not isinstance(resolutions, dict):
+        raise ValueError(
+            f"S{season_num} {item.get('label')!r}: resolutions must be a JSON object"
+        )
     out = {}
-    for q in resolutions:
-        ctx = f"S{season_num} {item.get('label')!r} download_filenames[{q!r}]"
-        if q not in raw:
-            raise ValueError(
-                f"{ctx}: missing key — need one basename per resolutions key "
-                f"{list(resolutions.keys())!r}"
-            )
-        out[q] = validate_llm_download_basename(raw.get(q), context=ctx)
-    item["download_filenames"] = out
+    for raw_resolution, raw_entries in resolutions.items():
+        resolution = str(raw_resolution or "").strip().lower()
+        if not _RESOLUTION_KEY_RE.fullmatch(resolution):
+            raise ValueError(f"Invalid TV resolution key: {raw_resolution!r}")
+        ctx = f"S{season_num} {item.get('label')!r} resolutions[{raw_resolution!r}]"
+        if not isinstance(raw_entries, list) or not raw_entries:
+            raise ValueError(f"{ctx}: expected a non-empty array of file objects")
+        entries = []
+        for idx, raw_entry in enumerate(raw_entries):
+            entry_ctx = f"{ctx}[{idx}]"
+            if not isinstance(raw_entry, dict):
+                raise ValueError(f"{entry_ctx}: expected object")
+            link = raw_entry.get("u")
+            if not isinstance(link, str) or not link.strip():
+                raise ValueError(f"{entry_ctx}.u: missing or invalid")
+            language = raw_entry.get("l")
+            if not isinstance(language, str) or not language.strip():
+                raise ValueError(f"{entry_ctx}.l: missing or invalid")
+            filename_raw = raw_entry.get("f")
+            if not isinstance(filename_raw, str) or not filename_raw.strip():
+                raise ValueError(f"{entry_ctx}.f: missing or invalid")
+            entry = {
+                "u": link.strip(),
+                "l": " ".join(language.strip().split()),
+                "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
+            }
+            if isinstance(raw_entry.get("s"), str) and raw_entry["s"].strip():
+                entry["s"] = raw_entry["s"].strip()
+            entries.append(entry)
+        out[resolution] = entries
+    item["resolutions"] = out
+    item.pop("download_filenames", None)
     return out
+
+
+def _tv_entry_label(resolution: str, entry: dict) -> str:
+    return f"{resolution} [{entry['l']}]"
+
+
+def _tv_entry_id(season_num, item_label, resolution: str, entry: dict) -> tuple[int, str, str, str, str]:
+    return (season_num, item_label, resolution, entry["l"], entry["f"])
 
 
 def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     """
-    TV Show pipeline: download_filenames from main LLM extract -> Download/Clean/Upload -> FlixBD -> Cleanup
+    TV Show pipeline: per-file `resolutions` entries from main LLM extract -> Download/Clean/Upload -> FlixBD -> Cleanup
 
     Parallelism strategy:
     - Items (combo/partial/single) processed SEQUENTIALLY
@@ -74,8 +106,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     if not is_dup_update:
         tvshow_data.pop("screen_shots_url", None)
 
-    # Step 2: Filenames embedded in extract (per-item download_filenames)
-    logger.info(f"Resolving download_filenames for TV show: {title}")
+    # Step 2: File metadata embedded in each resolutions entry
+    logger.info(f"Validating resolution entries for TV show: {title}")
 
     # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()
@@ -112,14 +144,13 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                 item_label = item.get("label", "Unknown")
                 resolutions = item.get("resolutions", {})
 
-                fname_resolutions = _tv_item_filenames_from_llm(item, season_num)
+                normalized_resolutions = _tv_item_download_entries_from_llm(item, season_num)
 
                 all_items.append({
                     "season_number": season_num,
                     "type": item_type,
                     "label": item_label,
-                    "resolutions": resolutions,
-                    "fname_resolutions": fname_resolutions,
+                    "resolutions": normalized_resolutions,
                     "season_folder_id": season_folders.get(season_num),
                 })
     except ValueError as e:
@@ -130,22 +161,25 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     # -- Helper functions --
 
-    def _download_one(quality, urls, fname, season_num, item_label):
+    def _download_one(source_item, season_num, item_label):
         """Download only -- runs in PARALLEL thread."""
         from upload.service.flixbd_client import format_file_size
-        log_memory(f"Before download {quality}")
-        url_list = urls if isinstance(urls, list) else [urls]
+        resolution = source_item["resolution"]
+        entry = source_item["entry"]
+        label = _tv_entry_label(resolution, entry)
+        log_memory(f"Before download {label}")
+        url_list = [entry["u"]]
 
         file_path = None
         for url in url_list:
-            file_path = Downloader.download(url, fname, sub_folder=safe_title)
+            file_path = Downloader.download(url, entry["f"], sub_folder=safe_title)
             if file_path:
                 break
 
         if not file_path:
-            logger.warning(f"Could not download {quality} for S{season_num} {item_label}")
-            log_memory(f"After download {quality}")
-            return quality, file_path, None
+            logger.warning(f"Could not download {label} for S{season_num} {item_label}")
+            log_memory(f"After download {label}")
+            return source_item, file_path, None
 
         # Capture file size BEFORE ffmpeg/deletion
         try:
@@ -154,25 +188,31 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         except OSError:
             size_str = None
 
-        log_memory(f"After download {quality}")
-        return quality, file_path, size_str
+        log_memory(f"After download {label}")
+        return source_item, file_path, size_str
 
-    def _clean_one(quality, file_path):
+    def _clean_one(source_item, file_path):
         """FFmpeg subtitle clean -- runs SEQUENTIALLY in main thread."""
-        log_memory(f"Before ffmpeg {quality}")
-        cleaned = process_downloaded_files({quality: file_path})
-        file_path = cleaned.get(quality, file_path)
-        log_memory(f"After ffmpeg {quality}")
+        label = _tv_entry_label(source_item["resolution"], source_item["entry"])
+        log_memory(f"Before ffmpeg {label}")
+        cleaned = process_downloaded_files({label: file_path})
+        file_path = cleaned.get(label, file_path)
+        log_memory(f"After ffmpeg {label}")
         return file_path
 
-    def _upload_one(quality, file_path, season_folder_id, season_num, item_label):
+    def _upload_one(source_item, file_path, season_folder_id, season_num, item_label):
         """Upload to Drive with retries; delete local after final outcome."""
-        log_memory(f"Before upload {quality}")
+        label = _tv_entry_label(source_item["resolution"], source_item["entry"])
+        log_memory(f"Before upload {label}")
         try:
-            link = DriveUploader.upload_file_with_retry(file_path, season_folder_id)
-            logger.info(f"Uploaded S{season_num} {item_label} {quality}")
+            link = DriveUploader.upload_file_with_retry(
+                file_path,
+                season_folder_id,
+                upload_name=source_item["entry"]["f"],
+            )
+            logger.info(f"Uploaded S{season_num} {item_label} {label}")
         except Exception as e:
-            logger.error(f"Upload failed for S{season_num} {item_label} {quality}: {e}")
+            logger.error(f"Upload failed for S{season_num} {item_label} {label}: {e}")
             link = None
 
         # Delete local file after final upload outcome
@@ -180,8 +220,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
 
-        log_memory(f"After upload+delete {quality}")
-        return quality, link
+        log_memory(f"After upload+delete {label}")
+        return source_item, link
 
     # -- Step 4: Process items --
     # Items: SEQUENTIAL | Downloads: PARALLEL | FFmpeg: SEQUENTIAL | Uploads: PARALLEL
@@ -203,51 +243,43 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         item_type = item_info["type"]
         item_label = item_info["label"]
         resolutions = item_info["resolutions"]
-        fname_resolutions = item_info["fname_resolutions"]
         season_folder_id = item_info["season_folder_id"]
 
-        # Collect resolutions to process (skip already-uploaded ones)
+        # Collect files to process (skip already-uploaded ones)
         to_process = []
         already_uploaded = {}
-        # size_staging: {quality: size_str} -- sizes captured during download
-        # Pre-populate from persisted item["sizes"] so already-uploaded resolutions
-        # carry their sizes forward into file_sizes_map and the merged item["sizes"].
-        item_in_data = next(
-            (i for s in tvshow_data.get("seasons", [])
-             if s.get("season_number") == season_num
-             for i in s.get("download_items", [])
-             if i.get("type") == item_type and i.get("label") == item_label),
-            {}
-        )
-        size_staging = dict(item_in_data.get("sizes", {}))  # pre-load persisted sizes
-
-        for quality in resolutions:
-            urls = resolutions.get(quality)
-            fname = fname_resolutions.get(quality)
-
-            if is_drive_link(urls):
-                logger.info(f"Skipping S{season_num} {item_label} {quality}: already uploaded")
-                already_uploaded[quality] = urls
-                continue
-
-            if urls and fname:
-                to_process.append((quality, urls, fname))
-                expected_upload_targets.add((season_num, item_label, quality))
+        for resolution, entries in resolutions.items():
+            kept_uploaded = []
+            for entry in entries:
+                entry_id = _tv_entry_id(season_num, item_label, resolution, entry)
+                expected_upload_targets.add(entry_id)
+                if is_drive_link(entry["u"]):
+                    logger.info(
+                        "Skipping S%s %s %s: already uploaded",
+                        season_num,
+                        item_label,
+                        _tv_entry_label(resolution, entry),
+                    )
+                    kept_uploaded.append(dict(entry))
+                    if entry.get("size"):
+                        file_sizes_map[entry_id] = entry["size"]
+                    continue
+                to_process.append({"resolution": resolution, "entry": dict(entry)})
+            if kept_uploaded:
+                already_uploaded[resolution] = kept_uploaded
 
         if not to_process:
             if already_uploaded:
                 logger.info(f"Skipping S{season_num} {item_label}: already uploaded to Drive")
                 uploaded_count += 1
-                # Still populate file_sizes_map so FlixBD publish has sizes
-                for q, size in size_staging.items():
-                    if size:
-                        file_sizes_map[(season_num, item_label, q)] = size
             else:
                 logger.warning(f"No downloadable resolutions for S{season_num} {item_label}")
             continue
 
-
-        logger.info(f"[{idx}/{total_items}] Processing S{season_num} {item_label}: {[q for q, _, _ in to_process]}")
+        logger.info(
+            f"[{idx}/{total_items}] Processing S{season_num} {item_label}: "
+            f"{[_tv_entry_label(item['resolution'], item['entry']) for item in to_process]}"
+        )
 
         # -- Phase 1: Download ALL resolutions PARALLEL --
         uploaded_resolutions = dict(already_uploaded)
@@ -257,10 +289,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
             with ThreadPoolExecutor(max_workers=len(to_process)) as dl_executor:
                 download_futures = {
-                    dl_executor.submit(
-                        _download_one, q, u, f, season_num, item_label
-                    ): q
-                    for q, u, f in to_process
+                    dl_executor.submit(_download_one, item, season_num, item_label): item
+                    for item in to_process
                 }
 
                 # -- Phase 2: As each download completes --
@@ -269,22 +299,25 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                 cleaned_batch = []
                 for future in as_completed(download_futures):
                     try:
-                        quality, file_path, size_str = future.result()
+                        source_item, file_path, size_str = future.result()
                     except Exception as e:
-                        quality = download_futures[future]
-                        logger.error(f"Download failed for S{season_num} {item_label} {quality}: {e}")
+                        source_item = download_futures[future]
+                        logger.error(
+                            "Download failed for S%s %s %s: %s",
+                            season_num,
+                            item_label,
+                            _tv_entry_label(source_item["resolution"], source_item["entry"]),
+                            e,
+                        )
                         continue
                     if not file_path:
                         continue
 
-                    if size_str:
-                        size_staging[quality] = size_str
-
-                    file_path = _clean_one(quality, file_path)
-                    cleaned_batch.append((quality, file_path, size_str))
+                    file_path = _clean_one(source_item, file_path)
+                    cleaned_batch.append((source_item, file_path, size_str))
 
                 if cleaned_batch and not is_dup_update:
-                    best_q, best_path, _ = max(
+                    best_item, best_path, _ = max(
                         cleaned_batch, key=lambda x: os.path.getsize(x[1])
                     )
                     bsz = os.path.getsize(best_path)
@@ -302,7 +335,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                                 len(ss_urls),
                                 season_num,
                                 item_label,
-                                best_q,
+                                _tv_entry_label(best_item["resolution"], best_item["entry"]),
                                 bsz,
                             )
                         else:
@@ -319,40 +352,42 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                         item_label,
                     )
 
-                for quality, file_path, size_str in cleaned_batch:
+                for source_item, file_path, size_str in cleaned_batch:
                     uf = upload_executor.submit(
-                        _upload_one, quality, file_path,
+                        _upload_one, source_item, file_path,
                         season_folder_id, season_num, item_label
                     )
-                    upload_futures.append((uf, quality))
+                    upload_futures.append((uf, source_item))
 
             # Wait for all background uploads to finish (with statement handles shutdown)
-            for uf, q in upload_futures:
+            for uf, source_item in upload_futures:
                 try:
-                    quality, link = uf.result()
+                    uploaded_item, link = uf.result()
                 except Exception as e:
                     logger.error(f"Upload thread failed for S{season_num} {item_label}: {e}")
                     continue
                 if link:
-                    uploaded_resolutions[quality] = link
-                    # Use q from submit (source of truth) — matches size_staging keys
-                    if size_staging.get(q):
-                        file_sizes_map[(season_num, item_label, q)] = size_staging[q]
+                    size_str = next(
+                        (s for item, _path, s in cleaned_batch if item == uploaded_item),
+                        None,
+                    )
+                    entry = dict(uploaded_item["entry"])
+                    entry["u"] = link
+                    if size_str:
+                        entry["s"] = size_str
+                        file_sizes_map[_tv_entry_id(season_num, item_label, uploaded_item["resolution"], entry)] = size_str
+                    uploaded_resolutions.setdefault(uploaded_item["resolution"], []).append(entry)
 
         if uploaded_resolutions:
             uploaded_count += 1
 
-            # Update tvshow_data with drive links + sizes
+            # Update tvshow_data with drive links
             for season in tvshow_data.get("seasons", []):
                 if season.get("season_number") == season_num:
                     for item in season.get("download_items", []):
                         if item.get("type") == item_type and item.get("label") == item_label:
                             item["resolutions"] = uploaded_resolutions
-                            # Persist sizes into result JSON
-                            if size_staging:
-                                existing_sizes = item.get("sizes", {})
-                                existing_sizes.update(size_staging)
-                                item["sizes"] = existing_sizes
+                            item.pop("sizes", None)
                             break
 
             save_task(media_task, result=tvshow_data)
@@ -373,21 +408,28 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         snum = season.get("season_number")
         for item in season.get("download_items", []):
             label = item.get("label")
-            for quality, link in (item.get("resolutions") or {}).items():
-                if is_drive_link(link):
-                    uploaded_targets.add((snum, label, quality))
+            for resolution, entries in (item.get("resolutions") or {}).items():
+                for entry in entries:
+                    if is_drive_link(entry.get("u")):
+                        uploaded_targets.add(_tv_entry_id(snum, label, resolution, entry))
     missing = sorted(expected_upload_targets - uploaded_targets)
 
     # Final save
     if missing:
         tvshow_data["partial_upload"] = True
         tvshow_data["partial_upload_missing_items"] = [
-            {"season_number": s, "label": label, "quality": q}
-            for s, label, q in missing
+            {
+                "season_number": s,
+                "label": label,
+                "quality": q,
+                "language": lang,
+                "filename": filename,
+            }
+            for s, label, q, lang, filename in missing
         ]
         msg = (
             "Partial upload: some TV items failed after all retries: "
-            + ", ".join(f"S{s} {label} {q}" for s, label, q in missing)
+            + ", ".join(f"S{s} {label} {q} [{lang}]" for s, label, q, lang, filename in missing)
         )
         save_task(media_task, status='partial', result=tvshow_data, error_message=msg)
         logger.warning(msg)

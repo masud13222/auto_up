@@ -66,20 +66,17 @@ def _summarize_combined_parsed(data: dict) -> None:
     print(f"  data.title: {title}")
     if ct == "movie":
         links = inner.get("download_links") or {}
-        names = inner.get("download_filenames") or {}
         print(f"  download_links keys: {list(links.keys())}")
-        print(f"  download_filenames keys: {list(names.keys())}")
-        if set(links.keys()) != set(names.keys()):
-            print("  ⚠ keys mismatch: download_links vs download_filenames")
+        for quality, entries in list(links.items())[:5]:
+            count = len(entries) if isinstance(entries, list) else 0
+            print(f"    {quality}: {count} file(s)")
     elif ct == "tvshow":
         seasons = inner.get("seasons") or []
         for si, s in enumerate(seasons[:3]):
             for ji, item in enumerate((s.get("download_items") or [])[:3]):
                 res = item.get("resolutions") or {}
-                fn = item.get("download_filenames") or {}
-                print(f"  season[{si}] item[{ji}] res keys: {list(res.keys())} | fn keys: {list(fn.keys())}")
-                if set(res.keys()) != set(fn.keys()):
-                    print("    ⚠ keys mismatch: resolutions vs download_filenames")
+                counts = {quality: len(entries) for quality, entries in res.items() if isinstance(entries, list)}
+                print(f"  season[{si}] item[{ji}] res keys: {list(res.keys())} | file counts: {counts}")
     dup = data.get("duplicate_check")
     if dup:
         print(f"  duplicate_check.action: {dup.get('action')}")

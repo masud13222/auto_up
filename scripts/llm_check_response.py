@@ -137,14 +137,19 @@ def main():
             sn = s.get("season_number")
             for item in s.get("download_items", []):
                 label = item.get("label", "?")
-                res = list(item.get("resolutions", {}).keys())
+                res = {
+                    quality: len(entries)
+                    for quality, entries in (item.get("resolutions", {}) or {}).items()
+                    if isinstance(entries, list)
+                }
                 print(f"    S{sn} [{item.get('type','?')}] {label} → {res}")
     else:
-        links = list(data.get("download_links", {}).keys())
+        links = {
+            quality: len(entries)
+            for quality, entries in (data.get("download_links", {}) or {}).items()
+            if isinstance(entries, list)
+        }
         print(f"  Links: {links}")
-        dfn = data.get("download_filenames") or {}
-        if isinstance(dfn, dict) and dfn:
-            print(f"  download_filenames keys: {list(dfn.keys())}")
 
     # Full JSON
     print(f"\n{G}═══ Full Data ═══{X}")

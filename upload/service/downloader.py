@@ -1,11 +1,14 @@
 import os
 import subprocess
 import logging
+import threading
 from typing import Optional
 from django.conf import settings
 from .aria2c_config import build_aria2c_command, DOWNLOAD_TIMEOUT
 
 logger = logging.getLogger(__name__)
+_DOWNLOAD_NAME_LOCK = threading.Lock()
+_RESERVED_DOWNLOAD_PATHS: set[str] = set()
 
 
 class Downloader:
@@ -23,13 +26,13 @@ class Downloader:
         download_dir = os.path.join(settings.DOWNLOADS_DIR, sub_folder) if sub_folder else str(settings.DOWNLOADS_DIR)
         os.makedirs(download_dir, exist_ok=True)
 
-        expected_file_path = os.path.join(download_dir, filename)
+        expected_file_path = Downloader._reserve_download_path(download_dir, filename)
 
         try:
-            logger.info(f"Starting download: {filename}")
+            logger.info(f"Starting download: {os.path.basename(expected_file_path)}")
             
             # Build command from centralized config
-            cmd = build_aria2c_command(url, download_dir, filename)
+            cmd = build_aria2c_command(url, download_dir, os.path.basename(expected_file_path))
 
             # Run aria2c
             result = subprocess.run(
@@ -41,25 +44,30 @@ class Downloader:
             )
 
             if result.returncode != 0:
-                logger.error(f"aria2c error for {filename}: {result.stderr}")
+                logger.error(f"aria2c error for {os.path.basename(expected_file_path)}: {result.stderr}")
             
             # Verify download
             if os.path.exists(expected_file_path) and os.path.getsize(expected_file_path) > 0:
-                logger.info(f"Download finished: {filename} ({os.path.getsize(expected_file_path) / (1024*1024):.1f} MB)")
+                logger.info(
+                    f"Download finished: {os.path.basename(expected_file_path)} "
+                    f"({os.path.getsize(expected_file_path) / (1024*1024):.1f} MB)"
+                )
                 return expected_file_path
             else:
-                logger.error(f"Download failed or empty file: {filename}")
+                logger.error(f"Download failed or empty file: {os.path.basename(expected_file_path)}")
                 Downloader._cleanup(expected_file_path)
                 return None
 
         except subprocess.TimeoutExpired:
-            logger.error(f"Download timed out: {filename}")
+            logger.error(f"Download timed out: {os.path.basename(expected_file_path)}")
             Downloader._cleanup(expected_file_path)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error downloading {filename}: {e}")
+            logger.error(f"Unexpected error downloading {os.path.basename(expected_file_path)}: {e}")
             Downloader._cleanup(expected_file_path)
             return None
+        finally:
+            Downloader._release_reserved_path(expected_file_path)
 
     @staticmethod
     def download_all_movie(download_links: dict, filenames: dict, main_title: str) -> dict:
@@ -168,3 +176,26 @@ class Downloader:
                 logger.debug(f"Cleaned up: {file_path}")
         except Exception:
             pass
+
+    @staticmethod
+    def _reserve_download_path(download_dir: str, filename: str) -> str:
+        """
+        Reserve a collision-free local path for a download.
+        Uses `name (1).ext` style to prevent parallel overwrite in the same folder.
+        """
+        stem, ext = os.path.splitext(filename)
+        attempt = 0
+        with _DOWNLOAD_NAME_LOCK:
+            while True:
+                candidate_name = filename if attempt == 0 else f"{stem} ({attempt}){ext}"
+                candidate_path = os.path.join(download_dir, candidate_name)
+                reservation_key = os.path.normcase(os.path.abspath(candidate_path))
+                if reservation_key not in _RESERVED_DOWNLOAD_PATHS and not os.path.exists(candidate_path):
+                    _RESERVED_DOWNLOAD_PATHS.add(reservation_key)
+                    return candidate_path
+                attempt += 1
+
+    @staticmethod
+    def _release_reserved_path(file_path: str) -> None:
+        with _DOWNLOAD_NAME_LOCK:
+            _RESERVED_DOWNLOAD_PATHS.discard(os.path.normcase(os.path.abspath(file_path)))

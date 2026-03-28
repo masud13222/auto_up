@@ -144,11 +144,27 @@ def _get_existing_resolutions(task: MediaTask) -> list:
 
     dl = result.get("download_links", {})
     if dl:
-        return sorted(k for k, v in dl.items() if v)
+        return sorted(
+            {
+                str(k).strip().lower()
+                for k, entries in dl.items()
+                if any(
+                    str((entry or {}).get("u") or "").strip()
+                    for entry in (entries if isinstance(entries, list) else [])
+                )
+            }
+        )
 
     resolutions = set()
     for season in result.get("seasons", []):
         for item in season.get("download_items", []):
-            resolutions.update(k for k, v in item.get("resolutions", {}).items() if v)
+            resolutions.update(
+                str(k).strip().lower()
+                for k, entries in item.get("resolutions", {}).items()
+                if any(
+                    str((entry or {}).get("u") or "").strip()
+                    for entry in (entries if isinstance(entries, list) else [])
+                )
+            )
 
     return sorted(resolutions)

@@ -185,8 +185,14 @@ class DriveUploader:
             raise
 
     @staticmethod
-    def _upload_file(service, file_path: str, folder_id: str, max_retries: int = 5) -> str:
-        filename = os.path.basename(file_path)
+    def _upload_file(
+        service,
+        file_path: str,
+        folder_id: str,
+        max_retries: int = 5,
+        upload_name: str | None = None,
+    ) -> str:
+        filename = (upload_name or os.path.basename(file_path)).strip()
         file_size = os.path.getsize(file_path)
         logger.info(f"Uploading: {filename} ({file_size / (1024 * 1024):.1f} MB)")
 
@@ -270,20 +276,25 @@ class DriveUploader:
         return web_link
 
     @staticmethod
-    def upload_file_with_retry(file_path: str, folder_id: str, max_attempts: int = 3) -> str:
+    def upload_file_with_retry(
+        file_path: str,
+        folder_id: str,
+        max_attempts: int = 3,
+        upload_name: str | None = None,
+    ) -> str:
         """
         Full upload retry wrapper:
         - rebuild Drive service on each attempt
         - retry credential/service creation failures
         - retry upload failures that occur before or during resumable upload
         """
-        filename = os.path.basename(file_path)
+        filename = (upload_name or os.path.basename(file_path)).strip()
         last_error = None
 
         for attempt in range(1, max_attempts + 1):
             try:
                 service = DriveUploader._get_drive_service()
-                return DriveUploader._upload_file(service, file_path, folder_id)
+                return DriveUploader._upload_file(service, file_path, folder_id, upload_name=upload_name)
             except Exception as e:
                 last_error = e
                 if attempt >= max_attempts:

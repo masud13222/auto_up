@@ -85,17 +85,13 @@ def filter_movie_data_for_upload_settings(
     extra_above: bool,
     max_extra: int,
 ) -> dict[str, Any]:
-    """Remove download_links / download_filenames keys disallowed by settings."""
+    """Remove movie download_links keys disallowed by settings."""
     if not isinstance(data, dict):
         return data
 
     dl = data.get("download_links")
     if not isinstance(dl, dict) or not dl:
         return data
-
-    dfn = data.get("download_filenames")
-    if not isinstance(dfn, dict):
-        dfn = {}
 
     ordered = list(dl.keys())
     allowed_by_tier = [k for k in ordered if _quality_allowed(k, extra_below=extra_below, extra_above=extra_above)]
@@ -118,11 +114,9 @@ def filter_movie_data_for_upload_settings(
         )
 
     new_dl = {k: v for k, v in dl.items() if k in allowed_set}
-    new_dfn = {k: v for k, v in dfn.items() if k in allowed_set}
-
     out = dict(data)
     out["download_links"] = new_dl
-    out["download_filenames"] = new_dfn
+    out.pop("download_filenames", None)
     return out
 
 
@@ -158,9 +152,6 @@ def filter_tvshow_data_for_upload_settings(
             if not isinstance(res, dict) or not res:
                 new_items.append(item)
                 continue
-            dfn = item.get("download_filenames")
-            if not isinstance(dfn, dict):
-                dfn = {}
             ordered = list(res.keys())
             allowed_by_tier = [
                 k
@@ -189,7 +180,7 @@ def filter_tvshow_data_for_upload_settings(
                 )
             it = dict(item)
             it["resolutions"] = {k: v for k, v in res.items() if k in allowed_set}
-            it["download_filenames"] = {k: v for k, v in dfn.items() if k in allowed_set}
+            it.pop("download_filenames", None)
             new_items.append(it)
         s2 = dict(season)
         s2["download_items"] = new_items

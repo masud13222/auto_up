@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 _JSON_FOR_DB = {"indent": 2, "ensure_ascii": False}
 
 
+def _entry_language_key(entry: dict) -> str:
+    return str((entry or {}).get("l") or "").strip().lower()
+
+
+def _entry_filename_key(entry: dict) -> str:
+    return str((entry or {}).get("f") or "").strip().lower()
+
+
+def _entry_copy(entry: dict, *, link: str) -> dict:
+    out = {
+        "u": link,
+        "l": str(entry.get("l") or "").strip(),
+        "f": str(entry.get("f") or "").strip(),
+    }
+    if isinstance(entry.get("s"), str) and entry["s"].strip():
+        out["s"] = entry["s"].strip()
+    return out
+
+
 def _save_duplicate_usage_snapshot_to_latest_usage(
     *,
     dup_result: dict | None,
@@ -155,34 +174,47 @@ def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
     # Build lookup of existing drive links
     existing_links = {}
     if existing_result:
-        for q, link in existing_result.get("download_links", {}).items():
-            if is_drive_link(link):
-                existing_links[q] = link
+        for resolution, entries in existing_result.get("download_links", {}).items():
+            for entry in entries if isinstance(entries, list) else []:
+                drive_link = str(entry.get("u") or "").strip()
+                if is_drive_link(drive_link):
+                    existing_links[(resolution, _entry_language_key(entry), _entry_filename_key(entry))] = drive_link
 
     download_links = movie_data.get("download_links", {})
     if download_links:
         skipped = 0
         resolved = 0
         logger.info("Resolving movie download links...")
-        pending: list[tuple[str, str]] = []
-        for quality, url in list(download_links.items()):
-            if quality in existing_links:
-                movie_data["download_links"][quality] = existing_links[quality]
-                skipped += 1
-                logger.debug(f"Skipping {quality}: already has Drive link")
+        pending: list[tuple[str, int, str]] = []
+        for resolution, entries in list(download_links.items()):
+            if not isinstance(entries, list):
                 continue
-            if url:
-                pending.append((quality, url))
-                logger.debug(f"Queued {quality}: {url}")
+            updated_entries = []
+            for idx, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                url = str(entry.get("u") or "").strip()
+                entry_key = (resolution, _entry_language_key(entry), _entry_filename_key(entry))
+                if entry_key in existing_links:
+                    updated_entries.append(_entry_copy(entry, link=existing_links[entry_key]))
+                    skipped += 1
+                    logger.debug("Skipping %s [%s]: already has Drive link", resolution, entry.get("l"))
+                    continue
+                updated_entries.append(dict(entry))
+                if url:
+                    pending.append((resolution, idx, url))
+                    logger.debug("Queued %s [%s]: %s", resolution, entry.get("l"), url)
+            movie_data["download_links"][resolution] = updated_entries
         if pending:
-            urls = [u for _, u in pending]
+            urls = [u for _, _, u in pending]
             batch = WebScrapeService.get_urls_parallel(urls)
-            for (quality, url), res in zip(pending, batch):
+            for (resolution, idx, url), res in zip(pending, batch):
+                current = movie_data["download_links"][resolution][idx]
                 if isinstance(res, Exception):
-                    logger.error(f"Resolving movie {quality} ({url}): {res}", exc_info=res)
-                    movie_data["download_links"][quality] = None
+                    logger.error(f"Resolving movie {resolution} ({url}): {res}", exc_info=res)
+                    movie_data["download_links"][resolution][idx] = _entry_copy(current, link="")
                 else:
-                    movie_data["download_links"][quality] = res
+                    movie_data["download_links"][resolution][idx] = _entry_copy(current, link=str(res).strip())
                 resolved += 1
         if skipped:
             logger.info(f"Link resolution: {resolved} resolved, {skipped} skipped (already uploaded)")
@@ -215,9 +247,13 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
             snum = season.get("season_number")
             for item in season.get("download_items", []):
                 key = tv_item_key(item)
-                for q, link in item.get("resolutions", {}).items():
-                    if is_drive_link(link):
-                        existing_links[(snum, key, q)] = link
+                for resolution, entries in item.get("resolutions", {}).items():
+                    for entry in entries if isinstance(entries, list) else []:
+                        drive_link = str(entry.get("u") or "").strip()
+                        if is_drive_link(drive_link):
+                            existing_links[
+                                (snum, key, resolution, _entry_language_key(entry), _entry_filename_key(entry))
+                            ] = drive_link
 
     total_skipped = 0
     total_resolved = 0
@@ -235,45 +271,84 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
             resolutions = item.get("resolutions", {})
 
             # Check if ALL resolutions for this item already have drive links
-            all_uploaded = all(
-                (season_num, item_key, q) in existing_links
-                for q in resolutions
-            ) if resolutions and existing_links else False
+            all_uploaded = (
+                all(
+                    (
+                        season_num,
+                        item_key,
+                        resolution,
+                        _entry_language_key(entry),
+                        _entry_filename_key(entry),
+                    ) in existing_links
+                    for resolution, entries in resolutions.items()
+                    for entry in (entries if isinstance(entries, list) else [])
+                )
+                if resolutions and existing_links
+                else False
+            )
 
             if all_uploaded:
                 # Restore all drive links from existing result
-                for q in list(resolutions.keys()):
-                    link = existing_links.get((season_num, item_key, q))
-                    if link:
-                        item["resolutions"][q] = link
-                        total_skipped += 1
+                for resolution, entries in list(resolutions.items()):
+                    restored = []
+                    for entry in entries if isinstance(entries, list) else []:
+                        link = existing_links.get(
+                            (season_num, item_key, resolution, _entry_language_key(entry), _entry_filename_key(entry))
+                        )
+                        restored.append(_entry_copy(entry, link=link or ""))
+                        if link:
+                            total_skipped += 1
+                    item["resolutions"][resolution] = restored
                 logger.debug(f"Skipping S{season_num} {item_label}: all resolutions already uploaded")
                 if on_item_resolved:
                     on_item_resolved(tvshow_data)
                 continue
 
-            pending: list[tuple[str, str]] = []
-            for quality, url in list(resolutions.items()):
-                existing_link = existing_links.get((season_num, item_key, quality))
-                if existing_link:
-                    item["resolutions"][quality] = existing_link
-                    total_skipped += 1
-                    logger.debug(f"Skipping S{season_num} {item_label} {quality}: already has Drive link")
+            pending: list[tuple[str, int, str]] = []
+            for resolution, entries in list(resolutions.items()):
+                if not isinstance(entries, list):
                     continue
-                if url:
-                    pending.append((quality, url))
-                    logger.debug(f"Queued S{season_num} {item_label} {quality}: {url}")
+                updated_entries = []
+                for idx, entry in enumerate(entries):
+                    url = str(entry.get("u") or "").strip()
+                    existing_link = existing_links.get(
+                        (season_num, item_key, resolution, _entry_language_key(entry), _entry_filename_key(entry))
+                    )
+                    if existing_link:
+                        updated_entries.append(_entry_copy(entry, link=existing_link))
+                        total_skipped += 1
+                        logger.debug(
+                            "Skipping S%s %s %s [%s]: already has Drive link",
+                            season_num,
+                            item_label,
+                            resolution,
+                            entry.get("l"),
+                        )
+                        continue
+                    updated_entries.append(dict(entry))
+                    if url:
+                        pending.append((resolution, idx, url))
+                        logger.debug(
+                            "Queued S%s %s %s [%s]: %s",
+                            season_num,
+                            item_label,
+                            resolution,
+                            entry.get("l"),
+                            url,
+                        )
+                item["resolutions"][resolution] = updated_entries
             if pending:
-                batch = WebScrapeService.get_urls_parallel([u for _, u in pending])
-                for (quality, url), res in zip(pending, batch):
+                batch = WebScrapeService.get_urls_parallel([u for _, _, u in pending])
+                for (resolution, idx, url), res in zip(pending, batch):
+                    current = item["resolutions"][resolution][idx]
                     if isinstance(res, Exception):
                         logger.error(
-                            f"Resolving S{season_num} {item_label} {quality} ({url}): {res}",
+                            f"Resolving S{season_num} {item_label} {resolution} ({url}): {res}",
                             exc_info=res,
                         )
-                        item["resolutions"][quality] = None
+                        item["resolutions"][resolution][idx] = _entry_copy(current, link="")
                     else:
-                        item["resolutions"][quality] = res
+                        item["resolutions"][resolution][idx] = _entry_copy(current, link=str(res).strip())
                     total_resolved += 1
 
             # Callback after each item is fully resolved

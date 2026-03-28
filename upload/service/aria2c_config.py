@@ -17,7 +17,7 @@ ARIA2C_CONFIG = {
     "console_log_level": "error",
     "summary_interval": 0,
     "file_allocation": "none",
-    "allow_overwrite": True,
+    "allow_overwrite": False,
 }
 
 # Timeout for subprocess (in seconds) — 30 minutes

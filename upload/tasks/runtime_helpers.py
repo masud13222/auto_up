@@ -22,6 +22,29 @@ logger = logging.getLogger(__name__)
 _FLIXBD_LLM_MAX_RESULTS = 3
 
 
+def _entry_language_key(entry: dict) -> str:
+    return str((entry or {}).get("l") or "").strip().lower()
+
+
+def _entry_link(entry: dict) -> str:
+    return str((entry or {}).get("u") or "").strip()
+
+
+def _entry_filename(entry: dict) -> str:
+    return str((entry or {}).get("f") or "").strip()
+
+
+def _entry_copy(entry: dict, *, link: str) -> dict:
+    out = {
+        "u": link,
+        "l": str(entry.get("l") or "").strip(),
+        "f": _entry_filename(entry),
+    }
+    if isinstance(entry.get("s"), str) and entry["s"].strip():
+        out["s"] = entry["s"].strip()
+    return out
+
+
 def normalize_flixbd_resolution_keys(qualities: list) -> list[str]:
     """
     Map API strings like 'HD 720p, HD 1080p' to canonical keys ['720p', '1080p'] for LLM comparison
@@ -51,7 +74,12 @@ def result_strip_non_drive_download_links(data: dict) -> dict:
     out = dict(data)
     dl = out.get("download_links")
     if isinstance(dl, dict):
-        out["download_links"] = {k: v for k, v in dl.items() if is_drive_link(v)}
+        out["download_links"] = {
+            k: [entry for entry in (entries if isinstance(entries, list) else []) if is_drive_link(_entry_link(entry))]
+            for k, entries in dl.items()
+        }
+        out["download_links"] = {k: v for k, v in out["download_links"].items() if v}
+    out.pop("download_filenames", None)
     return out
 
 
@@ -222,22 +250,24 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
     old_dl = old_result.get("download_links", {})
     new_dl = new_data.get("download_links", {})
     if old_dl and new_dl:
-        for res, link in old_dl.items():
-            if is_drive_link(link) and res in new_dl:
-                new_dl[res] = link
-                logger.debug("Preserved existing drive link for %s", res)
+        for res, old_entries in old_dl.items():
+            if res not in new_dl:
+                continue
+            existing_by_file = {
+                (_entry_language_key(entry), _entry_filename(entry)): entry
+                for entry in (old_entries if isinstance(old_entries, list) else [])
+                if is_drive_link(_entry_link(entry))
+            }
+            merged_entries = []
+            for cur in new_dl.get(res) or []:
+                old_entry = existing_by_file.get((_entry_language_key(cur), _entry_filename(cur)))
+                if old_entry:
+                    merged_entries.append(_entry_copy(cur, link=_entry_link(old_entry)))
+                    logger.debug("Preserved existing drive link for %s [%s] %s", res, cur.get("l"), _entry_filename(cur))
+                else:
+                    merged_entries.append(cur)
+            new_dl[res] = merged_entries
         new_data["download_links"] = new_dl
-
-    old_fn = old_result.get("download_filenames")
-    if isinstance(old_fn, dict) and old_fn and new_dl:
-        merged_fn = dict(new_data.get("download_filenames") or {})
-        for res in new_dl:
-            cur = merged_fn.get(res)
-            if not (isinstance(cur, str) and cur.strip()) and res in old_fn:
-                ov = old_fn.get(res)
-                if isinstance(ov, str) and ov.strip():
-                    merged_fn[res] = ov.strip()
-        new_data["download_filenames"] = merged_fn
 
     old_seasons = {s.get("season_number"): s for s in old_result.get("seasons", [])}
     for new_season in new_data.get("seasons", []):
@@ -247,11 +277,9 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
             continue
 
         old_items = {}
-        old_items_full = {}
         for item in old_season.get("download_items", []):
             key = tv_item_key(item)
             old_items[key] = item.get("resolutions", {})
-            old_items_full[key] = item
 
         for new_item in new_season.get("download_items", []):
             label = new_item.get("label", "")
@@ -259,24 +287,33 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
             old_res = old_items.get(key, {})
             new_res = new_item.get("resolutions", {})
 
-            for res, link in old_res.items():
-                if is_drive_link(link) and res in new_res:
-                    new_res[res] = link
-                    logger.debug("Preserved existing drive link for S%s %s %s", snum, label, res)
+            for res, old_entries in old_res.items():
+                if res not in new_res:
+                    continue
+                existing_by_file = {
+                    (_entry_language_key(entry), _entry_filename(entry)): entry
+                    for entry in (old_entries if isinstance(old_entries, list) else [])
+                    if is_drive_link(_entry_link(entry))
+                }
+                merged_entries = []
+                for cur in new_res.get(res) or []:
+                    old_entry = existing_by_file.get((_entry_language_key(cur), _entry_filename(cur)))
+                    if old_entry:
+                        merged_entries.append(_entry_copy(cur, link=_entry_link(old_entry)))
+                        logger.debug(
+                            "Preserved existing drive link for S%s %s %s [%s] %s",
+                            snum,
+                            label,
+                            res,
+                            cur.get("l"),
+                            _entry_filename(cur),
+                        )
+                    else:
+                        merged_entries.append(cur)
+                new_res[res] = merged_entries
 
             new_item["resolutions"] = new_res
-
-            old_full = old_items_full.get(key) or {}
-            old_dfn = old_full.get("download_filenames")
-            if isinstance(old_dfn, dict) and old_dfn and new_res:
-                merged_dfn = dict(new_item.get("download_filenames") or {})
-                for res in new_res:
-                    cur = merged_dfn.get(res)
-                    if not (isinstance(cur, str) and cur.strip()) and res in old_dfn:
-                        ov = old_dfn.get(res)
-                        if isinstance(ov, str) and ov.strip():
-                            merged_dfn[res] = ov.strip()
-                new_item["download_filenames"] = merged_dfn
+            new_item.pop("download_filenames", None)
 
     old_ss = old_result.get("screen_shots_url")
     if isinstance(old_ss, list) and old_ss:
@@ -291,14 +328,16 @@ def has_drive_links(result: dict) -> bool:
     """Check if a result dict actually contains any Google Drive upload links."""
     if not result:
         return False
-    for link in result.get("download_links", {}).values():
-        if is_drive_link(link):
-            return True
+    for entries in result.get("download_links", {}).values():
+        for entry in entries if isinstance(entries, list) else []:
+            if is_drive_link(_entry_link(entry)):
+                return True
     for season in result.get("seasons", []):
         for item in season.get("download_items", []):
-            for res_val in item.get("resolutions", {}).values():
-                if is_drive_link(res_val):
-                    return True
+            for entries in item.get("resolutions", {}).values():
+                for entry in entries if isinstance(entries, list) else []:
+                    if is_drive_link(_entry_link(entry)):
+                        return True
     return False
 
 
@@ -311,29 +350,24 @@ def clean_result_keep_drive_links(result: dict) -> dict:
 
     if "download_links" in cleaned:
         cleaned["download_links"] = {
-            k: v for k, v in cleaned["download_links"].items() if is_drive_link(v)
+            k: [entry for entry in (entries if isinstance(entries, list) else []) if is_drive_link(_entry_link(entry))]
+            for k, entries in cleaned["download_links"].items()
         }
-        dfn = cleaned.get("download_filenames")
-        if isinstance(dfn, dict):
-            if cleaned["download_links"]:
-                cleaned["download_filenames"] = {
-                    k: v for k, v in dfn.items() if k in cleaned["download_links"]
-                }
-            else:
-                cleaned["download_filenames"] = {}
+        cleaned["download_links"] = {k: v for k, v in cleaned["download_links"].items() if v}
+        cleaned.pop("download_filenames", None)
 
     for season in cleaned.get("seasons", []):
         items_to_keep = []
         for item in season.get("download_items", []):
             res = item.get("resolutions", {})
-            cleaned_res = {k: v for k, v in res.items() if is_drive_link(v)}
+            cleaned_res = {
+                k: [entry for entry in (entries if isinstance(entries, list) else []) if is_drive_link(_entry_link(entry))]
+                for k, entries in res.items()
+            }
+            cleaned_res = {k: v for k, v in cleaned_res.items() if v}
             if cleaned_res:
                 item["resolutions"] = cleaned_res
-                dfn = item.get("download_filenames")
-                if isinstance(dfn, dict):
-                    item["download_filenames"] = {
-                        k: v for k, v in dfn.items() if k in cleaned_res
-                    }
+                item.pop("download_filenames", None)
                 items_to_keep.append(item)
         season["download_items"] = items_to_keep
 
@@ -366,7 +400,13 @@ def build_db_candidate(task: MediaTask) -> dict:
                 item_type = item.get("type")
                 episode_range = item.get("episode_range")
                 res = item.get("resolutions", {})
-                ep_res = sorted(k for k, v in res.items() if v)
+                ep_res = sorted(
+                    {
+                        str(k).strip().lower()
+                        for k, entries in res.items()
+                        if any(_entry_link(entry) for entry in (entries if isinstance(entries, list) else []))
+                    }
+                )
                 episodes.append(
                     f"S{season_num} {item_type} {episode_range or '-'} {label}: {','.join(ep_res)}"
                 )

@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from upload.service.downloader import Downloader
@@ -13,35 +14,66 @@ from django.conf import settings
 from .helpers import save_task, is_drive_link, validate_llm_download_basename
 
 logger = logging.getLogger(__name__)
+_RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
 
 
-def _movie_download_filenames_from_llm(movie_data: dict) -> dict:
-    """Require LLM `download_filenames`; validate keys match download_links and basenames are safe."""
+def _normalized_resolution_key(value) -> str:
+    text = str(value or "").strip().lower()
+    if not _RESOLUTION_KEY_RE.fullmatch(text):
+        raise ValueError(f"Invalid movie resolution key: {value!r}")
+    return text
+
+
+def _movie_entry_label(resolution: str, entry: dict) -> str:
+    return f"{resolution} [{entry['l']}]"
+
+
+def _movie_entry_id(resolution: str, entry: dict) -> tuple[str, str, str]:
+    return (resolution, entry["l"], entry["f"])
+
+
+def _movie_download_entries_from_llm(movie_data: dict) -> dict:
+    """Require pure-resolution keys and file-entry lists from LLM output."""
     download_links = movie_data.get("download_links") or {}
-    raw = movie_data.get("download_filenames")
-    if not isinstance(raw, dict):
-        raise ValueError(
-            "Movie `download_filenames` must be a JSON object with the same keys as `download_links`"
-        )
+    if not isinstance(download_links, dict):
+        raise ValueError("Movie `download_links` must be a JSON object")
     out = {}
-    for q in download_links:
-        ctx = f"Movie download_filenames[{q!r}]"
-        if q not in raw:
-            raise ValueError(
-                f"{ctx}: missing key — must supply one basename per `download_links` key "
-                f"(expected keys: {list(download_links.keys())!r})"
-            )
-        out[q] = validate_llm_download_basename(raw.get(q), context=ctx)
-    extra = set(raw.keys()) - set(download_links.keys())
-    if extra:
-        logger.warning("Movie download_filenames: ignoring extra keys not in download_links: %s", sorted(extra))
-    movie_data["download_filenames"] = out
+    for raw_resolution, raw_entries in download_links.items():
+        resolution = _normalized_resolution_key(raw_resolution)
+        ctx = f"Movie download_links[{raw_resolution!r}]"
+        if not isinstance(raw_entries, list) or not raw_entries:
+            raise ValueError(f"{ctx}: expected a non-empty array of file objects")
+        entries = []
+        for idx, raw_entry in enumerate(raw_entries):
+            entry_ctx = f"{ctx}[{idx}]"
+            if not isinstance(raw_entry, dict):
+                raise ValueError(f"{entry_ctx}: expected object")
+            link = raw_entry.get("u")
+            if not isinstance(link, str) or not link.strip():
+                raise ValueError(f"{entry_ctx}.u: missing or invalid")
+            language = raw_entry.get("l")
+            if not isinstance(language, str) or not language.strip():
+                raise ValueError(f"{entry_ctx}.l: missing or invalid")
+            filename_raw = raw_entry.get("f")
+            if not isinstance(filename_raw, str) or not filename_raw.strip():
+                raise ValueError(f"{entry_ctx}.f: missing or invalid")
+            entry = {
+                "u": link.strip(),
+                "l": " ".join(language.strip().split()),
+                "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
+            }
+            if isinstance(raw_entry.get("s"), str) and raw_entry["s"].strip():
+                entry["s"] = raw_entry["s"].strip()
+            entries.append(entry)
+        out[resolution] = entries
+    movie_data["download_links"] = out
+    movie_data.pop("download_filenames", None)
     return out
 
 
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
     """
-    Movie pipeline: LLM `download_filenames` (validated) -> parallel download + subtitle clean ->
+    Movie pipeline: per-file `download_links` entries (validated) -> parallel download + subtitle clean ->
     optional keyframe screenshots -> parallel Drive upload -> FlixBD publish.
     Skips qualities already on Drive; duplicate update only downloads missing_resolutions.
     """
@@ -63,10 +95,10 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     if not is_dup_update:
         movie_data.pop("screen_shots_url", None)
 
-    # Step 2: Require download_filenames from main extract (no server-side synthesis)
-    logger.info(f"Validating download_filenames for movie: {title}")
+    # Step 2: Require file-wise download entries from main extract
+    logger.info(f"Validating download links for movie: {title}")
     try:
-        filenames = _movie_download_filenames_from_llm(movie_data)
+        download_links = _movie_download_entries_from_llm(movie_data)
     except ValueError as e:
         msg = str(e)
         logger.error("Movie pipeline: %s", msg)
@@ -88,8 +120,8 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     )
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
-    drive_links = {}
-    # {quality: "2.15 GB"} -- populated from actual local file before deletion
+    drive_links: dict[str, list[dict]] = {}
+    # {(resolution, language, filename): "2.15 GB"} keyed from compact entry fields (l/f)
     file_sizes = {}
 
     # Duplicate "update": LLM lists only qualities missing on FlixBD/DB — skip re-downloading the rest.
@@ -103,70 +135,76 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 f"(others already on target site)"
             )
 
-    def _download_and_clean(quality, urls, fname):
+    def _download_and_clean(item):
         """Download + subtitle clean only (runs in thread)."""
         from upload.service.flixbd_client import format_file_size
-        url_list = urls if isinstance(urls, list) else [urls]
+        resolution = item["resolution"]
+        entry = item["entry"]
+        label = _movie_entry_label(resolution, entry)
+        url_list = [entry["u"]]
 
         file_path = None
         for url in url_list:
-            file_path = Downloader.download(url, fname, sub_folder=safe_title)
+            file_path = Downloader.download(url, entry["f"], sub_folder=safe_title)
             if file_path:
                 break
 
         if not file_path:
-            logger.warning(f"Could not download {quality}")
-            return quality, None, None
+            logger.warning(f"Could not download {label}")
+            return item, None, None
 
         try:
             raw_size = os.path.getsize(file_path)
             size_str = format_file_size(raw_size)
-            logger.debug(f"File size for {quality}: {size_str}")
+            logger.debug(f"File size for {label}: {size_str}")
         except OSError:
             size_str = None
 
-        logger.info(f"Cleaning subtitles for {quality}")
-        cleaned = process_downloaded_files({quality: file_path})
-        file_path = cleaned.get(quality, file_path)
-        return quality, file_path, size_str
+        logger.info(f"Cleaning subtitles for {label}")
+        cleaned = process_downloaded_files({label: file_path})
+        file_path = cleaned.get(label, file_path)
+        return item, file_path, size_str
 
-    def _upload_and_delete(quality, file_path):
+    def _upload_and_delete(item, file_path):
         """Upload to Drive with retries; delete local after final outcome."""
         if not file_path or not os.path.exists(file_path):
-            return quality, None
-        logger.info(f"Uploading {quality} to Drive")
+            return item, None
+        logger.info("Uploading %s to Drive", _movie_entry_label(item["resolution"], item["entry"]))
         try:
-            link = DriveUploader.upload_file_with_retry(file_path, movie_folder_id)
+            link = DriveUploader.upload_file_with_retry(
+                file_path,
+                movie_folder_id,
+                upload_name=item["entry"]["f"],
+            )
         except Exception as e:
-            logger.error(f"Upload failed for {quality}: {e}")
+            logger.error("Upload failed for %s: %s", _movie_entry_label(item["resolution"], item["entry"]), e)
             link = None
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
-        return quality, link
+        return item, link
 
-    # Collect downloadable qualities (skip already-uploaded ones)
-    to_process = []
-    for quality in download_links:
-        urls = download_links.get(quality)
-        fname = filenames.get(quality)
-        qkey = str(quality)
-
-        # Skip if already uploaded to Drive (resume support)
-        if is_drive_link(urls):
-            logger.info(f"Skipping {quality}: already uploaded to Drive")
-            drive_links[quality] = urls
-            continue
-
-        if missing_only is not None and qkey.lower() not in missing_only:
-            logger.info(
-                f"Skipping {quality}: duplicate update — not in missing_resolutions "
-                f"(already published on target site)"
-            )
-            continue
-
-        if urls and fname:
-            to_process.append((quality, urls, fname))
+    # Collect downloadable files (skip already-uploaded ones)
+    to_process: list[dict] = []
+    uploaded_entry_ids: set[tuple[str, str, str]] = set()
+    for resolution, entries in download_links.items():
+        kept_uploaded = []
+        for entry in entries:
+            entry_id = _movie_entry_id(resolution, entry)
+            if is_drive_link(entry["u"]):
+                logger.info("Skipping %s: already uploaded to Drive", _movie_entry_label(resolution, entry))
+                kept_uploaded.append(dict(entry))
+                uploaded_entry_ids.add(entry_id)
+                continue
+            if missing_only is not None and resolution.lower() not in missing_only:
+                logger.info(
+                    "Skipping %s: duplicate update — not in missing_resolutions (already published on target site)",
+                    _movie_entry_label(resolution, entry),
+                )
+                continue
+            to_process.append({"resolution": resolution, "entry": dict(entry)})
+        if kept_uploaded:
+            drive_links[resolution] = kept_uploaded
 
     if not to_process:
         if drive_links:
@@ -188,17 +226,20 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         return json.dumps({"status": "error", "message": "No valid links found"})
 
     # Step 4a: Parallel download + subtitle clean
-    logger.info(f"Starting parallel download+clean: {[q for q, _, _ in to_process]}")
+    logger.info(
+        "Starting parallel download+clean: %s",
+        [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
+    )
     with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
         futures = {
-            executor.submit(_download_and_clean, q, u, f): q
-            for q, u, f in to_process
+            executor.submit(_download_and_clean, item): _movie_entry_label(item["resolution"], item["entry"])
+            for item in to_process
         }
         results = []
         for future in as_completed(futures):
             results.append(future.result())
 
-    paths_ok = [(q, p, s) for q, p, s in results if p]
+    paths_ok = [(item, p, s) for item, p, s in results if p]
     if paths_ok and not is_dup_update:
         _, best_path, _ = max(paths_ok, key=lambda x: os.path.getsize(x[1]))
         ss_urls = capture_screenshots_for_publish(best_path, f"{safe_title}-ss")
@@ -216,24 +257,32 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         logger.info("Duplicate update: skipping screenshot capture (keeping existing screen_shots_url)")
 
     # Step 4b: Parallel upload + delete
-    logger.info(f"Starting parallel upload: {[q for q, _, _ in to_process]}")
+    logger.info(
+        "Starting parallel upload: %s",
+        [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
+    )
     with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
         futures = {
-            executor.submit(_upload_and_delete, q, p): q
-            for q, p, s in results
+            executor.submit(_upload_and_delete, item, p): _movie_entry_label(item["resolution"], item["entry"])
+            for item, p, s in results
             if p
         }
 
         for future in as_completed(futures):
-            quality, link = future.result()
-            size_str = next((s for q, p, s in results if q == quality), None)
+            item, link = future.result()
+            size_str = next((s for processed_item, p, s in results if processed_item == item), None)
             if link:
-                drive_links[quality] = link
+                resolution = item["resolution"]
+                src_entry = dict(item["entry"])
+                src_entry["u"] = link
                 if size_str:
-                    file_sizes[quality] = size_str
+                    src_entry["s"] = size_str
+                    file_sizes[_movie_entry_id(resolution, src_entry)] = size_str
+                drive_links.setdefault(resolution, []).append(src_entry)
+                uploaded_entry_ids.add(_movie_entry_id(resolution, src_entry))
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)
-                logger.info(f"Saved Drive link for {quality}")
+                logger.info("Saved Drive link for %s", _movie_entry_label(resolution, src_entry))
 
     # Clean empty folder
     movie_dir = os.path.join(settings.DOWNLOADS_DIR, safe_title)
@@ -248,7 +297,11 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No files could be downloaded or uploaded', result=movie_data)
         return json.dumps({"status": "error", "message": "Pipeline failed"})
 
-    missing_targets = [q for q, _, _ in to_process if q not in drive_links]
+    missing_targets = [
+        _movie_entry_label(item["resolution"], item["entry"])
+        for item in to_process
+        if _movie_entry_id(item["resolution"], item["entry"]) not in uploaded_entry_ids
+    ]
     if missing_targets:
         movie_data["partial_upload"] = True
         movie_data["partial_upload_missing_resolutions"] = missing_targets

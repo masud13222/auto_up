@@ -58,16 +58,22 @@ tvshow_schema = {
                                 },
                                 "resolutions": {
                                     "type": "object",
-                                    "additionalProperties": {"type": "string"},
-                                    "description": "Download URLs per resolution. No watch/stream URLs.",
-                                },
-                                "download_filenames": {
-                                    "type": "object",
-                                    "additionalProperties": {"type": "string"},
-                                    "description": "Basenames per resolution; keys=resolutions keys. No path separators.",
+                                    "additionalProperties": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "u": {"type": "string", "description": "Absolute download URL"},
+                                                "l": {"type": "string", "description": "Language name"},
+                                                "f": {"type": "string", "description": "Basename only"},
+                                            },
+                                            "required": ["u", "l", "f"],
+                                        },
+                                    },
+                                    "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language, f=filename.",
                                 },
                             },
-                            "required": ["type", "label", "resolutions", "download_filenames"],
+                            "required": ["type", "label", "resolutions"],
                         },
                     },
                 },
@@ -97,10 +103,12 @@ Download item types (classify by Markdown section structure — headings, labels
 - single_episode: heading = exactly one episode. Set episode_range (zero-padded).
 Priority: combo > partial > single (never duplicate coverage).
 
-download_filenames (per item): keys=resolutions keys. Basename only (no / \\ :).
-- combo: `Title.Year.S01.Complete.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
-- partial: `Title.Year.S01E01-E08.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
-- single: `Title.Year.S01E05.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
+Each `resolutions` value must be a list like:
+`[{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"},{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}]`
+Do not return a separate `download_filenames` object.
+- combo: `Title.Year.Hindi.S01.Complete.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
+- partial: `Title.Year.Hindi.S01E01-E08.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
+- single: `Title.Year.Hindi.S01E05.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
 Src: NF/AMZN/DSNP/JC/ZEE5 from title, else omit. Archives → match ext. Default .mkv.
 
 Schema: {json.dumps(tvshow_schema, **_COMPACT)}"""
