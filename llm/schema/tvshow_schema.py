@@ -66,7 +66,7 @@ tvshow_schema = {
                                         "items": {
                                             "type": "object",
                                             "properties": {
-                                                "u": {"type": "string", "description": "Absolute download URL"},
+                                                "u": {"type": "string", "description": "Absolute download URL only; never watch/stream/player/watch-online URL"},
                                                 "l": {"type": "string", "description": "Language name"},
                                                 "f": {"type": "string", "description": "Basename only"},
                                             },
@@ -105,6 +105,7 @@ Download item types (classify by Markdown section structure — headings, labels
 - partial_combo: heading has episode RANGE (Ep X-Y). Set episode_range.
 - single_episode: heading = exactly one episode. Set episode_range (zero-padded).
 Priority: combo > partial > single (never duplicate coverage).
+Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
 
 Example multi-season shape:
 `"seasons":[{{"season_number":1,"download_items":[...] }},{{"season_number":2,"download_items":[...]}}]`
