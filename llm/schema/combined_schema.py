@@ -220,10 +220,12 @@ Button count does NOT affect type. Never merge separate episodes into range. Nev
 Priority: combo present→only combo. Partial covers range→no singles in that range.
 Multi-season extraction rules:
 - If the page shows multiple explicit season headings/labels, output multiple objects in `data.seasons` with the real `season_number` for each one.
-- Never put Season 02/03/... links inside the Season 01 object.
-- Group each resolution/link under the nearest matching season heading/block in the Markdown.
-- Keep `data.seasons` sorted ascending by `season_number`.
-- `total_seasons` should be the show's real total only when clearly stated by the page/metadata. Do not shrink it to only the extracted season blocks on the current page. Omit if unclear.
+- Create a season object only when that season has its own explicit download block/label/heading in the Markdown. Do not infer seasons from title text, metadata, or `total_seasons` alone.
+- Group each link under the nearest matching season block and use the real `season_number` for that block.
+- If only some seasons have downloadable blocks, return only those seasons.
+- Never mix links from different seasons in one season object. Keep `data.seasons` sorted by `season_number`.
+- `total_seasons` may reflect the show's real total only when clearly stated by the page/metadata. Omit if unclear.
+- If the same logical file repeats (same season, item/range, language, quality, and filename), treat it as mirror links for one file and emit only one entry with one preferred URL.
 {dup_section}
 ## Output:
 {{"content_type":"movie" or "tvshow","data":{{...}}{',"duplicate_check":{{...}}' if has_dup else ''}}}
