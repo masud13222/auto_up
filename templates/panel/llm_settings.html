@@ -62,7 +62,7 @@
                         </form>
                         <button
                             type="button"
-                            @click="editConfig({{ config.pk }}, '{{ config.name|escapejs }}', '{{ config.sdk }}', '{{ config.base_url|escapejs }}', '{{ config.api_key|escapejs }}', '{{ config.model_name|escapejs }}', '{{ config.max_output_tokens|escapejs }}')"
+                            @click="editConfig({{ config.pk }}, '{{ config.name|escapejs }}', '{{ config.sdk }}', '{{ config.base_url|escapejs }}', '{{ config.model_name|escapejs }}', '{{ config.max_output_tokens|escapejs }}')"
                             class="text-[10px] text-slate-400 hover:text-white bg-[#161616] border border-[#1e1e1e] px-2.5 py-1.5 rounded-xl transition-colors"
                         >
                             Edit
@@ -126,6 +126,7 @@
                         <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">API Key</span>
                         <input type="password" name="api_key" x-model="form.api_key" placeholder="sk-..."
                                class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm font-mono placeholder:text-slate-600">
+                        <span class="mt-1 block text-[10px] text-slate-600" x-show="editMode">Leave blank to keep the current saved key.</span>
                     </label>
                     <label class="block">
                         <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">Model</span>
@@ -164,14 +165,14 @@ document.addEventListener('alpine:init', () => {
         editPk: null,
         form: { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '', max_output_tokens: '' },
 
-        editConfig(pk, name, sdk, baseUrl, apiKey, modelName, maxOut) {
+        editConfig(pk, name, sdk, baseUrl, modelName, maxOut) {
             this.editMode = true;
             this.editPk = pk;
             this.form = {
                 name,
                 sdk,
                 base_url: baseUrl,
-                api_key: apiKey,
+                api_key: '',
                 model_name: modelName,
                 max_output_tokens: maxOut === undefined || maxOut === null ? '' : String(maxOut),
             };

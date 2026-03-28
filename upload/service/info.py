@@ -52,8 +52,9 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
     db_match_candidates: list | None,
     flixbd_results: list | None,
     purpose: str,
+    response_text: str = "",
 ) -> None:
-    """Persist duplicate-check output and prompt context on the latest LLMUsage row."""
+    """Persist duplicate-check output and prompt context on the matching LLMUsage row."""
     has_dup = bool(dup_result)
     has_ctx = bool(db_match_candidates or flixbd_results)
     if not purpose or (not has_dup and not has_ctx):
@@ -62,11 +63,11 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
         from llm.models import LLMUsage
 
         cutoff = timezone.now() - timedelta(seconds=120)
-        row = (
-            LLMUsage.objects.filter(purpose=purpose, created_at__gte=cutoff)
-            .order_by("-pk")
-            .first()
-        )
+        query = LLMUsage.objects.filter(purpose=purpose, created_at__gte=cutoff)
+        body = (response_text or "").strip()
+        if body:
+            query = query.filter(response_text=body)
+        row = query.order_by("-pk").first()
         if not row:
             return
         update_fields = []
@@ -160,6 +161,7 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
             purpose="extract+dup_check",
+            response_text=llm_response,
         )
 
     title = data.get("title", "Unknown")

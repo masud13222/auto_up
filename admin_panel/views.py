@@ -284,7 +284,9 @@ def llm_settings(request):
             config.name = request.POST.get('name', config.name).strip()
             config.sdk = request.POST.get('sdk', config.sdk).strip()
             config.base_url = request.POST.get('base_url', '').strip()
-            config.api_key = request.POST.get('api_key', config.api_key).strip()
+            new_api_key = request.POST.get('api_key', '').strip()
+            if new_api_key:
+                config.api_key = new_api_key
             config.model_name = request.POST.get('model_name', config.model_name).strip()
             config.max_output_tokens = _sanitize_llm_max_output_tokens(
                 request.POST.get('max_output_tokens')
@@ -316,7 +318,7 @@ def llm_settings(request):
 def llm_chat(request):
     from llm.models import LLMConfig
 
-    configs = list(LLMConfig.objects.all().order_by('-is_primary', 'pk'))
+    configs = list(LLMConfig.objects.filter(is_active=True).order_by('-is_primary', 'pk'))
     return render(request, 'panel/llm_chat.html', {
         'configs': configs,
         'chat_bootstrap': _build_llm_chat_bootstrap(request, configs),
@@ -335,9 +337,9 @@ def llm_chat_api(request):
     temperature = _coerce_temperature(request.POST.get("temperature"), default=0.2)
     user_message = str(request.POST.get("user_message") or "").strip()
 
-    config = LLMConfig.objects.filter(pk=config_id).first()
+    config = LLMConfig.objects.filter(pk=config_id, is_active=True).first()
     if config is None:
-        return JsonResponse({"error": "Please choose a valid LLM config first."}, status=400)
+        return JsonResponse({"error": "Please choose an active LLM config first."}, status=400)
 
     request.session[_LLM_CHAT_SELECTED_CONFIG_SESSION_KEY] = config.pk
     history_key = _llm_chat_history_key(config.pk)

@@ -24,47 +24,118 @@ logger = logging.getLogger(__name__)
 _RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
 
 
-def _tv_item_download_entries_from_llm(item: dict, season_num) -> dict:
-    """Use strict pure-resolution keys and file-entry lists from LLM output."""
+def _tv_item_download_entries_from_llm(item: dict, season_num) -> tuple[dict, list[dict]]:
+    """Keep valid TV entries and collect invalid-entry issues for partial uploads."""
     resolutions = item.get("resolutions") or {}
     if not isinstance(resolutions, dict):
         raise ValueError(
             f"S{season_num} {item.get('label')!r}: resolutions must be a JSON object"
         )
+    item_label = item.get("label", "Unknown")
     out = {}
+    issues: list[dict] = []
     for raw_resolution, raw_entries in resolutions.items():
         resolution = str(raw_resolution or "").strip().lower()
         if not _RESOLUTION_KEY_RE.fullmatch(resolution):
-            raise ValueError(f"Invalid TV resolution key: {raw_resolution!r}")
-        ctx = f"S{season_num} {item.get('label')!r} resolutions[{raw_resolution!r}]"
+            issues.append({
+                "season_number": season_num,
+                "label": item_label,
+                "quality": str(raw_resolution or "").strip() or "?",
+                "language": "",
+                "filename": "",
+                "reason": "invalid resolution key",
+            })
+            continue
+        ctx = f"S{season_num} {item_label!r} resolutions[{raw_resolution!r}]"
         if not isinstance(raw_entries, list) or not raw_entries:
-            raise ValueError(f"{ctx}: expected a non-empty array of file objects")
+            issues.append({
+                "season_number": season_num,
+                "label": item_label,
+                "quality": resolution,
+                "language": "",
+                "filename": "",
+                "reason": "expected a non-empty array of file objects",
+            })
+            continue
         entries = []
         for idx, raw_entry in enumerate(raw_entries):
             entry_ctx = f"{ctx}[{idx}]"
             if not isinstance(raw_entry, dict):
-                raise ValueError(f"{entry_ctx}: expected object")
+                issues.append({
+                    "season_number": season_num,
+                    "label": item_label,
+                    "quality": resolution,
+                    "language": "",
+                    "filename": "",
+                    "reason": f"{entry_ctx}: expected object",
+                })
+                continue
+            language_raw = raw_entry.get("l")
+            language = (
+                " ".join(language_raw.strip().split())
+                if isinstance(language_raw, str) and language_raw.strip()
+                else ""
+            )
+            filename_raw = raw_entry.get("f")
+            filename = filename_raw.strip() if isinstance(filename_raw, str) and filename_raw.strip() else ""
             source_urls = download_source_urls(raw_entry.get("u"))
             if not source_urls:
-                raise ValueError(f"{entry_ctx}.u: missing or invalid")
-            language = raw_entry.get("l")
-            if not isinstance(language, str) or not language.strip():
-                raise ValueError(f"{entry_ctx}.l: missing or invalid")
-            filename_raw = raw_entry.get("f")
-            if not isinstance(filename_raw, str) or not filename_raw.strip():
-                raise ValueError(f"{entry_ctx}.f: missing or invalid")
+                issues.append({
+                    "season_number": season_num,
+                    "label": item_label,
+                    "quality": resolution,
+                    "language": language,
+                    "filename": filename,
+                    "reason": "missing or invalid URL",
+                })
+                continue
+            if not language:
+                issues.append({
+                    "season_number": season_num,
+                    "label": item_label,
+                    "quality": resolution,
+                    "language": "",
+                    "filename": filename,
+                    "reason": "missing or invalid language",
+                })
+                continue
+            if not filename:
+                issues.append({
+                    "season_number": season_num,
+                    "label": item_label,
+                    "quality": resolution,
+                    "language": language,
+                    "filename": "",
+                    "reason": "missing or invalid filename",
+                })
+                continue
+            try:
+                safe_filename = validate_llm_download_basename(
+                    filename_raw, context=f"{entry_ctx}.f"
+                )
+            except ValueError as e:
+                issues.append({
+                    "season_number": season_num,
+                    "label": item_label,
+                    "quality": resolution,
+                    "language": language,
+                    "filename": filename,
+                    "reason": str(e),
+                })
+                continue
             entry = {
                 "u": coerce_download_source_value(source_urls),
-                "l": " ".join(language.strip().split()),
-                "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
+                "l": language,
+                "f": safe_filename,
             }
             if isinstance(raw_entry.get("s"), str) and raw_entry["s"].strip():
                 entry["s"] = raw_entry["s"].strip()
             entries.append(entry)
-        out[resolution] = entries
+        if entries:
+            out[resolution] = entries
     item["resolutions"] = out
     item.pop("download_filenames", None)
-    return out
+    return out, issues
 
 
 def _tv_entry_label(resolution: str, entry: dict) -> str:
@@ -73,6 +144,15 @@ def _tv_entry_label(resolution: str, entry: dict) -> str:
 
 def _tv_entry_id(season_num, item_label, resolution: str, entry: dict) -> tuple[int, str, str, str, str]:
     return (season_num, item_label, resolution, entry["l"], entry["f"])
+
+
+def _tv_missing_issue_text(issue: dict) -> str:
+    text = f"S{issue['season_number']} {issue['label']} {issue['quality']}"
+    if issue.get("language"):
+        text += f" [{issue['language']}]"
+    if issue.get("reason"):
+        text += f" ({issue['reason']})"
+    return text
 
 
 def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
@@ -143,26 +223,39 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     # Build list of all download items
     all_items = []
+    validation_issues: list[dict] = []
     try:
         for season in seasons:
             season_num = season.get("season_number")
             for item in season.get("download_items", []):
                 item_type = item.get("type")
                 item_label = item.get("label", "Unknown")
-                resolutions = item.get("resolutions", {})
+                normalized_resolutions, item_issues = _tv_item_download_entries_from_llm(
+                    item, season_num
+                )
+                validation_issues.extend(item_issues)
 
-                normalized_resolutions = _tv_item_download_entries_from_llm(item, season_num)
-
-                all_items.append({
-                    "season_number": season_num,
-                    "type": item_type,
-                    "label": item_label,
-                    "resolutions": normalized_resolutions,
-                    "season_folder_id": season_folders.get(season_num),
-                })
+                if normalized_resolutions:
+                    all_items.append({
+                        "season_number": season_num,
+                        "type": item_type,
+                        "label": item_label,
+                        "resolutions": normalized_resolutions,
+                        "season_folder_id": season_folders.get(season_num),
+                    })
     except ValueError as e:
         msg = str(e)
         logger.error("TV show pipeline: %s", msg)
+        save_task(media_task, status="failed", error_message=msg, result=tvshow_data)
+        return json.dumps({"status": "error", "message": msg})
+
+    if not all_items:
+        msg = (
+            _tv_missing_issue_text(validation_issues[0])
+            if validation_issues
+            else "No valid TV download entries found"
+        )
+        logger.warning("TV show pipeline: %s", msg)
         save_task(media_task, status="failed", error_message=msg, result=tvshow_data)
         return json.dumps({"status": "error", "message": msg})
 
@@ -419,24 +512,25 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                 for entry in entries:
                     if is_drive_link(entry.get("u")):
                         uploaded_targets.add(_tv_entry_id(snum, label, resolution, entry))
-    missing = sorted(expected_upload_targets - uploaded_targets)
+    missing = list(validation_issues) + [
+        {
+            "season_number": s,
+            "label": label,
+            "quality": q,
+            "language": lang,
+            "filename": filename,
+            "reason": "",
+        }
+        for s, label, q, lang, filename in sorted(expected_upload_targets - uploaded_targets)
+    ]
 
     # Final save
     if missing:
         tvshow_data["partial_upload"] = True
-        tvshow_data["partial_upload_missing_items"] = [
-            {
-                "season_number": s,
-                "label": label,
-                "quality": q,
-                "language": lang,
-                "filename": filename,
-            }
-            for s, label, q, lang, filename in missing
-        ]
+        tvshow_data["partial_upload_missing_items"] = missing
         msg = (
-            "Partial upload: some TV items failed after all retries: "
-            + ", ".join(f"S{s} {label} {q} [{lang}]" for s, label, q, lang, filename in missing)
+            "Partial upload: some TV items were missing, invalid, or failed after retries: "
+            + ", ".join(_tv_missing_issue_text(issue) for issue in missing)
         )
         save_task(media_task, status='partial', result=tvshow_data, error_message=msg)
         logger.warning(msg)

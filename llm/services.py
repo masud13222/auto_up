@@ -273,7 +273,7 @@ def _save_usage(
         if not has_tokens and not body:
             return
 
-        LLMUsage.objects.create(
+        row = LLMUsage.objects.create(
             config=config,
             config_name=config.name,
             model_name=config.model_name,
@@ -290,8 +290,10 @@ def _save_usage(
             f"[{config.name}] Usage: {usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)}"
             f"={usage.get('total_tokens', 0)} tokens ({duration_ms}ms)"
         )
+        return row
     except Exception as e:
         logger.warning(f"Failed to save LLM usage: {e}")
+        return None
 
 
 def _get_ordered_configs():
@@ -333,6 +335,7 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
     Returns content string on success, raises on final failure.
     """
     last_error = None
+    last_duration_ms = 0
     for attempt in range(MAX_RETRIES + 1):
         try:
             llm_start = time.time()
@@ -375,6 +378,7 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
 
         except Exception as e:
             last_error = e
+            last_duration_ms = int((time.time() - llm_start) * 1000)
             error_str = str(e).lower()
 
             # Check if retryable
@@ -396,6 +400,15 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
             # Non-retryable or all retries exhausted
             break
 
+    if last_error is not None:
+        _save_usage(
+            config,
+            None,
+            last_duration_ms,
+            success=False,
+            purpose=purpose,
+            response_text=str(last_error),
+        )
     raise last_error
 
 

@@ -38,43 +38,61 @@ def _movie_entry_id(resolution: str, entry: dict) -> tuple[str, str, str]:
     return (resolution, entry["l"], entry["f"])
 
 
-def _movie_download_entries_from_llm(movie_data: dict) -> dict:
-    """Require pure-resolution keys and file-entry lists from LLM output."""
+def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]:
+    """Keep valid movie entries and collect invalid-entry issues for partial uploads."""
     download_links = movie_data.get("download_links") or {}
     if not isinstance(download_links, dict):
         raise ValueError("Movie `download_links` must be a JSON object")
     out = {}
+    issues: list[str] = []
     for raw_resolution, raw_entries in download_links.items():
-        resolution = _normalized_resolution_key(raw_resolution)
         ctx = f"Movie download_links[{raw_resolution!r}]"
+        try:
+            resolution = _normalized_resolution_key(raw_resolution)
+        except ValueError as e:
+            issues.append(str(e))
+            continue
         if not isinstance(raw_entries, list) or not raw_entries:
-            raise ValueError(f"{ctx}: expected a non-empty array of file objects")
+            issues.append(f"{ctx}: expected a non-empty array of file objects")
+            continue
         entries = []
         for idx, raw_entry in enumerate(raw_entries):
             entry_ctx = f"{ctx}[{idx}]"
             if not isinstance(raw_entry, dict):
-                raise ValueError(f"{entry_ctx}: expected object")
+                issues.append(f"{entry_ctx}: expected object")
+                continue
             source_urls = download_source_urls(raw_entry.get("u"))
             if not source_urls:
-                raise ValueError(f"{entry_ctx}.u: missing or invalid")
+                issues.append(f"{entry_ctx}.u: missing or invalid")
+                continue
             language = raw_entry.get("l")
             if not isinstance(language, str) or not language.strip():
-                raise ValueError(f"{entry_ctx}.l: missing or invalid")
+                issues.append(f"{entry_ctx}.l: missing or invalid")
+                continue
             filename_raw = raw_entry.get("f")
             if not isinstance(filename_raw, str) or not filename_raw.strip():
-                raise ValueError(f"{entry_ctx}.f: missing or invalid")
+                issues.append(f"{entry_ctx}.f: missing or invalid")
+                continue
+            try:
+                safe_filename = validate_llm_download_basename(
+                    filename_raw, context=f"{entry_ctx}.f"
+                )
+            except ValueError as e:
+                issues.append(str(e))
+                continue
             entry = {
                 "u": coerce_download_source_value(source_urls),
                 "l": " ".join(language.strip().split()),
-                "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
+                "f": safe_filename,
             }
             if isinstance(raw_entry.get("s"), str) and raw_entry["s"].strip():
                 entry["s"] = raw_entry["s"].strip()
             entries.append(entry)
-        out[resolution] = entries
+        if entries:
+            out[resolution] = entries
     movie_data["download_links"] = out
     movie_data.pop("download_filenames", None)
-    return out
+    return out, issues
 
 
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
@@ -104,7 +122,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     # Step 2: Require file-wise download entries from main extract
     logger.info(f"Validating download links for movie: {title}")
     try:
-        download_links = _movie_download_entries_from_llm(movie_data)
+        download_links, validation_issues = _movie_download_entries_from_llm(movie_data)
     except ValueError as e:
         msg = str(e)
         logger.error("Movie pipeline: %s", msg)
@@ -216,8 +234,20 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         if drive_links:
             # All already uploaded -- mark as complete and try FlixBD publish
             movie_data["download_links"] = drive_links
-            save_task(media_task, status='completed', result=movie_data, error_message='')
-            logger.info(f"Movie already fully uploaded: {title}")
+            if validation_issues:
+                movie_data["partial_upload"] = True
+                movie_data["partial_upload_missing_resolutions"] = validation_issues
+                msg = (
+                    "Partial upload: some qualities were skipped due to invalid or missing source data: "
+                    + ", ".join(validation_issues)
+                )
+                save_task(media_task, status='partial', result=movie_data, error_message=msg)
+                logger.warning(msg)
+            else:
+                movie_data.pop("partial_upload", None)
+                movie_data.pop("partial_upload_missing_resolutions", None)
+                save_task(media_task, status='completed', result=movie_data, error_message='')
+                logger.info(f"Movie already fully uploaded: {title}")
             _publish_to_flixbd_movie(
                 media_task,
                 movie_data,
@@ -225,11 +255,14 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 file_sizes,
                 dup_info=dup_info,
             )
+            if validation_issues:
+                return json.dumps({"status": "partial", "type": "movie", "data": movie_data})
             return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
         logger.warning(f"No valid download links found for: {title}")
-        save_task(media_task, status='failed', error_message='No valid download links found (after link resolution)')
-        return json.dumps({"status": "error", "message": "No valid links found"})
+        msg = validation_issues[0] if validation_issues else 'No valid download links found (after link resolution)'
+        save_task(media_task, status='failed', error_message=msg, result=movie_data)
+        return json.dumps({"status": "error", "message": msg})
 
     # Step 4a: Parallel download + subtitle clean
     logger.info(
@@ -303,7 +336,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No files could be downloaded or uploaded', result=movie_data)
         return json.dumps({"status": "error", "message": "Pipeline failed"})
 
-    missing_targets = [
+    missing_targets = validation_issues + [
         _movie_entry_label(item["resolution"], item["entry"])
         for item in to_process
         if _movie_entry_id(item["resolution"], item["entry"]) not in uploaded_entry_ids
