@@ -174,7 +174,7 @@ def get_combined_system_prompt(
 
 ## Title Format:
 - Movie: `Title Year Source Language - {SITE_NAME}` (no Season/EP). Source = WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution).
-- TV: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`.
+- TV: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`. If one page contains multiple seasons, `website_tvshow_title` may summarize them as `Season 01-02 Complete`.
 Example movie: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
 Example TV: `Single Papa 2025 Season 01 EP01-06 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
 
@@ -218,6 +218,12 @@ Example movie:
 Decision: whole season→combo | range→partial | one ep→single.
 Button count does NOT affect type. Never merge separate episodes into range. Never split range.
 Priority: combo present→only combo. Partial covers range→no singles in that range.
+Multi-season extraction rules:
+- If the page shows multiple explicit season headings/labels, output multiple objects in `data.seasons` with the real `season_number` for each one.
+- Never put Season 02/03/... links inside the Season 01 object.
+- Group each resolution/link under the nearest matching season heading/block in the Markdown.
+- Keep `data.seasons` sorted ascending by `season_number`.
+- `total_seasons` should be the show's real total only when clearly stated by the page/metadata. Do not shrink it to only the extracted season blocks on the current page. Omit if unclear.
 {dup_section}
 ## Output:
 {{"content_type":"movie" or "tvshow","data":{{...}}{',"duplicate_check":{{...}}' if has_dup else ''}}}

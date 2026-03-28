@@ -41,7 +41,10 @@ tvshow_schema = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "season_number": {"type": "integer"},
+                    "season_number": {
+                        "type": "integer",
+                        "description": "Actual season number from the page block/heading.",
+                    },
                     "download_items": {
                         "type": "array",
                         "items": {
@@ -102,6 +105,9 @@ Download item types (classify by Markdown section structure — headings, labels
 - partial_combo: heading has episode RANGE (Ep X-Y). Set episode_range.
 - single_episode: heading = exactly one episode. Set episode_range (zero-padded).
 Priority: combo > partial > single (never duplicate coverage).
+
+Example multi-season shape:
+`"seasons":[{{"season_number":1,"download_items":[...] }},{{"season_number":2,"download_items":[...]}}]`
 
 Each `resolutions` value must be a list like:
 `[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}},{{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}}]`
