@@ -16,6 +16,7 @@ urlpatterns = [
     path('settings/', views.settings_view, name='settings'),
     path('google-accounts/', views.google_accounts, name='google_accounts'),
     path('llm/', views.llm_settings, name='llm_settings'),
+    path('llm/chatbot/', views.llm_chat, name='llm_chat'),
     path('llm/chat/', views.llm_chat_api, name='llm_chat_api'),
 
     # Task actions

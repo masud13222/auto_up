@@ -82,7 +82,7 @@ def _highlight_json_html(obj) -> str:
 
 @admin.register(LLMConfig)
 class LLMConfigAdmin(admin.ModelAdmin):
-    list_display = ('name', 'sdk', 'model_name', 'is_primary', 'is_active', 'updated_at')
+    list_display = ('name', 'sdk', 'model_name', 'max_output_tokens', 'is_primary', 'is_active', 'updated_at')
     list_editable = ('is_primary', 'is_active')
     list_filter = ('sdk', 'is_primary', 'is_active')
 

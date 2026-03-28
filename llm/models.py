@@ -7,6 +7,16 @@ SDK_CHOICES = [
     ('mistral', 'Mistral AI'),
 ]
 
+# Stored as string; '' = no selection: omit max_* (provider default).
+MAX_OUTPUT_TOKEN_CHOICES = [
+    ('', 'No select (omit max_tokens / max_output_tokens)'),
+    ('8192', '8,192 (8k)'),
+    ('16384', '16,384 (16k)'),
+    ('32768', '32,768 (32k)'),
+    ('65536', '65,536 (65k)'),
+    ('131072', '131,072 (128k)'),
+]
+
 
 class LLMConfig(models.Model):
     """
@@ -18,6 +28,16 @@ class LLMConfig(models.Model):
     base_url = models.CharField(max_length=500, blank=True, default='', help_text="API base URL (required for openai-compatible, optional for others)")
     api_key = models.CharField(max_length=500, help_text="API key for this provider")
     model_name = models.CharField(max_length=200, help_text="Model name, e.g. gpt-4o, gemini-2.0-flash, mistral-large-latest")
+    max_output_tokens = models.CharField(
+        max_length=10,
+        blank=True,
+        default='',
+        choices=MAX_OUTPUT_TOKEN_CHOICES,
+        help_text=(
+            "OpenAI-compatible / Mistral: max_tokens. Google: max_output_tokens. "
+            "No select: do not send a limit (provider default)."
+        ),
+    )
     is_primary = models.BooleanField(default=False, help_text="Primary config is tried first")
     is_active = models.BooleanField(default=True, help_text="Inactive configs are skipped")
     updated_at = models.DateTimeField(auto_now=True)

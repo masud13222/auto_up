@@ -1,185 +1,30 @@
 {% extends 'panel/base.html' %}
-{% block title %}LLM — FlixBD{% endblock %}
-{% block page_title %}LLM Configs{% endblock %}
+{% block title %}LLM Config — FlixBD{% endblock %}
+{% block page_title %}LLM Config{% endblock %}
 {% block nav_llm %}active{% endblock %}
 
 {% block content %}
-{{ chat_bootstrap|json_script:"llm-chat-bootstrap" }}
-
-<div class="space-y-5" x-data="llmSettings()" x-cloak>
-    <section class="relative overflow-hidden rounded-3xl border border-[#1e293b] bg-[radial-gradient(circle_at_top_left,_rgba(249,115,22,.16),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(59,130,246,.16),_transparent_32%),linear-gradient(135deg,_#111827,_#0b1220_60%,_#020617)] p-5 sm:p-6 shadow-[0_24px_80px_rgba(2,6,23,.45)]">
-        <div class="absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,.03),transparent_45%)] pointer-events-none"></div>
-        <div class="relative grid grid-cols-1 xl:grid-cols-[340px,minmax(0,1fr)] gap-5">
-            <div class="space-y-4">
-                <div class="flex items-start justify-between gap-3">
-                    <div>
-                        <p class="text-[11px] uppercase tracking-[0.25em] text-orange-300/80 font-semibold">Live test</p>
-                        <h3 class="mt-2 text-2xl font-semibold text-white">LLM Chat Tester</h3>
-                        <p class="mt-2 text-sm leading-6 text-slate-300">
-                            Config select kore instantly message pathao, response asche kina dekho, ar pipeline-e use korar age health check kore nao.
-                        </p>
-                    </div>
-                    <div class="hidden sm:flex items-center gap-2 rounded-full border border-orange-400/20 bg-orange-500/10 px-3 py-1.5 text-[11px] font-semibold text-orange-200">
-                        <span class="inline-block h-2 w-2 rounded-full bg-emerald-400"></span>
-                        Async chat
-                    </div>
-                </div>
-
-                <div class="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                    <div class="text-[11px] uppercase tracking-[0.2em] text-slate-400">Active tester</div>
-                    <div class="mt-2 text-sm font-semibold text-white" x-text="selectedConfigLabel()"></div>
-                    <div class="mt-1 text-xs text-slate-400" x-text="selectedConfigUrl()"></div>
-                </div>
-
-                <div class="space-y-3 max-h-[580px] overflow-auto pr-1">
-                    {% for config in configs %}
-                    <button
-                        type="button"
-                        @click="selectConfig({{ config.pk }})"
-                        class="w-full text-left rounded-2xl border p-4 transition-all duration-200"
-                        :class="selectedConfigId() === {{ config.pk }} ? 'border-orange-400/60 bg-orange-500/10 shadow-[0_0_0_1px_rgba(249,115,22,.18)]' : 'border-white/10 bg-white/[0.04] hover:border-white/20 hover:bg-white/[0.06]'"
-                    >
-                        <div class="flex items-start justify-between gap-3">
-                            <div class="min-w-0">
-                                <div class="flex flex-wrap items-center gap-2">
-                                    <span class="text-sm font-semibold text-white">{{ config.name }}</span>
-                                    {% if config.is_primary %}
-                                    <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold text-orange-200">PRIMARY</span>
-                                    {% endif %}
-                                    {% if not config.is_active %}
-                                    <span class="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-bold text-red-300">DISABLED</span>
-                                    {% endif %}
-                                </div>
-                                <div class="mt-2 flex flex-wrap gap-2 text-[11px]">
-                                    <span class="rounded-full bg-slate-800 px-2.5 py-1 font-mono text-slate-300">{{ config.sdk }}</span>
-                                    <span class="rounded-full bg-slate-900/80 px-2.5 py-1 font-mono text-slate-400">{{ config.model_name }}</span>
-                                </div>
-                                <p class="mt-2 text-[11px] font-mono text-slate-500 truncate">
-                                    {% if config.base_url %}{{ config.base_url }}{% else %}default provider endpoint{% endif %}
-                                </p>
-                            </div>
-                            <span class="mt-1 inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-400">→</span>
-                        </div>
-                    </button>
-                    {% empty %}
-                    <div class="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-slate-400">
-                        No LLM configs yet. Add one below first.
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <div class="rounded-[28px] border border-white/10 bg-black/20 p-4 sm:p-5 backdrop-blur">
-                <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr),120px] gap-3">
-                    <label class="block">
-                        <span class="mb-2 block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">System prompt</span>
-                        <input
-                            type="text"
-                            x-model="chat.systemPrompt"
-                            placeholder="You are a helpful assistant."
-                            class="w-full rounded-2xl border border-white/10 bg-[#0b1120] px-4 py-3 text-sm text-white placeholder:text-slate-500"
-                        >
-                    </label>
-                    <label class="block">
-                        <span class="mb-2 block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Temperature</span>
-                        <input
-                            type="number"
-                            min="0"
-                            max="2"
-                            step="0.1"
-                            x-model="chat.temperature"
-                            class="w-full rounded-2xl border border-white/10 bg-[#0b1120] px-4 py-3 text-sm text-white"
-                        >
-                    </label>
-                </div>
-
-                <template x-if="banner.message">
-                    <div
-                        class="mt-4 rounded-2xl border px-4 py-3 text-sm leading-6"
-                        :class="banner.success ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100' : 'border-red-400/20 bg-red-500/10 text-red-100'"
-                        x-text="banner.message"
-                    ></div>
-                </template>
-
-                <div
-                    x-ref="historyBox"
-                    class="mt-4 min-h-[340px] max-h-[520px] overflow-auto rounded-[26px] border border-white/10 bg-[#050816]/80 p-3 sm:p-4"
-                >
-                    <template x-if="currentHistory().length === 0">
-                        <div class="flex min-h-[300px] items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-6 text-center text-sm leading-6 text-slate-400">
-                            <div>
-                                <p class="text-white font-medium">Quick test shuru koro</p>
-                                <p class="mt-2">Example: <span class="font-mono text-slate-300">Say hello and confirm this config is working.</span></p>
-                            </div>
-                        </div>
-                    </template>
-
-                    <div class="space-y-3" x-show="currentHistory().length > 0">
-                        <template x-for="(item, idx) in currentHistory()" :key="`${selectedConfigId()}-${idx}`">
-                            <div class="flex" :class="item.role === 'user' ? 'justify-end' : 'justify-start'">
-                                <div
-                                    class="max-w-[88%] rounded-3xl px-4 py-3 shadow-[0_14px_40px_rgba(2,6,23,.24)]"
-                                    :class="item.role === 'user' ? 'bg-gradient-to-r from-orange-500 to-amber-400 text-black' : 'border border-white/10 bg-[#0f172a] text-slate-100'"
-                                >
-                                    <div class="mb-1 text-[10px] font-bold uppercase tracking-[0.2em]" :class="item.role === 'user' ? 'text-black/60' : 'text-slate-500'" x-text="item.role"></div>
-                                    <div class="whitespace-pre-wrap break-words text-sm leading-6" x-text="item.content"></div>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-
-                <div class="mt-4 rounded-[24px] border border-white/10 bg-[#0b1120]/80 p-3">
-                    <textarea
-                        x-model="chat.userMessage"
-                        @keydown.enter.exact.prevent="sendChat()"
-                        @keydown.shift.enter.stop
-                        rows="4"
-                        placeholder="Type your message here... Shift+Enter for a new line."
-                        class="w-full resize-y border-0 bg-transparent px-1 py-1 text-sm leading-6 text-white placeholder:text-slate-500 focus:outline-none"
-                    ></textarea>
-                    <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div class="text-xs text-slate-500">
-                            Enter = send, Shift+Enter = newline
-                        </div>
-                        <div class="flex flex-wrap gap-2">
-                            <button
-                                type="button"
-                                @click="clearChat()"
-                                :disabled="loading || currentHistory().length === 0"
-                                class="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                Clear chat
-                            </button>
-                            <button
-                                type="button"
-                                @click="sendChat()"
-                                :disabled="loading || !chat.userMessage.trim()"
-                                class="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-orange-500 to-amber-400 px-5 py-2.5 text-sm font-semibold text-black transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                <span x-show="!loading">Send message</span>
-                                <span x-show="loading">Sending...</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+<div class="space-y-5" x-data="llmConfigPage()" x-cloak>
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+            <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#666]">Providers</p>
+            <h1 class="mt-1 text-lg font-semibold text-white">LLM configurations</h1>
+            <p class="mt-1 text-xs text-[#888]">Add API keys, models, and max output limits. Test responses on the chat page.</p>
         </div>
-    </section>
+        <a href="{% url 'panel:llm_chat' %}" class="inline-flex items-center justify-center gap-2 rounded-lg btn-primary px-4 py-2.5 text-xs font-semibold">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+            Open chat tester
+        </a>
+    </div>
 
     <div class="grid grid-cols-1 2xl:grid-cols-[1.15fr,.85fr] gap-5">
         <section class="space-y-4">
             {% for config in configs %}
-            <div
-                class="card p-5 transition-all duration-200"
-                :class="selectedConfigId() === {{ config.pk }} ? 'ring-1 ring-orange-500/40 border-orange-500/30' : ''"
-            >
+            <div class="card p-5">
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div class="min-w-0 flex-1">
                         <div class="flex flex-wrap items-center gap-2 mb-2">
-                            <button type="button" @click="selectConfig({{ config.pk }})" class="text-left text-white font-semibold text-sm hover:text-orange-300 transition-colors">
-                                {{ config.name }}
-                            </button>
+                            <span class="text-white font-semibold text-sm">{{ config.name }}</span>
                             {% if config.is_primary %}
                                 <span class="text-[10px] font-bold accent bg-orange-500/10 px-2 py-0.5 rounded-full">PRIMARY</span>
                             {% endif %}
@@ -196,6 +41,9 @@
                         {% else %}
                         <p class="text-[10px] text-slate-600 font-mono mt-2">default provider endpoint</p>
                         {% endif %}
+                        <p class="text-[10px] text-slate-600 font-mono mt-1">
+                            Max out: {% if config.max_output_tokens %}{{ config.max_output_tokens }}{% else %}no select{% endif %}
+                        </p>
                     </div>
                     <div class="flex gap-1.5 flex-shrink-0 flex-wrap">
                         {% if not config.is_primary %}
@@ -214,7 +62,7 @@
                         </form>
                         <button
                             type="button"
-                            @click="editConfig({{ config.pk }}, '{{ config.name|escapejs }}', '{{ config.sdk }}', '{{ config.base_url|escapejs }}', '{{ config.api_key|escapejs }}', '{{ config.model_name|escapejs }}')"
+                            @click="editConfig({{ config.pk }}, '{{ config.name|escapejs }}', '{{ config.sdk }}', '{{ config.base_url|escapejs }}', '{{ config.api_key|escapejs }}', '{{ config.model_name|escapejs }}', '{{ config.max_output_tokens|escapejs }}')"
                             class="text-[10px] text-slate-400 hover:text-white bg-[#161616] border border-[#1e1e1e] px-2.5 py-1.5 rounded-xl transition-colors"
                         >
                             Edit
@@ -286,6 +134,16 @@
                     </label>
                 </div>
 
+                <label class="block">
+                    <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">Max output tokens</span>
+                    <select name="max_output_tokens" x-model="form.max_output_tokens"
+                            class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm">
+                        {% for val, label in max_output_token_choices %}
+                        <option {% if val %}value="{{ val }}"{% else %}value=""{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+
                 <div class="flex gap-2">
                     <button type="submit" class="btn-primary px-5 py-3 rounded-2xl text-sm" x-text="editMode ? 'Update Config' : 'Add Config'"></button>
                     <button type="button" x-show="editMode" @click="cancelEdit()" class="text-slate-400 hover:text-white px-5 py-3 rounded-2xl text-sm border border-[#1e1e1e]">Reset</button>
@@ -297,177 +155,35 @@
 
 <style>
     [x-cloak] { display: none !important; }
-    textarea:focus { outline: none; }
 </style>
 
 <script>
 document.addEventListener('alpine:init', () => {
-    Alpine.data('llmSettings', () => {
-        const bootstrap = JSON.parse(document.getElementById('llm-chat-bootstrap').textContent || '{}');
-        const configLookup = {};
-        for (const cfg of (bootstrap.configs || [])) {
-            configLookup[String(cfg.id)] = cfg;
-        }
+    Alpine.data('llmConfigPage', () => ({
+        editMode: false,
+        editPk: null,
+        form: { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '', max_output_tokens: '' },
 
-        return {
-            editMode: false,
-            editPk: null,
-            form: { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '' },
-            configLookup,
-            histories: bootstrap.histories || {},
-            chatUrl: bootstrap.chat_url || '',
-            loading: false,
-            banner: { success: true, message: '' },
-            chat: {
-                configId: String(bootstrap.selected_config_id || ''),
-                systemPrompt: bootstrap.default_system_prompt || 'You are a helpful assistant.',
-                temperature: bootstrap.default_temperature || '0.2',
-                userMessage: '',
-            },
+        editConfig(pk, name, sdk, baseUrl, apiKey, modelName, maxOut) {
+            this.editMode = true;
+            this.editPk = pk;
+            this.form = {
+                name,
+                sdk,
+                base_url: baseUrl,
+                api_key: apiKey,
+                model_name: modelName,
+                max_output_tokens: maxOut === undefined || maxOut === null ? '' : String(maxOut),
+            };
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        },
 
-            init() {
-                if (!this.chat.configId) {
-                    const firstId = Object.keys(this.configLookup)[0] || '';
-                    this.chat.configId = firstId;
-                }
-                this.ensureHistoryBucket(this.chat.configId);
-                this.$nextTick(() => this.scrollHistory());
-            },
-
-            ensureHistoryBucket(configId) {
-                const key = String(configId || '');
-                if (!key) return;
-                if (!Array.isArray(this.histories[key])) {
-                    this.histories[key] = [];
-                }
-            },
-
-            selectedConfigId() {
-                return Number(this.chat.configId || 0);
-            },
-
-            selectedConfig() {
-                return this.configLookup[String(this.chat.configId || '')] || null;
-            },
-
-            selectedConfigLabel() {
-                const cfg = this.selectedConfig();
-                if (!cfg) return 'No config selected';
-                return `${cfg.name} (${cfg.sdk}:${cfg.model_name})`;
-            },
-
-            selectedConfigUrl() {
-                const cfg = this.selectedConfig();
-                if (!cfg) return '';
-                return cfg.base_url || 'default provider endpoint';
-            },
-
-            currentHistory() {
-                return this.histories[String(this.chat.configId || '')] || [];
-            },
-
-            selectConfig(configId) {
-                this.chat.configId = String(configId);
-                this.banner.message = '';
-                this.ensureHistoryBucket(this.chat.configId);
-                this.$nextTick(() => this.scrollHistory());
-            },
-
-            editConfig(pk, name, sdk, baseUrl, apiKey, modelName) {
-                this.editMode = true;
-                this.editPk = pk;
-                this.form = { name, sdk, base_url: baseUrl, api_key: apiKey, model_name: modelName };
-                this.selectConfig(pk);
-                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-            },
-
-            cancelEdit() {
-                this.editMode = false;
-                this.editPk = null;
-                this.form = { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '' };
-            },
-
-            async sendChat() {
-                const message = (this.chat.userMessage || '').trim();
-                if (!message || this.loading) return;
-
-                this.loading = true;
-                this.banner.message = '';
-
-                const fd = new FormData();
-                fd.append('action', 'send');
-                fd.append('config_id', this.chat.configId);
-                fd.append('system_prompt', this.chat.systemPrompt || '');
-                fd.append('temperature', this.chat.temperature || '0.2');
-                fd.append('user_message', message);
-                fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
-
-                try {
-                    const r = await fetch(this.chatUrl, { method: 'POST', body: fd });
-                    const text = await r.text();
-                    let data;
-                    try {
-                        data = JSON.parse(text);
-                    } catch (_) {
-                        throw new Error(text.trim().slice(0, 280) || `HTTP ${r.status}`);
-                    }
-                    if (!r.ok) {
-                        throw new Error(data.error || text.trim().slice(0, 280) || 'Request failed');
-                    }
-
-                    this.histories[String(data.config_id)] = Array.isArray(data.history) ? data.history : [];
-                    this.chat.userMessage = '';
-                    this.banner = {
-                        success: true,
-                        message: `Response received from ${data.config_label} in ${data.duration_ms} ms.${data.message_length ? ` Output size: ${data.message_length} chars.` : ''}`,
-                    };
-                    this.$nextTick(() => this.scrollHistory());
-                } catch (e) {
-                    this.banner = {
-                        success: false,
-                        message: e.message || String(e),
-                    };
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            async clearChat() {
-                if (this.loading || this.currentHistory().length === 0) return;
-                this.loading = true;
-                this.banner.message = '';
-
-                const fd = new FormData();
-                fd.append('action', 'clear');
-                fd.append('config_id', this.chat.configId);
-                fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
-
-                try {
-                    const r = await fetch(this.chatUrl, { method: 'POST', body: fd });
-                    const data = await r.json();
-                    if (!r.ok) throw new Error(data.error || 'Failed to clear chat');
-                    this.histories[String(data.config_id)] = [];
-                    this.banner = {
-                        success: true,
-                        message: `Cleared chat for ${data.config_label}.`,
-                    };
-                } catch (e) {
-                    this.banner = {
-                        success: false,
-                        message: e.message || String(e),
-                    };
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            scrollHistory() {
-                const box = this.$refs.historyBox;
-                if (!box) return;
-                box.scrollTop = box.scrollHeight;
-            },
-        };
-    });
+        cancelEdit() {
+            this.editMode = false;
+            this.editPk = null;
+            this.form = { name: '', sdk: 'openai', base_url: '', api_key: '', model_name: '', max_output_tokens: '' };
+        },
+    }));
 });
 </script>
 {% endblock %}

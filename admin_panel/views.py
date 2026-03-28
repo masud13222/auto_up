@@ -17,6 +17,14 @@ _LLM_CHAT_HISTORY_LIMIT = 10
 _LLM_CHAT_SELECTED_CONFIG_SESSION_KEY = "panel_llm_chat_selected_config_id"
 
 
+def _sanitize_llm_max_output_tokens(raw) -> str:
+    from llm.models import MAX_OUTPUT_TOKEN_CHOICES
+
+    allowed = {c[0] for c in MAX_OUTPUT_TOKEN_CHOICES}
+    s = (raw or "").strip()
+    return s if s in allowed else ""
+
+
 def _coerce_int(value, default=None):
     try:
         return int(value)
@@ -93,6 +101,7 @@ def _build_llm_chat_bootstrap(request, configs) -> dict:
                 "base_url": cfg.base_url,
                 "is_primary": cfg.is_primary,
                 "is_active": cfg.is_active,
+                "max_output_tokens": getattr(cfg, "max_output_tokens", "") or "",
             }
             for cfg in configs
         ],
@@ -253,7 +262,7 @@ def delete_google_account(request, pk):
 
 @login_required
 def llm_settings(request):
-    from llm.models import LLMConfig
+    from llm.models import LLMConfig, MAX_OUTPUT_TOKEN_CHOICES
     if request.method == 'POST':
         action = request.POST.get('action', '')
 
@@ -264,6 +273,9 @@ def llm_settings(request):
                 base_url=request.POST.get('base_url', '').strip(),
                 api_key=request.POST.get('api_key', '').strip(),
                 model_name=request.POST.get('model_name', '').strip(),
+                max_output_tokens=_sanitize_llm_max_output_tokens(
+                    request.POST.get('max_output_tokens')
+                ),
                 is_primary=not LLMConfig.objects.filter(is_primary=True).exists(),
             )
         elif action == 'edit':
@@ -274,6 +286,9 @@ def llm_settings(request):
             config.base_url = request.POST.get('base_url', '').strip()
             config.api_key = request.POST.get('api_key', config.api_key).strip()
             config.model_name = request.POST.get('model_name', config.model_name).strip()
+            config.max_output_tokens = _sanitize_llm_max_output_tokens(
+                request.POST.get('max_output_tokens')
+            )
             config.save()
         elif action == 'delete':
             pk = request.POST.get('pk')
@@ -293,7 +308,18 @@ def llm_settings(request):
     configs = LLMConfig.objects.all().order_by('-is_primary', 'pk')
     return render(request, 'panel/llm_settings.html', {
         'configs': configs,
-        'chat_bootstrap': _build_llm_chat_bootstrap(request, list(configs)),
+        'max_output_token_choices': MAX_OUTPUT_TOKEN_CHOICES,
+    })
+
+
+@login_required
+def llm_chat(request):
+    from llm.models import LLMConfig
+
+    configs = list(LLMConfig.objects.all().order_by('-is_primary', 'pk'))
+    return render(request, 'panel/llm_chat.html', {
+        'configs': configs,
+        'chat_bootstrap': _build_llm_chat_bootstrap(request, configs),
     })
 
 

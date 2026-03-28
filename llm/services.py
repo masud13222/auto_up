@@ -8,13 +8,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAYS = [3, 8, 15]
 
-# Per-request completion cap sent to the API. Model datasheets (e.g. gpt-oss 65K max output)
-# do NOT apply automatically: OpenAI-compatible servers often default to a small limit (~512–4096)
-# when max_tokens is omitted, which truncates long JSON (Belaseshe-style cut at "download_...").
-# Raise this if your gateway allows (e.g. 32768 or 65536 for self-hosted gpt-oss).
-MAX_COMPLETION_TOKENS = 32768
-# If the first response hits the output cap (finish_reason=length), retry once with this limit.
-MAX_COMPLETION_TOKENS_TRUNCATION_RETRY = 65536
+# Max output is configured per LLMConfig.max_output_tokens (omit = no max_* parameter sent).
 
 
 def _extract_usage_openai(response) -> dict:
@@ -82,115 +76,45 @@ def _completion_truncated(response, sdk: str) -> bool:
     return False
 
 
-def _response_to_mapping(response) -> dict:
-    """Best-effort dict view of SDK responses for non-standard compatible gateways."""
-    if isinstance(response, dict):
-        return response
-
-    for attr in ("model_dump", "to_dict", "dict"):
-        fn = getattr(response, attr, None)
-        if callable(fn):
-            try:
-                data = fn()
-            except Exception:
-                continue
-            if isinstance(data, dict):
-                return data
-
-    extra = getattr(response, "model_extra", None)
-    if isinstance(extra, dict):
-        return extra
-    return {}
+def _config_max_output_int(config: LLMConfig) -> int | None:
+    raw = (getattr(config, "max_output_tokens", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
-def _content_to_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
+def _max_output_cap_for_config(config: LLMConfig) -> int | None:
+    """Single cap from config only: None = omit max_* on the request (no fallback)."""
+    return _config_max_output_int(config)
+
+
+def _chat_completions_assistant_text(response) -> str:
+    """Standard chat.completions shape: choices[0].message.content (str or OpenAI text parts list)."""
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise RuntimeError("LLM returned no choices.")
+    msg = getattr(choices[0], "message", None)
+    if msg is None:
+        raise RuntimeError("LLM returned no message on the first choice.")
+    raw = getattr(msg, "content", None)
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
         parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if isinstance(item, dict):
-                text = item.get("text") or item.get("content")
-                if isinstance(text, str):
-                    parts.append(text)
-                continue
-            text = getattr(item, "text", None) or getattr(item, "content", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "".join(parts).strip()
-    if content is None:
-        return ""
-    return str(content)
-
-
-def _choice_message_to_text(choice) -> str:
-    if choice is None:
-        return ""
-
-    if isinstance(choice, dict):
-        message = choice.get("message") or choice.get("delta") or {}
-        direct = choice.get("text")
-    else:
-        message = getattr(choice, "message", None) or getattr(choice, "delta", None)
-        direct = getattr(choice, "text", None)
-
-    text = _content_to_text(direct)
-    if text:
-        return text
-
-    if isinstance(message, dict):
-        return _content_to_text(message.get("content") or message.get("text"))
-
-    return _content_to_text(
-        getattr(message, "content", None) or getattr(message, "text", None)
-    )
-
-
-def _output_items_to_text(output_items) -> str:
-    parts: list[str] = []
-    for item in output_items or []:
-        if isinstance(item, dict):
-            content = item.get("content")
-        else:
-            content = getattr(item, "content", None)
-        text = _content_to_text(content)
-        if text:
-            parts.append(text)
-    return "\n".join(p for p in parts if p).strip()
-
-
-def _extract_openai_compatible_text(response) -> str:
-    """Handle standard chat.completions plus some non-standard compatible responses."""
-    choices = getattr(response, "choices", None)
-    if choices is not None:
-        for choice in choices or []:
-            text = _choice_message_to_text(choice)
-            if text:
-                return text
-
-    mapping = _response_to_mapping(response)
-    for choice in mapping.get("choices") or []:
-        text = _choice_message_to_text(choice)
-        if text:
-            return text
-
-    output_text = getattr(response, "output_text", None) or mapping.get("output_text")
-    text = _content_to_text(output_text)
-    if text:
-        return text
-
-    text = _output_items_to_text(
-        getattr(response, "output", None) or mapping.get("output")
-    )
-    if text:
-        return text
-
-    raise RuntimeError(
-        "Provider returned no assistant text (missing or empty choices/output)."
-    )
+        for part in raw:
+            if isinstance(part, dict):
+                t = part.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(part, str):
+                parts.append(part)
+        return "".join(parts)
+    return str(raw)
 
 
 def _call_openai(
@@ -204,22 +128,19 @@ def _call_openai(
     """Call OpenAI-compatible API. Returns (content, response)."""
     from openai import OpenAI
 
-    mt = (
-        max_completion_tokens
-        if max_completion_tokens is not None
-        else MAX_COMPLETION_TOKENS
-    )
     client = OpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com/v1")
-    response = client.chat.completions.create(
+    kwargs = dict(
         model=config.model_name,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
         temperature=temperature,
-        max_tokens=mt,
     )
-    return _extract_openai_compatible_text(response), response
+    if max_completion_tokens is not None:
+        kwargs["max_tokens"] = max_completion_tokens
+    response = client.chat.completions.create(**kwargs)
+    return _chat_completions_assistant_text(response), response
 
 
 def _call_google(
@@ -246,19 +167,16 @@ def _call_google(
         api_key=config.api_key,
         http_options=http_options,
     )
-    mt = (
-        max_completion_tokens
-        if max_completion_tokens is not None
-        else MAX_COMPLETION_TOKENS
+    gen_kwargs = dict(
+        system_instruction=system_prompt,
+        temperature=temperature,
     )
+    if max_completion_tokens is not None:
+        gen_kwargs["max_output_tokens"] = max_completion_tokens
     response = client.models.generate_content(
         model=config.model_name,
         contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=temperature,
-            max_output_tokens=mt,
-        ),
+        config=types.GenerateContentConfig(**gen_kwargs),
     )
     return response.text or "", response
 
@@ -274,22 +192,19 @@ def _call_mistral(
     """Call Mistral AI API. Returns (content, response)."""
     from mistralai import Mistral
 
-    mt = (
-        max_completion_tokens
-        if max_completion_tokens is not None
-        else MAX_COMPLETION_TOKENS
-    )
     client = Mistral(api_key=config.api_key)
-    response = client.chat.complete(
+    kwargs = dict(
         model=config.model_name,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
         temperature=temperature,
-        max_tokens=mt,
     )
-    return _extract_openai_compatible_text(response), response
+    if max_completion_tokens is not None:
+        kwargs["max_tokens"] = max_completion_tokens
+    response = client.chat.complete(**kwargs)
+    return _chat_completions_assistant_text(response), response
 
 
 def _invoke_llm(
@@ -297,7 +212,7 @@ def _invoke_llm(
     prompt: str,
     system_prompt: str,
     temperature: float,
-    max_completion_tokens: int,
+    max_completion_tokens: int | None,
 ) -> tuple[str, object]:
     sdk = (config.sdk or "").strip().lower()
     if sdk == "openai":
@@ -421,27 +336,15 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
     for attempt in range(MAX_RETRIES + 1):
         try:
             llm_start = time.time()
-            caps = (MAX_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_TRUNCATION_RETRY)
-            content = None
-            response = None
-            for cap_idx, cap in enumerate(caps):
-                content, response = _invoke_llm(
-                    config, prompt, system_prompt, temperature, cap
+            cap = _max_output_cap_for_config(config)
+            content, response = _invoke_llm(
+                config, prompt, system_prompt, temperature, cap
+            )
+            if _completion_truncated(response, config.sdk):
+                raise RuntimeError(
+                    f"[{config.name}] Output hit the max length cap (finish_reason=length). "
+                    "Pick a higher max output value in this LLM config or shorten the prompt."
                 )
-                if _completion_truncated(response, config.sdk):
-                    if cap_idx == 0 and caps[1] > caps[0]:
-                        logger.warning(
-                            "[%s] Completion truncated (finish_reason=length) — "
-                            "retrying once with max_tokens=%s",
-                            config.name,
-                            caps[1],
-                        )
-                        continue
-                    if cap_idx == 1:
-                        raise RuntimeError(
-                            "LLM output still truncated after one retry with higher max_tokens."
-                        )
-                break
             duration_ms = int((time.time() - llm_start) * 1000)
 
             # Check for empty response
