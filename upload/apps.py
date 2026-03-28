@@ -9,6 +9,8 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+_STARTUP_CLEANUP_LOCK_NAME = "upload-startup-cleanup"
+
 
 def _is_server_or_queue_process():
     """Stuck requeue / queue wipe only for real app processes, not one-off management commands."""
@@ -72,12 +74,23 @@ def _queued_media_task_pks() -> set[int]:
 
 def _upload_startup_cleanup():
     """Runs shortly after process start so Django app init is finished (no RuntimeWarning)."""
+    startup_lock = None
     try:
         from django.db import transaction
         from django.utils import timezone
         from django_q.tasks import async_task
 
         from .models import MediaTask
+        from .task_locks import acquire_runtime_lock
+
+        startup_lock = acquire_runtime_lock(
+            _STARTUP_CLEANUP_LOCK_NAME,
+            stale_after_seconds=600,
+        )
+        if startup_lock is None:
+            logger.info("Startup cleanup already running in another process; skipping resume scan.")
+            _clean_downloads_folder()
+            return
 
         with transaction.atomic():
             now = timezone.now()
@@ -141,6 +154,9 @@ def _upload_startup_cleanup():
 
     except Exception as e:
         logger.debug(f"Startup cleanup skipped: {e}")
+    finally:
+        if startup_lock is not None:
+            startup_lock.release()
 
     _clean_downloads_folder()
 

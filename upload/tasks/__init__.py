@@ -4,6 +4,8 @@ import os
 from multiprocessing import current_process
 from urllib.parse import urlparse
 
+from django.conf import settings
+
 from upload.models import MediaTask
 from upload.service.info import get_content_info
 from upload.service.duplicate_checker import (
@@ -16,6 +18,7 @@ from upload.utils.tv_items import split_tv_replace_scope
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 from llm.utils.name_extractor import extract_title_info
+from upload.task_locks import acquire_runtime_lock
 
 from .helpers import save_task
 from .movie_pipeline import process_movie_pipeline
@@ -34,6 +37,7 @@ from .runtime_helpers import (
 from .tvshow_pipeline import process_tvshow_pipeline
 
 logger = logging.getLogger(__name__)
+_TASK_LOCK_GRACE_SECONDS = 300
 
 
 def _is_valid_task_url(url: str) -> bool:
@@ -60,24 +64,36 @@ def process_media_task(task_pk: int) -> str:
     2. Full page scrape + LLM (extract + duplicate check in one call)
     3. Route to movie or tvshow pipeline
     """
-    try:
-        media_task = MediaTask.objects.get(pk=task_pk)
-    except MediaTask.DoesNotExist:
-        # Stale django-q job after duplicate-skip delete, admin delete, or re-queue race.
+    lock_ttl = int(settings.Q_CLUSTER.get("timeout", 7200)) + _TASK_LOCK_GRACE_SECONDS
+    task_lock = acquire_runtime_lock(
+        f"media-task-{task_pk}",
+        stale_after_seconds=lock_ttl,
+    )
+    if task_lock is None:
         logger.warning(
-            "process_media_task: MediaTask pk=%s missing (row deleted); stale queue job — skipping",
+            "process_media_task: duplicate worker claim skipped for MediaTask pk=%s",
             task_pk,
         )
-        return json.dumps({"status": "skipped", "message": "MediaTask does not exist"})
-
-    # Skip if already completed
-    if media_task.status == 'completed':
-        logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
-        return json.dumps({"status": "skipped", "message": "Already completed"})
-
-    save_task(media_task, status='processing')
+        return json.dumps({"status": "skipped", "message": "Already running in another worker"})
 
     try:
+        try:
+            media_task = MediaTask.objects.get(pk=task_pk)
+        except MediaTask.DoesNotExist:
+            # Stale django-q job after duplicate-skip delete, admin delete, or re-queue race.
+            logger.warning(
+                "process_media_task: MediaTask pk=%s missing (row deleted); stale queue job — skipping",
+                task_pk,
+            )
+            return json.dumps({"status": "skipped", "message": "MediaTask does not exist"})
+
+        # Skip if already completed
+        if media_task.status == 'completed':
+            logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
+            return json.dumps({"status": "skipped", "message": "Already completed"})
+
+        save_task(media_task, status='processing')
+
         url = normalize_http_url((media_task.url or "").strip())
         if url != (media_task.url or "").strip():
             media_task.url = url
@@ -452,6 +468,8 @@ def process_media_task(task_pk: int) -> str:
         cleaned = clean_result_keep_drive_links(media_task.result)
         save_task(media_task, status='failed', error_message=str(e), result=cleaned)
         return json.dumps({"status": "error", "message": str(e)})
+    finally:
+        task_lock.release()
 
 
 # Backward compatibility: old queued tasks still reference this name
