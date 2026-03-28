@@ -11,7 +11,13 @@ from upload.utils.subtitle_remove import process_downloaded_files
 from screenshot.services.capture import capture_screenshots_for_publish
 from django.conf import settings
 
-from .helpers import save_task, is_drive_link, validate_llm_download_basename
+from .helpers import (
+    coerce_download_source_value,
+    download_source_urls,
+    is_drive_link,
+    save_task,
+    validate_llm_download_basename,
+)
 
 logger = logging.getLogger(__name__)
 _RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
@@ -48,8 +54,8 @@ def _movie_download_entries_from_llm(movie_data: dict) -> dict:
             entry_ctx = f"{ctx}[{idx}]"
             if not isinstance(raw_entry, dict):
                 raise ValueError(f"{entry_ctx}: expected object")
-            link = raw_entry.get("u")
-            if not isinstance(link, str) or not link.strip():
+            source_urls = download_source_urls(raw_entry.get("u"))
+            if not source_urls:
                 raise ValueError(f"{entry_ctx}.u: missing or invalid")
             language = raw_entry.get("l")
             if not isinstance(language, str) or not language.strip():
@@ -58,7 +64,7 @@ def _movie_download_entries_from_llm(movie_data: dict) -> dict:
             if not isinstance(filename_raw, str) or not filename_raw.strip():
                 raise ValueError(f"{entry_ctx}.f: missing or invalid")
             entry = {
-                "u": link.strip(),
+                "u": coerce_download_source_value(source_urls),
                 "l": " ".join(language.strip().split()),
                 "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
             }
@@ -141,7 +147,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         resolution = item["resolution"]
         entry = item["entry"]
         label = _movie_entry_label(resolution, entry)
-        url_list = [entry["u"]]
+        url_list = download_source_urls(entry.get("u"))
 
         file_path = None
         for url in url_list:
@@ -230,7 +236,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         "Starting parallel download+clean: %s",
         [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
     )
-    with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
+    with ThreadPoolExecutor(max_workers=min(3, len(to_process))) as executor:
         futures = {
             executor.submit(_download_and_clean, item): _movie_entry_label(item["resolution"], item["entry"])
             for item in to_process
@@ -261,7 +267,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         "Starting parallel upload: %s",
         [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
     )
-    with ThreadPoolExecutor(max_workers=len(to_process)) as executor:
+    with ThreadPoolExecutor(max_workers=min(3, len(to_process))) as executor:
         futures = {
             executor.submit(_upload_and_delete, item, p): _movie_entry_label(item["resolution"], item["entry"])
             for item, p, s in results

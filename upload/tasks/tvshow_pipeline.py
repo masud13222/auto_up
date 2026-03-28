@@ -11,7 +11,14 @@ from upload.utils.subtitle_remove import process_downloaded_files
 from screenshot.services.capture import capture_screenshots_for_publish
 from django.conf import settings
 
-from .helpers import save_task, is_drive_link, log_memory, validate_llm_download_basename
+from .helpers import (
+    coerce_download_source_value,
+    download_source_urls,
+    is_drive_link,
+    log_memory,
+    save_task,
+    validate_llm_download_basename,
+)
 
 logger = logging.getLogger(__name__)
 _RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
@@ -37,8 +44,8 @@ def _tv_item_download_entries_from_llm(item: dict, season_num) -> dict:
             entry_ctx = f"{ctx}[{idx}]"
             if not isinstance(raw_entry, dict):
                 raise ValueError(f"{entry_ctx}: expected object")
-            link = raw_entry.get("u")
-            if not isinstance(link, str) or not link.strip():
+            source_urls = download_source_urls(raw_entry.get("u"))
+            if not source_urls:
                 raise ValueError(f"{entry_ctx}.u: missing or invalid")
             language = raw_entry.get("l")
             if not isinstance(language, str) or not language.strip():
@@ -47,7 +54,7 @@ def _tv_item_download_entries_from_llm(item: dict, season_num) -> dict:
             if not isinstance(filename_raw, str) or not filename_raw.strip():
                 raise ValueError(f"{entry_ctx}.f: missing or invalid")
             entry = {
-                "u": link.strip(),
+                "u": coerce_download_source_value(source_urls),
                 "l": " ".join(language.strip().split()),
                 "f": validate_llm_download_basename(filename_raw, context=f"{entry_ctx}.f"),
             }
@@ -168,7 +175,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         entry = source_item["entry"]
         label = _tv_entry_label(resolution, entry)
         log_memory(f"Before download {label}")
-        url_list = [entry["u"]]
+        url_list = download_source_urls(entry.get("u"))
 
         file_path = None
         for url in url_list:

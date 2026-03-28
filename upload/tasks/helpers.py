@@ -1,6 +1,11 @@
+import ast
 import logging
+from urllib.parse import urlparse
+
+from upload.utils.web_scrape_html import normalize_http_url
 
 logger = logging.getLogger(__name__)
+_EMPTY_DOWNLOAD_VALUES = {"", "none", "null", "nil", "[]", "()", "{}", "false"}
 
 
 def save_task(media_task, **fields):
@@ -15,9 +20,82 @@ def save_task(media_task, **fields):
 
 def is_drive_link(url):
     """Check if a URL is already a Google Drive link (successfully uploaded)."""
-    if not url or not isinstance(url, str):
-        return False
-    return 'drive.google.com' in url
+    return any("drive.google.com" in link for link in download_source_urls(url))
+
+
+def _flatten_download_value(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        out = []
+        for item in value:
+            out.extend(_flatten_download_value(item))
+        return out
+    if not isinstance(value, str):
+        return []
+
+    s = value.strip()
+    if not s or s.casefold() in _EMPTY_DOWNLOAD_VALUES:
+        return []
+
+    if s[0] in "[({" and s[-1] in "])}":
+        try:
+            parsed = ast.literal_eval(s)
+        except (SyntaxError, ValueError):
+            parsed = None
+        if parsed is not None and parsed != value:
+            return _flatten_download_value(parsed)
+
+    return [s]
+
+
+def download_source_urls(value) -> list[str]:
+    """
+    Normalize download sources into a de-duplicated list of absolute HTTP(S) URLs.
+
+    Accepts:
+    - a single URL string
+    - a list/tuple of URL strings
+    - stringified Python/JSON lists like "['https://a', 'https://b']"
+    - empty-ish values like "None", "null", "", []
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for raw in _flatten_download_value(value):
+        s = raw.strip().strip('"').strip("'")
+        if not s or s.casefold() in _EMPTY_DOWNLOAD_VALUES:
+            continue
+        s = normalize_http_url(s)
+        try:
+            parsed = urlparse(s)
+        except Exception:
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def primary_download_source_url(value) -> str:
+    """Best-effort primary download URL from a mixed/stringified source field."""
+    urls = download_source_urls(value)
+    return urls[0] if urls else ""
+
+
+def coerce_download_source_value(value):
+    """
+    Canonical stored value for an entry `u` field.
+    Returns "" | "https://..." | ["https://...", ...]
+    """
+    urls = download_source_urls(value)
+    if not urls:
+        return ""
+    if len(urls) == 1:
+        return urls[0]
+    return urls
 
 
 def validate_llm_download_basename(value, *, context: str) -> str:

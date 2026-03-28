@@ -6,6 +6,11 @@ from django.utils import timezone
 
 from upload.utils.web_scrape import WebScrapeService
 from upload.utils.tv_items import tv_item_key
+from upload.tasks.helpers import (
+    coerce_download_source_value,
+    is_drive_link,
+    primary_download_source_url,
+)
 from llm.services import LLMService
 from llm.json_repair import repair_json
 from llm.schema import get_combined_system_prompt
@@ -32,7 +37,7 @@ def _entry_filename_key(entry: dict) -> str:
 
 def _entry_copy(entry: dict, *, link: str) -> dict:
     out = {
-        "u": link,
+        "u": coerce_download_source_value(link),
         "l": str(entry.get("l") or "").strip(),
         "f": str(entry.get("f") or "").strip(),
     }
@@ -169,15 +174,13 @@ def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
     Resolve download links for a movie (generate.php → actual R2 URLs).
     Skips qualities that already have Drive links in existing_result.
     """
-    from upload.tasks.helpers import is_drive_link
-
     # Build lookup of existing drive links
     existing_links = {}
     if existing_result:
         for resolution, entries in existing_result.get("download_links", {}).items():
             for entry in entries if isinstance(entries, list) else []:
-                drive_link = str(entry.get("u") or "").strip()
-                if is_drive_link(drive_link):
+                drive_link = primary_download_source_url(entry.get("u"))
+                if is_drive_link(entry.get("u")):
                     existing_links[(resolution, _entry_language_key(entry), _entry_filename_key(entry))] = drive_link
 
     download_links = movie_data.get("download_links", {})
@@ -193,7 +196,7 @@ def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
             for idx, entry in enumerate(entries):
                 if not isinstance(entry, dict):
                     continue
-                url = str(entry.get("u") or "").strip()
+                url = primary_download_source_url(entry.get("u"))
                 entry_key = (resolution, _entry_language_key(entry), _entry_filename_key(entry))
                 if entry_key in existing_links:
                     updated_entries.append(_entry_copy(entry, link=existing_links[entry_key]))
@@ -214,7 +217,7 @@ def resolve_movie_links(movie_data: dict, existing_result: dict = None) -> dict:
                     logger.error(f"Resolving movie {resolution} ({url}): {res}", exc_info=res)
                     movie_data["download_links"][resolution][idx] = _entry_copy(current, link="")
                 else:
-                    movie_data["download_links"][resolution][idx] = _entry_copy(current, link=str(res).strip())
+                    movie_data["download_links"][resolution][idx] = _entry_copy(current, link=res)
                 resolved += 1
         if skipped:
             logger.info(f"Link resolution: {resolved} resolved, {skipped} skipped (already uploaded)")
@@ -234,8 +237,6 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
         existing_result: Optional dict with previous task result containing
                          Drive links to skip resolving.
     """
-    from upload.tasks.helpers import is_drive_link
-
     seasons = tvshow_data.get("seasons", [])
     if not seasons:
         return tvshow_data
@@ -249,8 +250,8 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
                 key = tv_item_key(item)
                 for resolution, entries in item.get("resolutions", {}).items():
                     for entry in entries if isinstance(entries, list) else []:
-                        drive_link = str(entry.get("u") or "").strip()
-                        if is_drive_link(drive_link):
+                        drive_link = primary_download_source_url(entry.get("u"))
+                        if is_drive_link(entry.get("u")):
                             existing_links[
                                 (snum, key, resolution, _entry_language_key(entry), _entry_filename_key(entry))
                             ] = drive_link
@@ -310,7 +311,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
                     continue
                 updated_entries = []
                 for idx, entry in enumerate(entries):
-                    url = str(entry.get("u") or "").strip()
+                    url = primary_download_source_url(entry.get("u"))
                     existing_link = existing_links.get(
                         (season_num, item_key, resolution, _entry_language_key(entry), _entry_filename_key(entry))
                     )
@@ -348,7 +349,7 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
                         )
                         item["resolutions"][resolution][idx] = _entry_copy(current, link="")
                     else:
-                        item["resolutions"][resolution][idx] = _entry_copy(current, link=str(res).strip())
+                        item["resolutions"][resolution][idx] = _entry_copy(current, link=res)
                     total_resolved += 1
 
             # Callback after each item is fully resolved

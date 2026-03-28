@@ -7,7 +7,11 @@ from upload.service.duplicate_checker import (
     coerce_matched_task_pk,
     coerce_target_site_row_id,
 )
-from upload.tasks.helpers import is_drive_link
+from upload.tasks.helpers import (
+    coerce_download_source_value,
+    is_drive_link,
+    primary_download_source_url,
+)
 from upload.utils.tv_items import tv_item_key
 from llm.schema.blocked_names import (
     SITE_NAME,
@@ -27,7 +31,7 @@ def _entry_language_key(entry: dict) -> str:
 
 
 def _entry_link(entry: dict) -> str:
-    return str((entry or {}).get("u") or "").strip()
+    return primary_download_source_url((entry or {}).get("u"))
 
 
 def _entry_filename(entry: dict) -> str:
@@ -36,7 +40,7 @@ def _entry_filename(entry: dict) -> str:
 
 def _entry_copy(entry: dict, *, link: str) -> dict:
     out = {
-        "u": link,
+        "u": coerce_download_source_value(link),
         "l": str(entry.get("l") or "").strip(),
         "f": _entry_filename(entry),
     }

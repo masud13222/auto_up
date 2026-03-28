@@ -102,6 +102,14 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'success',
     )
     list_filter = ('sdk', 'config_name', 'purpose', 'success', 'created_at')
+    search_fields = (
+        'response_text',
+        'duplicate_check_json',
+        'duplicate_context_json',
+        'purpose',
+        'config_name',
+        'model_name',
+    )
     readonly_fields = (
         'config',
         'config_name',
