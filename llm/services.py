@@ -82,6 +82,117 @@ def _completion_truncated(response, sdk: str) -> bool:
     return False
 
 
+def _response_to_mapping(response) -> dict:
+    """Best-effort dict view of SDK responses for non-standard compatible gateways."""
+    if isinstance(response, dict):
+        return response
+
+    for attr in ("model_dump", "to_dict", "dict"):
+        fn = getattr(response, attr, None)
+        if callable(fn):
+            try:
+                data = fn()
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                return data
+
+    extra = getattr(response, "model_extra", None)
+    if isinstance(extra, dict):
+        return extra
+    return {}
+
+
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            text = getattr(item, "text", None) or getattr(item, "content", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts).strip()
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _choice_message_to_text(choice) -> str:
+    if choice is None:
+        return ""
+
+    if isinstance(choice, dict):
+        message = choice.get("message") or choice.get("delta") or {}
+        direct = choice.get("text")
+    else:
+        message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+        direct = getattr(choice, "text", None)
+
+    text = _content_to_text(direct)
+    if text:
+        return text
+
+    if isinstance(message, dict):
+        return _content_to_text(message.get("content") or message.get("text"))
+
+    return _content_to_text(
+        getattr(message, "content", None) or getattr(message, "text", None)
+    )
+
+
+def _output_items_to_text(output_items) -> str:
+    parts: list[str] = []
+    for item in output_items or []:
+        if isinstance(item, dict):
+            content = item.get("content")
+        else:
+            content = getattr(item, "content", None)
+        text = _content_to_text(content)
+        if text:
+            parts.append(text)
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _extract_openai_compatible_text(response) -> str:
+    """Handle standard chat.completions plus some non-standard compatible responses."""
+    choices = getattr(response, "choices", None)
+    if choices is not None:
+        for choice in choices or []:
+            text = _choice_message_to_text(choice)
+            if text:
+                return text
+
+    mapping = _response_to_mapping(response)
+    for choice in mapping.get("choices") or []:
+        text = _choice_message_to_text(choice)
+        if text:
+            return text
+
+    output_text = getattr(response, "output_text", None) or mapping.get("output_text")
+    text = _content_to_text(output_text)
+    if text:
+        return text
+
+    text = _output_items_to_text(
+        getattr(response, "output", None) or mapping.get("output")
+    )
+    if text:
+        return text
+
+    raise RuntimeError(
+        "Provider returned no assistant text (missing or empty choices/output)."
+    )
+
+
 def _call_openai(
     config: LLMConfig,
     prompt: str,
@@ -108,7 +219,7 @@ def _call_openai(
         temperature=temperature,
         max_tokens=mt,
     )
-    return response.choices[0].message.content or "", response
+    return _extract_openai_compatible_text(response), response
 
 
 def _call_google(
@@ -178,7 +289,7 @@ def _call_mistral(
         temperature=temperature,
         max_tokens=mt,
     )
-    return response.choices[0].message.content or "", response
+    return _extract_openai_compatible_text(response), response
 
 
 def _invoke_llm(

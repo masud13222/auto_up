@@ -3,13 +3,100 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth import logout
 from django.http import JsonResponse
 from django.core.paginator import Paginator
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 from django.utils.safestring import mark_safe
 import json
+import time
 
 from upload.django_q_priority import EnqueueError, enqueue_process_media_task, parse_q_priority
 from upload.models import MediaTask
 from settings.models import GoogleConfig, UploadSettings
+
+_LLM_CHAT_HISTORY_LIMIT = 10
+_LLM_CHAT_SELECTED_CONFIG_SESSION_KEY = "panel_llm_chat_selected_config_id"
+
+
+def _coerce_int(value, default=None):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_temperature(value, default: float = 0.2) -> float:
+    try:
+        temp = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(temp, 2.0))
+
+
+def _llm_chat_history_key(config_id: int) -> str:
+    return f"panel_llm_chat_history_{config_id}"
+
+
+def _trim_llm_chat_history(history) -> list[dict]:
+    cleaned: list[dict] = []
+    for item in list(history or [])[-(_LLM_CHAT_HISTORY_LIMIT * 2):]:
+        role = str((item or {}).get("role") or "").strip().lower()
+        content = str((item or {}).get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            cleaned.append({"role": role, "content": content})
+    return cleaned
+
+
+def _build_llm_chat_prompt(history: list[dict], user_message: str) -> str:
+    message = (user_message or "").strip()
+    trimmed_history = _trim_llm_chat_history(history)
+    if not trimmed_history:
+        return message
+
+    transcript = [
+        "Continue the conversation below.",
+        "Use the previous messages as context when they are relevant.",
+        "",
+    ]
+    for item in trimmed_history:
+        speaker = "User" if item["role"] == "user" else "Assistant"
+        transcript.append(f"{speaker}: {item['content']}")
+    transcript.append(f"User: {message}")
+    transcript.append("Assistant:")
+    return "\n".join(transcript)
+
+
+def _build_llm_chat_bootstrap(request, configs) -> dict:
+    selected_id = _coerce_int(request.session.get(_LLM_CHAT_SELECTED_CONFIG_SESSION_KEY))
+    config_ids = {cfg.pk for cfg in configs}
+    if selected_id not in config_ids:
+        selected_id = configs[0].pk if configs else None
+
+    histories = {
+        str(cfg.pk): _trim_llm_chat_history(
+            request.session.get(_llm_chat_history_key(cfg.pk), [])
+        )
+        for cfg in configs
+    }
+
+    return {
+        "selected_config_id": selected_id,
+        "histories": histories,
+        "chat_url": reverse("panel:llm_chat_api"),
+        "default_system_prompt": "You are a helpful assistant.",
+        "default_temperature": "0.2",
+        "configs": [
+            {
+                "id": cfg.pk,
+                "name": cfg.name,
+                "sdk": cfg.sdk,
+                "model_name": cfg.model_name,
+                "base_url": cfg.base_url,
+                "is_primary": cfg.is_primary,
+                "is_active": cfg.is_active,
+            }
+            for cfg in configs
+        ],
+    }
 
 
 def _get_stats():
@@ -204,7 +291,85 @@ def llm_settings(request):
         return redirect('panel:llm_settings')
 
     configs = LLMConfig.objects.all().order_by('-is_primary', 'pk')
-    return render(request, 'panel/llm_settings.html', {'configs': configs})
+    return render(request, 'panel/llm_settings.html', {
+        'configs': configs,
+        'chat_bootstrap': _build_llm_chat_bootstrap(request, list(configs)),
+    })
+
+
+@login_required
+@require_POST
+def llm_chat_api(request):
+    from llm.models import LLMConfig
+    from llm.services import _try_one_config
+
+    action = (request.POST.get("action") or "send").strip().lower()
+    config_id = _coerce_int(request.POST.get("config_id"))
+    system_prompt = str(request.POST.get("system_prompt") or "").strip() or "You are a helpful assistant."
+    temperature = _coerce_temperature(request.POST.get("temperature"), default=0.2)
+    user_message = str(request.POST.get("user_message") or "").strip()
+
+    config = LLMConfig.objects.filter(pk=config_id).first()
+    if config is None:
+        return JsonResponse({"error": "Please choose a valid LLM config first."}, status=400)
+
+    request.session[_LLM_CHAT_SELECTED_CONFIG_SESSION_KEY] = config.pk
+    history_key = _llm_chat_history_key(config.pk)
+    history = _trim_llm_chat_history(request.session.get(history_key, []))
+
+    if action == "clear":
+        request.session[history_key] = []
+        request.session.modified = True
+        return JsonResponse({
+            "success": True,
+            "cleared": True,
+            "history": [],
+            "config_id": config.pk,
+            "config_label": f"{config.name} ({config.sdk}:{config.model_name})",
+        })
+
+    if not user_message:
+        return JsonResponse({"error": "Type a message before sending."}, status=400)
+
+    prompt = _build_llm_chat_prompt(history, user_message)
+    started = time.perf_counter()
+    try:
+        assistant_message = _try_one_config(
+            config,
+            prompt,
+            system_prompt,
+            temperature=temperature,
+            purpose="panel_chat_test",
+        )
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return JsonResponse({
+            "error": str(exc),
+            "config_id": config.pk,
+            "config_label": f"{config.name} ({config.sdk}:{config.model_name})",
+            "duration_ms": duration_ms,
+        }, status=500)
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    history.extend(
+        [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": assistant_message},
+        ]
+    )
+    history = _trim_llm_chat_history(history)
+    request.session[history_key] = history
+    request.session.modified = True
+
+    return JsonResponse({
+        "success": True,
+        "config_id": config.pk,
+        "config_label": f"{config.name} ({config.sdk}:{config.model_name})",
+        "assistant_message": assistant_message,
+        "history": history,
+        "duration_ms": duration_ms,
+        "message_length": len(assistant_message or ""),
+    })
 
 
 def logout_view(request):
