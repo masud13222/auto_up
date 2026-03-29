@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # Pretty JSON for DB/admin only (readability). LLM prompt is built separately with compact JSON
 # in llm/schema/combined_schema.py — this does not add tokens to the model call.
 _JSON_FOR_DB = {"indent": 2, "ensure_ascii": False}
+_LLM_JSON_RETRY_MAX = 2
+# Appended only on JSON-retry calls: same user body as the first request, plus this line.
+_JSON_RETRY_USER_SUFFIX = (
+    "\n\nReturn a single valid JSON object only (no markdown fences, no text outside JSON). "
+    "Previous attempt produced invalid JSON."
+)
 
 
 def _entry_language_key(entry: dict) -> str:
@@ -98,6 +104,46 @@ def get_structured_output(llm_response: str) -> dict:
     return repair_json(llm_response)
 
 
+def _repair_with_llm_retry(
+    *,
+    llm_response: str,
+    original_user_prompt: str,
+    system_prompt: str,
+    purpose: str,
+) -> tuple[dict, str]:
+    """
+    Parse structured output, falling back to at most 2 LLM JSON-fix retries.
+
+    Each retry re-sends the same user body as the first call (stateless APIs),
+    with a short suffix asking for valid JSON only.
+    """
+    current_response = llm_response
+    last_error = None
+
+    for attempt in range(_LLM_JSON_RETRY_MAX + 1):
+        try:
+            return get_structured_output(current_response), current_response
+        except Exception as e:
+            last_error = e
+            if attempt >= _LLM_JSON_RETRY_MAX:
+                break
+            logger.warning(
+                "Structured JSON parse failed for purpose=%s (attempt %s/%s): %s. Requesting LLM JSON repair.",
+                purpose or "n/a",
+                attempt + 1,
+                _LLM_JSON_RETRY_MAX + 1,
+                e,
+            )
+            repair_prompt = (original_user_prompt or "") + _JSON_RETRY_USER_SUFFIX
+            current_response = LLMService.generate_completion(
+                prompt=repair_prompt,
+                system_prompt=system_prompt,
+                purpose=purpose,
+            )
+
+    raise last_error or ValueError("Could not parse structured JSON response")
+
+
 def detect_and_extract(html_content: str, db_match_candidates: list = None, flixbd_results: list = None) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
@@ -128,7 +174,13 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
         purpose='extract+dup_check' if has_dup_ctx else 'extract',
     )
 
-    result = get_structured_output(llm_response)
+    purpose = 'extract+dup_check' if has_dup_ctx else 'extract'
+    result, llm_response = _repair_with_llm_retry(
+        llm_response=llm_response,
+        original_user_prompt=html_content,
+        system_prompt=system_prompt,
+        purpose=purpose,
+    )
     content_type = result.get("content_type", "movie")
     data = result.get("data", {})
     dup_result = result.get("duplicate_check", None)
@@ -162,7 +214,7 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
             dup_result=dup_result,
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
-            purpose="extract+dup_check",
+            purpose=purpose,
             response_text=llm_response,
         )
 

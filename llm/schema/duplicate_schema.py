@@ -19,8 +19,9 @@ _dup_props = {
         "matched_task_id": {
             "type": ["integer", "null"],
             "description": (
-            "ONLY our upload DB (MediaTask) primary key from ### DB Candidates `id`. "
-            "Never use target-site row ids here. If no DB Candidates block or no matching DB row → null."
+            "null unless you copy one integer `id` from the ### DB Candidates JSON in this message. "
+            "If that JSON block is missing, empty, or no row matches → null. "
+            "Never infer a MediaTask pk from titles, seasons, or memory. Never use site row ids here."
             ),
         },
         "action": {
@@ -63,10 +64,9 @@ _dup_props = {
 _dup_props[TARGET_SITE_ROW_ID_JSON_KEY] = {
     "type": ["integer", "null"],
     "description": (
-        f"{SITE_NAME} site content row id from ### {SITE_NAME} search results (`id`) when that row matches "
-        "title+year+type and you skip/update/replace that site row. "
-        "Must be null when no matching site row. Never put a MediaTask pk here. "
-        "The pipeline does not guess this id — you must return it or null."
+        f"null unless you copy one integer `id` from the ### {SITE_NAME} search results JSON in this message. "
+        "If that block is missing, empty, or no row matches → null. "
+        "Never infer a site row id from URLs or memory. Never put a MediaTask pk here."
     ),
 }
 
@@ -93,9 +93,12 @@ Input:
 - `candidates`: DB rows with `id`, `title`, `website_title`, `year`, `resolutions`, `type`, optional TV episode info
 
 Hard rules:
-- `matched_task_id` = ONLY a DB candidate `id`
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = ONLY a {SITE_NAME} site row `id` when surrounding instructions provide site rows
-- Never invent ids
+- `matched_task_id` = ONLY an `id` that appears verbatim in the ### DB Candidates JSON block in this message
+- If that block is missing or your chosen id is not listed there → `matched_task_id` MUST be null
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = ONLY an `id` from the ### {SITE_NAME} search results JSON in this message, or null
+- Never invent, guess, or reuse ids from memory; ids not printed in those JSON blocks are forbidden
+- Do not output a non-null id because it feels right — non-null ONLY when you are copying a listed `id`
+- Zero DB candidate rows → `matched_task_id` = null. Zero site search rows / no block → `{TARGET_SITE_ROW_ID_JSON_KEY}` = null
 - A valid match requires ALL 3: same type, exact year, strong title match
 - Year mismatch means NO match
 - Movie and TV show are DIFFERENT. Never match movie <-> tvshow.

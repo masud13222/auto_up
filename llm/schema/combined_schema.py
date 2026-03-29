@@ -79,7 +79,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
         no_db_rules = f"""
 **No DB Candidates (only {site} rows above):**
 - `matched_task_id` = **null** (no MediaTask row).
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON only when title+year+type match; else null.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = must be one of the `id` values **literally present** in the JSON block above, or null. Never invent an id.
 - Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys`.
 - Infer the {site} row type from its title: `Season` / `Episode` / `S01` / `E01` / `Series` / `Web Series` => tvshow, otherwise movie.
 - Never use a movie row for a tvshow, and never use a tvshow row for a movie.
@@ -93,8 +93,8 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
     if has_db:
         db_rules = f"""
 **DB Candidates present:**
-- `matched_task_id` = DB candidate `id` only when title+year+type all match that row; else null.
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = matching {site} row `id` when you also identify a site row (same title+year+type); else null.
+- `matched_task_id` = must be **exactly** one of the `id` integers in the ### DB Candidates JSON above (copy from that list only). If none match → null. Never output an id that does not appear in that JSON.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = a {site} row `id` only when it appears in the ### {site} search JSON above **and** title+year+type match; else null. Never invent.
 - Never swap the two id spaces.
 - DB candidate `type` must exactly match the detected new `content_type`.
 - Never match movie ↔ tvshow even when title/year are the same.
@@ -111,6 +111,11 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
     return f"""## Duplicate Check
 {chr(10).join(ctx_parts)}
 {no_db_rules}{db_rules}
+**IDs (no guessing):**
+- Non-null `matched_task_id` ONLY if that exact integer is an `id` in ### DB Candidates above; else null.
+- Non-null `{TARGET_SITE_ROW_ID_JSON_KEY}` ONLY if that exact integer is an `id` in ### {site} search JSON above; else null.
+- Never infer ids from show logic, episode counts, or memory — copy from JSON or use null.
+
 **Resolutions (strict):**
 - Extract only normalized resolution tiers: `480p`, `720p`, `1080p`, `1440p`, `2160p` (`4K` -> `2160p`).
 - If a clear tier appears without `p` (e.g. `720`), normalize to `720p`.
