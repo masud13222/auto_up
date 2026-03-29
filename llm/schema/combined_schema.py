@@ -136,13 +136,14 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 
 Steps:
 1. Detect new type first: movie or tvshow.
-2. Match title+exact-year+same-type to DB candidate (if any) and/or {site} row (if any).
-3. If titles are not exact, allow a match only for trivial formatting differences or clear alias evidence. Reject shared-word / prefix / subset matches.
-4. If type mismatches, year mismatches, or either title has extra meaningful words not explained by formatting, it is NOT a match.
-5. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
-6. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
-7. **updated_website_title:** On **update**, compare candidate `website_title` with the new extract; if a clearer, polished **{site}** listing helps (movie: tags/source; TV: merged `Season NN-MM`, sensible series **year**), compose the full string ending ` - {site}`; otherwise `false` when the stored title is already good.
-8. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
+2. Discard every candidate whose `year` is not equal to extracted `data.year` before any title comparison.
+3. Match title+exact-year+same-type to remaining DB candidate (if any) and/or {site} row (if any).
+4. If titles are not exact, allow a match only for trivial formatting differences or clear alias evidence. Reject shared-word / prefix / subset matches. A short title that is only a leading substring of a longer candidate title (or vice-versa) is a prefix match → reject.
+5. If type mismatches, year mismatches, or either title has extra meaningful words not explained by formatting, it is NOT a match.
+6. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
+7. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
+8. **updated_website_title:** On **update**, compare candidate `website_title` with the new extract; if a clearer, polished **{site}** listing helps (movie: tags/source; TV: merged `Season NN-MM`, sensible series **year**), compose the full string ending ` - {site}`; otherwise `false` when the stored title is already good.
+9. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
 
 TV shows:
 - `has_new_episodes=true` only when explicit higher episode numbers are visible.
@@ -163,7 +164,7 @@ TV shows:
 Reason format:
 - Single line only.
 - Must start with `Matched candidate id=` or `No candidate matches title+year+type.`
-- Must include `TitleCheck: ...` and `YearCheck: ...`
+- Must include `TitleCheck: ...` and `YearCheck: new_year <N> vs candidate <M> -> match/mismatch` (always write both year integers)
 - Must include `Extracted`, `Existing`, `Missing` lists even when empty, then `Action: ... because ...`
 
 ```json

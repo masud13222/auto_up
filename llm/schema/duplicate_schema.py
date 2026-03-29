@@ -116,9 +116,11 @@ Step 1: detect type
 - Otherwise movie
 
 Step 2: pick candidate
+- First discard every candidate whose `year` is not equal to `new_year`; only surviving candidates proceed to title comparison
 - Match by normalized title + exact year + same detected type
 - Non-exact title matches are allowed ONLY for trivial formatting differences or clear alias evidence
 - Reject prefix/subset/shared-word matches
+- A short title that is only a leading substring of a longer candidate title (or vice-versa) is a prefix match → reject
 - Never choose a row just because it is the only candidate
 - If multiple exact-year same-type matches, choose the closest full title
 - If no candidate matches title+year+type -> `action="process"`, `matched_task_id=null`
@@ -185,12 +187,13 @@ Action table:
 Reason format:
 - Single line only
 - MUST start with `Matched candidate id=` or `No candidate matches title+year+type.`
-- MUST include `TitleCheck: ...` and `YearCheck: ...`
+- MUST include `TitleCheck: ...` and `YearCheck: new_year <N> vs candidate <M> -> match/mismatch`
+  (always write both actual year integers so a mismatch is obvious)
 - MUST include all three lists even when empty: `Extracted: [...] . Existing: [...] . Missing: [...]`
 - Pattern:
-  `Matched candidate id=X. TitleCheck: <why match>. YearCheck: <why match>. Extracted: [...]. Existing: [...]. Missing: [...]. Action: <action> because <why>.`
+  `Matched candidate id=X. TitleCheck: <why match>. YearCheck: new_year <N> vs candidate <M> -> match. Extracted: [...]. Existing: [...]. Missing: [...]. Action: <action> because <why>.`
   or
-  `No candidate matches title+year+type. TitleCheck: <why no match>. YearCheck: <why no match>. Extracted: [...]. Existing: [...]. Missing: [...]. Action: process because <why>.`
+  `No candidate matches title+year+type. TitleCheck: <why no match>. YearCheck: new_year <N> vs candidate <M> -> mismatch. Extracted: [...]. Existing: [...]. Missing: [...]. Action: process because <why>.`
 
 JSON Schema:
 {json.dumps(duplicate_schema, separators=(',',':'))}
