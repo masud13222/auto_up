@@ -189,6 +189,102 @@ def overlay_site_sync_snapshot(existing_result: dict, snapshot_result: dict, con
     return normalize_result_download_languages(base)
 
 
+def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: list[dict]) -> None:
+    """
+    Remove movie ``download_links`` entries that failed FlixBD POST so ``result`` /
+    ``site_sync_snapshot`` only list rows we believe were accepted (after retries).
+    No API fetch — matches ``failed`` records from ``add_movie_download_links``.
+    """
+    if not failed or not isinstance(movie_data, dict):
+        return
+    dl = movie_data.get("download_links")
+    if not isinstance(dl, dict):
+        return
+    fail_set = set()
+    for f in failed:
+        if not isinstance(f, dict):
+            continue
+        q = str(f.get("quality") or "").strip().lower()
+        lang = coerce_entry_language_value(f.get("language"))
+        fn = str(f.get("filename") or "").strip()
+        fail_set.add((q, lang, fn))
+
+    for res_key in list(dl.keys()):
+        entries = dl.get(res_key)
+        if not isinstance(entries, list):
+            continue
+        rk = str(res_key or "").strip().lower()
+        kept = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            lang = coerce_entry_language_value(entry.get("l"))
+            fn = str(entry.get("f") or "").strip()
+            if (rk, lang, fn) in fail_set:
+                continue
+            kept.append(entry)
+        if kept:
+            dl[res_key] = kept
+        else:
+            del dl[res_key]
+
+
+def strip_tvshow_download_entries_by_flixbd_failures(tvshow_data: dict, failed: list[dict]) -> None:
+    """
+    Remove TV resolution entries that failed FlixBD POST (same matching as movie helper).
+    """
+    if not failed or not isinstance(tvshow_data, dict):
+        return
+    fail_set = set()
+    for f in failed:
+        if not isinstance(f, dict):
+            continue
+        sn = f.get("season_number")
+        try:
+            sn = int(sn) if sn is not None else None
+        except (TypeError, ValueError):
+            sn = None
+        label = str(f.get("label") or "").strip()
+        q = str(f.get("quality") or "").strip().lower()
+        lang = coerce_entry_language_value(f.get("language"))
+        fn = str(f.get("filename") or "").strip()
+        fail_set.add((sn, label, q, lang, fn))
+
+    for season in tvshow_data.get("seasons") or []:
+        if not isinstance(season, dict):
+            continue
+        snum = season.get("season_number")
+        try:
+            snum = int(snum) if snum is not None else None
+        except (TypeError, ValueError):
+            snum = None
+        for item in season.get("download_items") or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            res = item.get("resolutions")
+            if not isinstance(res, dict):
+                continue
+            for qual_key in list(res.keys()):
+                qk = str(qual_key or "").strip().lower()
+                entries = res.get(qual_key)
+                if not isinstance(entries, list):
+                    continue
+                kept = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    lang = coerce_entry_language_value(entry.get("l"))
+                    fn = str(entry.get("f") or "").strip()
+                    if (snum, label, qk, lang, fn) in fail_set:
+                        continue
+                    kept.append(entry)
+                if kept:
+                    res[qual_key] = kept
+                else:
+                    del res[qual_key]
+
+
 def build_site_sync_snapshot(
     content_type: str,
     data: dict,
@@ -242,23 +338,29 @@ def save_publish_state_with_snapshot(
     *,
     website_title: str = "",
     site_content_id: int | None = None,
-) -> dict:
+    update_site_sync_snapshot: bool = True,
+) -> dict | None:
     """
-    Atomically persist the post-publish local state so `result`, `site_sync_snapshot`,
-    `website_title`, and `site_content_id` never diverge mid-save.
+    Atomically persist the post-publish local state so `result`, `website_title`, and
+    `site_content_id` stay aligned. When ``update_site_sync_snapshot`` is False, the
+    previous ``site_sync_snapshot`` row is left unchanged.
     """
-    snapshot = build_site_sync_snapshot(
-        content_type,
-        data,
-        website_title=website_title,
-        site_content_id=site_content_id,
-    )
+    snapshot = None
+    if update_site_sync_snapshot:
+        snapshot = build_site_sync_snapshot(
+            content_type,
+            data,
+            website_title=website_title,
+            site_content_id=site_content_id,
+        )
     result_copy = _json_clone(data)
-    update_fields = ["result", "site_sync_snapshot", "updated_at"]
+    update_fields = ["result", "updated_at"]
 
     with transaction.atomic():
         media_task.result = result_copy
-        media_task.site_sync_snapshot = snapshot
+        if update_site_sync_snapshot and snapshot is not None:
+            media_task.site_sync_snapshot = snapshot
+            update_fields.append("site_sync_snapshot")
         media_task.website_title = str(website_title or "").strip()
         update_fields.append("website_title")
         if site_content_id is not None:

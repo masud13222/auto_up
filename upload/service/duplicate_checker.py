@@ -13,7 +13,7 @@ import logging
 from django.db.models import Q
 
 from upload.models import MediaTask
-from upload.tasks.helpers import download_source_urls
+from upload.tasks.helpers import is_drive_link
 from llm.schema.blocked_names import (
     LEGACY_SITE_ROW_ID_JSON_KEY,
     TARGET_SITE_ROW_ID_JSON_KEY,
@@ -22,6 +22,16 @@ from llm.schema.blocked_names import (
 logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 85
+
+
+def _resolution_has_drive_links(entries) -> bool:
+    """True if this resolution tier has at least one Google Drive URL (published state)."""
+    if isinstance(entries, list):
+        return any(
+            isinstance(entry, dict) and is_drive_link((entry or {}).get("u"))
+            for entry in entries
+        )
+    return is_drive_link(entries)
 
 
 def coerce_matched_task_pk(value) -> int | None:
@@ -153,13 +163,7 @@ def _get_existing_resolutions(task: MediaTask) -> list:
             {
                 str(k).strip().lower()
                 for k, entries in dl.items()
-                if (
-                    bool(download_source_urls(entries))
-                    or any(
-                        download_source_urls((entry or {}).get("u"))
-                        for entry in (entries if isinstance(entries, list) else [])
-                    )
-                )
+                if _resolution_has_drive_links(entries)
             }
         )
 
@@ -169,13 +173,7 @@ def _get_existing_resolutions(task: MediaTask) -> list:
             resolutions.update(
                 str(k).strip().lower()
                 for k, entries in item.get("resolutions", {}).items()
-                if (
-                    bool(download_source_urls(entries))
-                    or any(
-                        download_source_urls((entry or {}).get("u"))
-                        for entry in (entries if isinstance(entries, list) else [])
-                    )
-                )
+                if _resolution_has_drive_links(entries)
             )
 
     return sorted(resolutions)

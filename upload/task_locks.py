@@ -42,12 +42,20 @@ def _read_lock_meta(path: Path) -> dict:
         return {}
 
 
-def _lock_is_stale(path: Path, meta: dict, stale_after_seconds: int) -> bool:
+def _lock_is_stale(
+    path: Path,
+    meta: dict,
+    stale_after_seconds: int,
+    *,
+    allow_steal_from_alive_process: bool = True,
+) -> bool:
     started_at = float(meta.get("started_at") or 0)
     pid = meta.get("pid")
     age = max(0.0, time.time() - started_at) if started_at else None
 
     if isinstance(pid, int) and _pid_alive(pid):
+        if not allow_steal_from_alive_process:
+            return False
         if age is None:
             return False
         return age > stale_after_seconds
@@ -86,6 +94,7 @@ def acquire_runtime_lock(
     wait: bool = False,
     timeout_seconds: float | None = None,
     poll_interval_seconds: float = 1.0,
+    allow_steal_from_alive_process: bool = True,
 ) -> RuntimeLock | None:
     _ensure_lock_dir()
     path = _lock_path(name)
@@ -108,7 +117,12 @@ def acquire_runtime_lock(
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
                 meta = _read_lock_meta(path)
-                if _lock_is_stale(path, meta, stale_after_seconds):
+                if _lock_is_stale(
+                    path,
+                    meta,
+                    stale_after_seconds,
+                    allow_steal_from_alive_process=allow_steal_from_alive_process,
+                ):
                     try:
                         path.unlink(missing_ok=True)
                     except OSError:

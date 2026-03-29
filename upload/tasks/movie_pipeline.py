@@ -250,14 +250,26 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 movie_data.pop("partial_upload_missing_resolutions", None)
                 save_task(media_task, status='completed', result=movie_data, error_message='')
                 logger.info(f"Movie already fully uploaded: {title}")
-            _publish_to_flixbd_movie(
+            flixbd_partial = _publish_to_flixbd_movie(
                 media_task,
                 movie_data,
                 drive_links,
                 file_sizes,
                 dup_info=dup_info,
             )
-            if validation_issues:
+            if flixbd_partial:
+                prev = (media_task.error_message or "").strip()
+                extra = (
+                    "FlixBD: one or more download link POSTs failed; "
+                    "saved download_links merged from API listing where possible."
+                )
+                save_task(
+                    media_task,
+                    status="partial",
+                    error_message=f"{prev}; {extra}" if prev else extra,
+                    result=movie_data,
+                )
+            if validation_issues or flixbd_partial:
                 return json.dumps({"status": "partial", "type": "movie", "data": movie_data})
             return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
@@ -361,7 +373,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         logger.info(f"Movie pipeline complete for: {title}")
 
     # Step 5: Publish to FlixBD
-    _publish_to_flixbd_movie(
+    flixbd_partial = _publish_to_flixbd_movie(
         media_task,
         movie_data,
         drive_links,
@@ -369,8 +381,20 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         dup_info=dup_info,
         publish_entry_ids=fresh_upload_entry_ids,
     )
+    if flixbd_partial:
+        prev = (media_task.error_message or "").strip()
+        extra = (
+            "FlixBD: one or more download link POSTs failed; "
+            "saved download_links merged from API listing where possible."
+        )
+        save_task(
+            media_task,
+            status="partial",
+            error_message=f"{prev}; {extra}" if prev else extra,
+            result=movie_data,
+        )
 
-    if missing_targets:
+    if missing_targets or flixbd_partial:
         return json.dumps({"status": "partial", "type": "movie", "data": movie_data})
     return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
@@ -382,7 +406,7 @@ def _publish_to_flixbd_movie(
     file_sizes,
     dup_info=None,
     publish_entry_ids=None,
-):
+) -> bool:
     """
     Add Drive links to FlixBD after upload completes.
 
@@ -395,7 +419,10 @@ def _publish_to_flixbd_movie(
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
-    from upload.tasks.runtime_helpers import save_publish_state_with_snapshot
+    from upload.tasks.runtime_helpers import (
+        save_publish_state_with_snapshot,
+        strip_movie_download_entries_by_flixbd_failures,
+    )
 
     title = movie_data.get("title", "Unknown")
 
@@ -403,7 +430,7 @@ def _publish_to_flixbd_movie(
         fx._get_config()
     except RuntimeError as e:
         logger.info(f"FlixBD publish skipped: {e}")
-        return
+        return False
 
     try:
         if getattr(media_task, "pk", None):
@@ -455,14 +482,24 @@ def _publish_to_flixbd_movie(
             )
             content_id = fx.create_movie(movie_data)
 
-        # Add download links with actual file sizes
-        fx.add_movie_download_links(
+        post_stats = fx.add_movie_download_links(
             content_id=content_id,
             drive_links=drive_links,
             file_sizes=file_sizes,
             movie_data=movie_data,
             allowed_entry_ids=allowed_entry_ids,
         )
+        failed = post_stats.get("failed") or []
+        attempted = int(post_stats.get("attempted") or 0)
+        succeeded = int(post_stats.get("succeeded") or 0)
+        had_failures = bool(failed) or (attempted > 0 and succeeded < attempted)
+
+        if had_failures and failed:
+            strip_movie_download_entries_by_flixbd_failures(movie_data, failed)
+
+        if had_failures:
+            movie_data["flixbd_publish_partial"] = True
+            movie_data["flixbd_publish_failures"] = failed
 
         web_t = fx.movie_website_title(movie_data)
         save_publish_state_with_snapshot(
@@ -473,7 +510,9 @@ def _publish_to_flixbd_movie(
             site_content_id=content_id,
         )
         logger.info(f"FlixBD: movie done -- site_content_id={content_id} clean_title='{title}'")
+        return had_failures
 
     except Exception as e:
         logger.error(f"FlixBD publish failed for movie '{title}': {e}", exc_info=True)
+        return True
 

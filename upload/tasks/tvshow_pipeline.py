@@ -542,15 +542,27 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     log_memory("Pipeline complete")
 
     # Step 5: Publish to FlixBD
-    _publish_to_flixbd_series(
+    flixbd_partial = _publish_to_flixbd_series(
         media_task,
         tvshow_data,
         file_sizes_map,
         dup_info=dup_info,
         publish_entry_ids=fresh_upload_targets,
     )
+    if flixbd_partial:
+        prev = (media_task.error_message or "").strip()
+        extra = (
+            "FlixBD: one or more series download POSTs failed; "
+            "saved seasons merged from API listing where possible."
+        )
+        save_task(
+            media_task,
+            status="partial",
+            error_message=f"{prev}; {extra}" if prev else extra,
+            result=tvshow_data,
+        )
 
-    if missing:
+    if missing or flixbd_partial:
         return json.dumps({"status": "partial", "type": "tvshow", "data": tvshow_data})
     return json.dumps({"status": "success", "type": "tvshow", "data": tvshow_data})
 
@@ -561,7 +573,7 @@ def _publish_to_flixbd_series(
     file_sizes_map,
     dup_info=None,
     publish_entry_ids=None,
-):
+) -> bool:
     """
     Add Drive links to FlixBD after upload completes.
 
@@ -572,7 +584,10 @@ def _publish_to_flixbd_series(
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
-    from upload.tasks.runtime_helpers import save_publish_state_with_snapshot
+    from upload.tasks.runtime_helpers import (
+        save_publish_state_with_snapshot,
+        strip_tvshow_download_entries_by_flixbd_failures,
+    )
 
     title = tvshow_data.get("title", "Unknown")
 
@@ -580,7 +595,7 @@ def _publish_to_flixbd_series(
         fx._get_config()
     except RuntimeError as e:
         logger.info(f"FlixBD publish skipped: {e}")
-        return
+        return False
 
     try:
         if getattr(media_task, "pk", None):
@@ -643,16 +658,26 @@ def _publish_to_flixbd_series(
             content_id = fx.create_series(tvshow_data)
             if not content_id:
                 logger.error(f"FlixBD: create_series returned None for '{title}' — skipping publish")
-                return
+                return False
 
-        # Add download links
-        fx.add_series_download_links(
+        post_stats = fx.add_series_download_links(
             content_id=content_id,
             seasons_data=tvshow_data.get("seasons", []),
             file_sizes_map=file_sizes_map,
             tvshow_data=tvshow_data,
             allowed_entry_ids=allowed_entry_ids,
         )
+        failed = post_stats.get("failed") or []
+        attempted = int(post_stats.get("attempted") or 0)
+        succeeded = int(post_stats.get("succeeded") or 0)
+        had_failures = bool(failed) or (attempted > 0 and succeeded < attempted)
+
+        if had_failures and failed:
+            strip_tvshow_download_entries_by_flixbd_failures(tvshow_data, failed)
+
+        if had_failures:
+            tvshow_data["flixbd_publish_partial"] = True
+            tvshow_data["flixbd_publish_failures"] = failed
 
         web_t = fx.series_website_title(tvshow_data)
         save_publish_state_with_snapshot(
@@ -663,7 +688,8 @@ def _publish_to_flixbd_series(
             site_content_id=content_id,
         )
         logger.info(f"FlixBD: series done -- site_content_id={content_id} clean_title='{title}'")
-
+        return had_failures
 
     except Exception as e:
         logger.error(f"FlixBD publish failed for series '{title}': {e}", exc_info=True)
+        return True

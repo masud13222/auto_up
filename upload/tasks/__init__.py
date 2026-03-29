@@ -1,6 +1,8 @@
+import hashlib
 import json
 import logging
 import os
+import time
 from multiprocessing import current_process
 from urllib.parse import urlparse
 
@@ -18,7 +20,7 @@ from upload.utils.tv_items import split_tv_replace_scope
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 from llm.utils.name_extractor import extract_title_info
-from upload.task_locks import acquire_runtime_lock
+from upload.task_locks import RuntimeLock, acquire_runtime_lock
 
 from .helpers import normalize_result_download_languages, save_task
 from .movie_pipeline import process_movie_pipeline
@@ -39,6 +41,10 @@ from .tvshow_pipeline import process_tvshow_pipeline
 
 logger = logging.getLogger(__name__)
 _TASK_LOCK_GRACE_SECONDS = 300
+# Group lock: wait in chunks with retries so transient FS issues do not fail the task immediately.
+_GROUP_LOCK_WAIT_CHUNK_SECONDS = 600.0
+_GROUP_LOCK_MAX_ATTEMPTS = 144  # ~24h at 10 min/chunk if holder runs that long
+_GROUP_LOCK_RETRY_SLEEP_SECONDS = 5.0
 
 
 def _is_valid_task_url(url: str) -> bool:
@@ -122,10 +128,50 @@ def _runtime_group_lock_name(
         data.get("year"),
     )
     if title is not None:
-        return f"media-group-{content_type}-title-{title}-{year if year is not None else 'na'}"
+        raw = f"{content_type}|{str(title).strip().lower()}|{year if year is not None else 'na'}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+        return f"media-group-{content_type}-h-{digest}"
 
     if existing_task is not None:
         return f"media-group-{content_type}-task-{existing_task.pk}"
+    return None
+
+
+def _acquire_group_lock_with_retries(
+    group_lock_name: str,
+    *,
+    lock_ttl: int,
+    media_task_pk: int,
+    matched_pk,
+    target_site_row_id,
+) -> RuntimeLock | None:
+    for attempt in range(1, _GROUP_LOCK_MAX_ATTEMPTS + 1):
+        lock = acquire_runtime_lock(
+            group_lock_name,
+            stale_after_seconds=lock_ttl,
+            wait=True,
+            timeout_seconds=_GROUP_LOCK_WAIT_CHUNK_SECONDS,
+            poll_interval_seconds=1.0,
+            allow_steal_from_alive_process=False,
+        )
+        if lock is not None:
+            return lock
+        logger.warning(
+            "Canonical/group lock wait chunk ended without acquire %s (task pk=%s attempt %s/%s) — retrying in %ss",
+            group_lock_name,
+            media_task_pk,
+            attempt,
+            _GROUP_LOCK_MAX_ATTEMPTS,
+            _GROUP_LOCK_RETRY_SLEEP_SECONDS,
+        )
+        time.sleep(_GROUP_LOCK_RETRY_SLEEP_SECONDS)
+    logger.error(
+        "Canonical/group lock exhausted retries for %s (task pk=%s matched=%s target_site_row_id=%s)",
+        group_lock_name,
+        media_task_pk,
+        matched_pk,
+        target_site_row_id,
+    )
     return None
 
 
@@ -141,6 +187,7 @@ def process_media_task(task_pk: int) -> str:
     task_lock = acquire_runtime_lock(
         f"media-task-{task_pk}",
         stale_after_seconds=lock_ttl,
+        allow_steal_from_alive_process=False,
     )
     if task_lock is None:
         logger.warning(
@@ -150,6 +197,7 @@ def process_media_task(task_pk: int) -> str:
         return json.dumps({"status": "skipped", "message": "Already running in another worker"})
 
     group_lock = None
+    media_task = None
     try:
         try:
             media_task = MediaTask.objects.get(pk=task_pk)
@@ -365,58 +413,61 @@ def process_media_task(task_pk: int) -> str:
                         media_task.delete()
                 return json.dumps({"status": "skipped", "message": reason})
 
-            should_wait_for_group_lock = action in ("update", "replace", "replace_items") and (
+            merge_or_replace_path = action in ("update", "replace", "replace_items") and (
                 target_site_row_id is not None
                 or (existing_task is not None and existing_task.pk != media_task.pk)
             )
+            group_lock_name = _runtime_group_lock_name(
+                content_type,
+                data,
+                existing_task,
+                target_site_row_id,
+            )
+            should_wait_for_group_lock = group_lock_name is not None and (
+                merge_or_replace_path or action == "process"
+            )
             if should_wait_for_group_lock and group_lock is None:
-                group_lock_name = _runtime_group_lock_name(
-                    content_type,
-                    data,
-                    existing_task,
+                logger.info(
+                    "Acquiring canonical/group runtime lock %s for task pk=%s (matched_task=%s target_site_row_id=%s action=%s)",
+                    group_lock_name,
+                    media_task.pk,
+                    getattr(existing_task, "pk", None),
                     target_site_row_id,
+                    action,
                 )
-                if group_lock_name:
-                    logger.info(
-                        "Acquiring canonical/group runtime lock %s for task pk=%s (matched_task=%s target_site_row_id=%s)",
-                        group_lock_name,
-                        media_task.pk,
-                        getattr(existing_task, "pk", None),
-                        target_site_row_id,
+                group_lock = _acquire_group_lock_with_retries(
+                    group_lock_name,
+                    lock_ttl=lock_ttl,
+                    media_task_pk=media_task.pk,
+                    matched_pk=getattr(existing_task, "pk", None),
+                    target_site_row_id=target_site_row_id,
+                )
+                if group_lock is None:
+                    raise RuntimeError(
+                        f"Could not acquire canonical/group lock after retries: {group_lock_name}"
                     )
-                    group_lock = acquire_runtime_lock(
-                        group_lock_name,
-                        stale_after_seconds=lock_ttl,
-                        wait=True,
-                        timeout_seconds=lock_ttl + 5,
-                        poll_interval_seconds=1.0,
-                    )
-                    if group_lock is None:
-                        raise RuntimeError(
-                            f"Timed out waiting for canonical/group lock: {group_lock_name}"
+                logger.info(
+                    "Canonical/group runtime lock acquired %s for task pk=%s",
+                    group_lock_name,
+                    media_task.pk,
+                )
+                if existing_task is not None and existing_task.pk != media_task.pk:
+                    try:
+                        existing_task = MediaTask.objects.get(pk=existing_task.pk)
+                    except MediaTask.DoesNotExist:
+                        logger.warning(
+                            "Matched existing task pk=%s disappeared while waiting for group lock (task pk=%s)",
+                            dup_result.get("matched_task_id") if dup_result else None,
+                            media_task.pk,
                         )
-                    logger.info(
-                        "Canonical/group runtime lock acquired %s for task pk=%s",
-                        group_lock_name,
-                        media_task.pk,
-                    )
-                    if existing_task is not None and existing_task.pk != media_task.pk:
-                        try:
-                            existing_task = MediaTask.objects.get(pk=existing_task.pk)
-                        except MediaTask.DoesNotExist:
-                            logger.warning(
-                                "Matched existing task pk=%s disappeared while waiting for group lock (task pk=%s)",
-                                dup_result.get("matched_task_id") if dup_result else None,
-                                media_task.pk,
-                            )
-                            existing_task = None
-                            existing_result = {}
-                            if target_site_row_id is None:
-                                action = "process"
-                                if dup_result:
-                                    dup_result["action"] = "process"
-                                    dup_result["matched_task_id"] = None
-                                    dup_result["missing_resolutions"] = []
+                        existing_task = None
+                        existing_result = {}
+                        if target_site_row_id is None:
+                            action = "process"
+                            if dup_result:
+                                dup_result["action"] = "process"
+                                dup_result["matched_task_id"] = None
+                                dup_result["missing_resolutions"] = []
 
             if action in ("update", "replace", "replace_items") and existing_task:
                 logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
@@ -616,9 +667,12 @@ def process_media_task(task_pk: int) -> str:
 
     except Exception as e:
         logger.error(f"Task failed: {e}", exc_info=True)
-        # Clean result: only keep items that have Drive links (remove unprocessed scrape data)
-        cleaned = clean_result_keep_drive_links(media_task.result)
-        save_task(media_task, status='failed', error_message=str(e), result=cleaned)
+        if media_task is not None:
+            try:
+                cleaned = clean_result_keep_drive_links(media_task.result or {})
+                save_task(media_task, status='failed', error_message=str(e), result=cleaned)
+            except Exception as save_exc:
+                logger.error("Could not persist failed MediaTask state: %s", save_exc, exc_info=True)
         return json.dumps({"status": "error", "message": str(e)})
     finally:
         if group_lock is not None:
