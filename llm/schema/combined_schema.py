@@ -24,8 +24,20 @@ combined_schema = {
             "type": "object",
             "description": "Extracted data following movie_schema or tvshow_schema",
         },
+        "duplicate_check": duplicate_schema,
     },
     "required": ["content_type", "data"],
+    "additionalProperties": False,
+    "allOf": [
+        {
+            "if": {"properties": {"content_type": {"const": "movie"}}},
+            "then": {"properties": {"data": movie_schema}},
+        },
+        {
+            "if": {"properties": {"content_type": {"const": "tvshow"}}},
+            "then": {"properties": {"data": tvshow_schema}},
+        },
+    ],
 }
 
 
@@ -87,13 +99,12 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - DB candidate `type` must exactly match the detected new `content_type`.
 - Never match movie ↔ tvshow even when title/year are the same.
 - Candidate `website_title` is the raw stored site title; use it for season/source/subtitle clues, not just plain `title`.
-- Ignore punctuation-only differences, but DO NOT ignore meaningful extra words/subtitles.
-- Exact title match is strongest, but not mandatory when the title is clearly an alternate / shortened / variant form of the same media.
-- If the title looks unfamiliar, think carefully: compare core title words, year, type, season/episode clues, and whether the difference looks like an alias vs a different subtitle.
-- For non-exact title matches, require strong evidence. If confidence is not high, use **process**.
-- If the new title contains meaningful words not present in the candidate title
-  (examples: `Members Only`, `Returns`, `Part 2`, `Season 1`, `Episode 5`),
-  treat them as different content and use **process** unless the candidate title also contains the same words.
+- A valid match requires ALL 3: same type, exact year, strong title match.
+- Strong title match = same title after trivial cleanup only: punctuation, spaces, case, apostrophes, `&` vs `and`, roman numeral vs digit, or an obvious alias clearly supported by context.
+- INVALID title matches: single shared word, prefix-only, substring-only, or "only candidate" pressure.
+- Hard negatives: `The Witch` != `The Kitchen`; `Hum` != `Hum Hain Kamaal Ke`; `Nagin` != `Nache Nagin Gali Gali`.
+- If either side has extra meaningful words not explained by formatting or alias evidence, use **process**.
+- Never use resolution/source clues to override a failed title/year/type check.
 
 """
 
@@ -106,6 +117,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
 - Extracted = normalized keys from extracted `data` links.
 - Existing = matched DB `resolutions` and/or matched {site} `resolution_keys`.
+- Rejected candidates/site rows contribute nothing to `Existing`.
 - If Extracted is empty -> default `action=process` unless duplicate evidence is overwhelming.
 - Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
 
@@ -114,14 +126,14 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - Use source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - Same resolutions but clearly higher source -> `replace`
 - Lower old source in matched site row title -> higher new source also -> `replace`
-- Same/lower/unclear source -> `skip`
+- Same/lower/unclear source -> do not force `replace`; keep using Missing/coverage rules
 - Never replace from codec alone.
 
 Steps:
 1. Detect new type first: movie or tvshow.
 2. Match title+exact-year+same-type to DB candidate (if any) and/or {site} row (if any).
-3. If titles are not exact, allow a match only when it is clearly an alternate / shortened / variant title for the same media.
-4. If type mismatches, year mismatches, or the new title has meaningful extra words not present in the candidate title, it is NOT a match.
+3. If titles are not exact, allow a match only for trivial formatting differences or clear alias evidence. Reject shared-word / prefix / subset matches.
+4. If type mismatches, year mismatches, or either title has extra meaningful words not explained by formatting, it is NOT a match.
 5. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
 6. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
 7. **updated_website_title:** On **update**, compare candidate `website_title` with the new extract; if a clearer, polished **{site}** listing helps (movie: tags/source; TV: merged `Season NN-MM`, sensible series **year**), compose the full string ending ` - {site}`; otherwise `false` when the stored title is already good.
@@ -146,6 +158,7 @@ TV shows:
 Reason format:
 - Single line only.
 - Must start with `Matched candidate id=` or `No candidate matches title+year+type.`
+- Must include `TitleCheck: ...` and `YearCheck: ...`
 - Must include `Extracted`, `Existing`, `Missing` lists even when empty, then `Action: ... because ...`
 
 ```json
@@ -184,11 +197,12 @@ def get_combined_system_prompt(
 
 ## Common Rules:
 - Return ONLY valid JSON. No markdown, no extra text.
+- Use only what is explicit in the Markdown. If missing, omit. Never guess.
 - Omit missing fields (no null, no empty strings).
 - Remove blocked site names from every field: {_blocked_names_str}
 - Prefer x264 encodes when multiple options exist.
 - languages: array (e.g. ["Hindi","English"]). countries: array. cast / cast_info: comma-separated. Omit if absent.
-- - Absolute URLs only; relative links → prepend the page domain.
+- Absolute URLs only; relative links → prepend the page domain.
 - Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8 — omit that resolution.
 - Strict link rule: never use Watch Online, Watch Resolution, watch link, watch generate link, stream, player, preview, embed, or similar watch-only URLs as download entries.
 - Do not decode, resolve, or alter query strings or paths; keep gateway links intact.
@@ -212,6 +226,7 @@ TV: true only for explicit adult. false for mainstream.
 
 ## File Download Entries (required):
 Movie `download_links` and TV item `resolutions` must use pure resolution keys only: `480p`, `720p`, `1080p`.
+Never invent season numbers, episode ranges, or resolution keys not clearly shown by the page.
 Each resolution value must be a list of per-file objects:
 `[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}}]`
 If one downloadable file contains multiple audio tracks, return ONE file object only:

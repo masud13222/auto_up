@@ -61,7 +61,8 @@ tvshow_schema = {
                                 },
                                 "resolutions": {
                                     "type": "object",
-                                    "additionalProperties": {
+                                    "patternProperties": {
+                                        r"^\d{3,4}p$": {
                                         "type": "array",
                                         "items": {
                                             "type": "object",
@@ -77,29 +78,40 @@ tvshow_schema = {
                                                 "f": {"type": "string", "description": "Basename only"},
                                             },
                                             "required": ["u", "l", "f"],
+                                            "additionalProperties": False,
+                                        },
                                         },
                                     },
+                                    "additionalProperties": False,
                                     "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
                                 },
                             },
                             "required": ["type", "label", "resolutions"],
+                            "additionalProperties": False,
                         },
                     },
                 },
                 "required": ["season_number", "download_items"],
+                "additionalProperties": False,
             },
         },
     },
     "required": ["website_tvshow_title", "title", "year", "is_adult", "seasons"],
+    "additionalProperties": False,
 }
 
 # ───────────────────────────────────────────────
 # TV Show System Prompt (standalone — not used in combined)
 # ───────────────────────────────────────────────
 
-TVSHOW_SYSTEM_PROMPT = f"""Extract TV show data from **Markdown** (page converted HTML→Markdown). Return ONLY valid JSON (no markdown fences).
+TVSHOW_SYSTEM_PROMPT = f"""Extract TV show data from Markdown. Return ONLY valid JSON.
 
-Rules: omit missing fields. Numeric rating/year. Clean title. Strip blocked names: {_blocked_names_str}
+Rules:
+- Use only what is explicit in the Markdown. If missing, omit. Never guess.
+- Omit missing fields.
+- rating/year must be numeric.
+- `title` = clean show name only.
+- Strip blocked names: {_blocked_names_str}
 
 website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`. Source=WEB-DL/etc (not resolution).
 is_adult: true only for explicit adult (18+/XXX). false for mainstream.
@@ -111,6 +123,7 @@ Download item types (classify by Markdown section structure — headings, labels
 - partial_combo: heading has episode RANGE (Ep X-Y). Set episode_range.
 - single_episode: heading = exactly one episode. Set episode_range (zero-padded).
 Priority: combo > partial > single (never duplicate coverage).
+Never invent a season number, episode range, or resolution key that is not clearly shown by the page.
 Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
 
 Example multi-season shape:

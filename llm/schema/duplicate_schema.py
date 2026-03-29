@@ -7,8 +7,8 @@ from .blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 # ───────────────────────────────────────────────
 
 _UPDATED_WEBSITE_TITLE_DESC = (
-    f"Full **website** listing title ending ` - {SITE_NAME}`, or `false` if candidate `website_title` is already right. "
-    "On update/replace: rewrite only when needed; TV merges → `Season NN-MM` (zero-pad), series year from candidate when same show."
+    f"Full website title ending ` - {SITE_NAME}`, or `false` if the stored `website_title` is already correct. "
+    "Rewrite only when needed; TV season merge -> `Season NN-MM`."
 )
 
 _dup_props = {
@@ -31,9 +31,10 @@ _dup_props = {
         "reason": {
             "type": "string",
         "description": (
-            "Single-line string. MUST start with 'Matched candidate id=X.' or 'No candidate matches title+year+type.' "
-            "then 'Extracted: [list]. Existing: [list]. Missing: [list]. Action: <action> because <why>.' "
-            "Always include all three lists (use [] if empty). No other format."
+            "Single line. MUST start with 'Matched candidate id=X.' or 'No candidate matches title+year+type.' "
+            "Then include 'TitleCheck: ... YearCheck: ... Extracted: [list]. Existing: [list]. Missing: [list]. "
+            "Action: <action> because <why>.' Always include all three lists. "
+            "Rejected candidates must not contribute to Existing."
         ),
         },
         "detected_new_type": {
@@ -81,6 +82,7 @@ duplicate_schema = {
         "detected_new_type",
         "updated_website_title",
     ],
+    "additionalProperties": False,
 }
 
 
@@ -94,14 +96,17 @@ Hard rules:
 - `matched_task_id` = ONLY a DB candidate `id`
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = ONLY a {SITE_NAME} site row `id` when surrounding instructions provide site rows
 - Never invent ids
-- Year mismatch means different content
-- Movie and TV show are DIFFERENT content types. Never match movie <-> tvshow.
-- Exact title match is strongest, but NOT required when the title is clearly an alternate / shortened / variant form of the same media.
-- Use candidate `website_title` when present for season/source/subtitle clues; do not rely only on plain `title`.
-- If the title looks unfamiliar, think carefully before answering: compare core title words, year, type, source clues, episode/season clues, and whether the difference looks like an alias vs a genuinely different subtitle.
-- If the new title has meaningful extra words/subtitle tokens not present in the candidate title
-  (examples: `Members Only`, `Returns`, `Part 2`, `Season 1`, `Episode 5`), treat as different content.
-- If unsure, avoid `replace`
+- A valid match requires ALL 3: same type, exact year, strong title match
+- Year mismatch means NO match
+- Movie and TV show are DIFFERENT. Never match movie <-> tvshow.
+- Strong title match means normalized titles are the same after trivial formatting cleanup only:
+  punctuation, spacing, case, apostrophes, `&` vs `and`, roman numeral vs digit, or obvious transliteration/alias explicitly supported by context
+- NOT a valid title match: single shared word, prefix-only match, substring-only match, or "only candidate" pressure
+- Examples of NO match: `The Witch` != `The Kitchen`; `Hum` != `Hum Hain Kamaal Ke`; `Nagin` != `Nache Nagin Gali Gali`
+- If either side has extra meaningful title words not explained by formatting, sequel numbering, or explicit alias evidence -> NO match
+- Never use resolutions/source to rescue a failed title/year/type check
+- Use candidate `website_title` for season/source/subtitle clues; do not rely only on plain `title`
+- If unsure, return `process` with `matched_task_id=null`
 
 Step 1: detect type
 - TV signs: Season, Episode, S01, E01, Complete Season, Web Series, Series
@@ -109,9 +114,9 @@ Step 1: detect type
 
 Step 2: pick candidate
 - Match by normalized title + exact year + same detected type
-- Ignore punctuation-only differences, but DO NOT ignore meaningful subtitle words
-- If titles are not exact, you may still match when they look like the same media under an alternate / shortened / romanized title AND there is no conflicting subtitle/sequel/season signal.
-- For non-exact title matches, require strong evidence: same year, same type, and close core-title meaning. Otherwise use `process`.
+- Non-exact title matches are allowed ONLY for trivial formatting differences or clear alias evidence
+- Reject prefix/subset/shared-word matches
+- Never choose a row just because it is the only candidate
 - If multiple exact-year same-type matches, choose the closest full title
 - If no candidate matches title+year+type -> `action="process"`, `matched_task_id=null`
 
@@ -127,6 +132,7 @@ Step 4: resolution comparison
 - Ignore codec alone for `replace`
 - `Extracted` = normalized new tiers
 - `Existing` = matched candidate `resolutions`; if surrounding instructions include target-site rows, also use that row's `resolution_keys`
+- Rejected candidates contribute nothing to `Existing`
 - `Missing` = tiers in `Extracted` but not in `Existing`
 - If no resolution is found -> `Extracted=[]` and default to `process` unless duplicate evidence is overwhelming
 - If `Missing` is non-empty, do NOT auto-pick `update` yet when the matched site row/title clearly shows a lower source tier
@@ -137,7 +143,7 @@ Step 5: source upgrade check
 - Run this whenever title+year+type match and source tiers are visible, even if `Missing` is non-empty
 - Source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - If new source is clearly higher for the same content -> `replace`
-- If same/lower/unclear -> `skip`
+- If same/lower/unclear -> do NOT force `replace`; fall back to Missing/coverage rules
 - Unknown codec/tag: use your judgment, but NEVER replace from codec alone; if source superiority is unclear, do not replace
 
 Step 6: TV episodes
@@ -176,11 +182,12 @@ Action table:
 Reason format:
 - Single line only
 - MUST start with `Matched candidate id=` or `No candidate matches title+year+type.`
+- MUST include `TitleCheck: ...` and `YearCheck: ...`
 - MUST include all three lists even when empty: `Extracted: [...] . Existing: [...] . Missing: [...]`
 - Pattern:
-  `Matched candidate id=X. Extracted: [...]. Existing: [...]. Missing: [...]. Action: <action> because <why>.`
+  `Matched candidate id=X. TitleCheck: <why match>. YearCheck: <why match>. Extracted: [...]. Existing: [...]. Missing: [...]. Action: <action> because <why>.`
   or
-  `No candidate matches title+year+type. Extracted: [...]. Existing: []. Missing: [...]. Action: process because <why>.`
+  `No candidate matches title+year+type. TitleCheck: <why no match>. YearCheck: <why no match>. Extracted: [...]. Existing: [...]. Missing: [...]. Action: process because <why>.`
 
 JSON Schema:
 {json.dumps(duplicate_schema, separators=(',',':'))}
