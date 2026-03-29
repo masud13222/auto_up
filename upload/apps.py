@@ -48,13 +48,19 @@ def _is_recent_processing_task(task, now, *, window_seconds: int = 90) -> bool:
         return False
 
 
-def _queued_media_task_pks() -> set[int]:
-    """Best-effort set of MediaTask pks already present in django-q OrmQ."""
+def _queued_media_task_rows() -> dict[int, list[dict]]:
+    """
+    Best-effort map: MediaTask pk -> matching django-q OrmQ row metadata.
+
+    We keep row lock timestamps so startup resume can distinguish:
+    - rows that are genuinely waiting right now
+    - rows that were claimed before a restart and are now stuck behind a future lock
+    """
     from django_q.models import OrmQ
     from django_q.signing import SignedPackage
 
-    queued: set[int] = set()
-    for row in OrmQ.objects.only("payload"):
+    queued: dict[int, list[dict]] = {}
+    for row in OrmQ.objects.only("id", "payload", "lock"):
         try:
             task = SignedPackage.loads(row.payload)
         except Exception:
@@ -66,9 +72,16 @@ def _queued_media_task_pks() -> set[int]:
         if "process_media_task" not in func or not args:
             continue
         try:
-            queued.add(int(args[0]))
+            media_task_pk = int(args[0])
         except (TypeError, ValueError, IndexError):
             continue
+        queued.setdefault(media_task_pk, []).append(
+            {
+                "row_id": row.pk,
+                "lock": getattr(row, "lock", None),
+                "q_priority": int(task.get("q_priority", 0) or 0),
+            }
+        )
     return queued
 
 
@@ -104,13 +117,26 @@ def _upload_startup_cleanup():
                 _clean_downloads_folder()
                 return
 
-            queued_task_pks = _queued_media_task_pks()
+            queued_task_rows = _queued_media_task_rows()
 
             resumed = 0
             skipped_already_queued = 0
             skipped_recent_processing = 0
+            recovered_stale_locked = 0
             for task in stuck:
-                if task.pk in queued_task_pks:
+                queued_rows = queued_task_rows.get(task.pk, [])
+                waitable_rows = [
+                    row
+                    for row in queued_rows
+                    if row.get("lock") is None or row["lock"] <= now
+                ]
+                locked_rows = [
+                    row
+                    for row in queued_rows
+                    if row.get("lock") is not None and row["lock"] > now
+                ]
+
+                if waitable_rows:
                     skipped_already_queued += 1
                     logger.info(
                         "Startup resume skipped: %s task already queued/running: %s (pk=%s)",
@@ -118,6 +144,32 @@ def _upload_startup_cleanup():
                         task.title or task.url[:50],
                         task.pk,
                     )
+                    continue
+                if task.status == "pending" and locked_rows:
+                    from django_q.models import OrmQ
+
+                    stale_row_ids = [row["row_id"] for row in locked_rows]
+                    stale_priority = max(
+                        (int(row.get("q_priority") or 0) for row in locked_rows),
+                        default=0,
+                    )
+                    deleted_count, _ = OrmQ.objects.filter(pk__in=stale_row_ids).delete()
+                    recovered_stale_locked += deleted_count
+                    logger.warning(
+                        "Startup resume recovered %s stale locked queue row(s) for pending task: %s (pk=%s); requeueing",
+                        deleted_count,
+                        task.title or task.url[:50],
+                        task.pk,
+                    )
+                    q_id = async_task(
+                        "upload.tasks.process_media_task",
+                        task.pk,
+                        task_name=f"Resume: {task.title or task.url[:50]}",
+                        q_options={"q_priority": stale_priority},
+                    )
+                    task.task_id = q_id or ""
+                    task.save(update_fields=["task_id"])
+                    resumed += 1
                     continue
                 if task.status == "processing" and _is_recent_processing_task(task, now):
                     skipped_recent_processing += 1
@@ -145,11 +197,12 @@ def _upload_startup_cleanup():
 
             if resumed:
                 logger.warning(f"Auto-resumed {resumed} task(s) (pending+processing).")
-            if skipped_already_queued or skipped_recent_processing:
+            if skipped_already_queued or skipped_recent_processing or recovered_stale_locked:
                 logger.info(
-                    "Startup resume skipped %s already-queued task(s) and %s recently-active processing task(s).",
+                    "Startup resume skipped %s already-queued task(s), %s recently-active processing task(s), and recovered %s stale locked queue row(s).",
                     skipped_already_queued,
                     skipped_recent_processing,
+                    recovered_stale_locked,
                 )
 
     except Exception as e:
