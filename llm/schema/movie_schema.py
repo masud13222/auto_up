@@ -34,13 +34,19 @@ movie_schema = {
                     "type": "object",
                     "properties": {
                         "u": {"type": "string", "description": "Absolute download URL only; never watch/stream/player/watch-online URL"},
-                        "l": {"type": "string", "description": "Language name"},
+                        "l": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                            ],
+                            "description": "Language string for single-audio files, or an array like ['Hindi','English'] when one file is dual/multi audio",
+                        },
                         "f": {"type": "string", "description": "Basename only"},
                     },
                     "required": ["u", "l", "f"],
                 },
             },
-            "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language, f=filename.",
+            "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
         },
         "cast": {"type": "string", "description": "Comma-separated actors"},
         "languages": {"type": "array", "items": {"type": "string"}},
@@ -70,8 +76,12 @@ SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars nat
 download_links: keys must be pure resolutions only, for example `480p`, `720p`, `1080p`.
 Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
 Each resolution value must be a list like:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"Title.Year.Src.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}},{{"u":"ABSOLUTE_URL","l":"English","f":"Title.Year.Src.English.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
-`u`=url, `l`=language, `f`=filename basename only (no / \\ :). Do not return a separate `download_filenames` object.
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"Title.Year.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
+If one downloadable file contains multiple audio tracks, return ONE file object only:
+`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
+Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
+Only create separate entries when the page clearly provides separate downloadable files per language.
+`u`=url, `l`=language string or language array, `f`=filename basename only (no / \\ :). Do not return a separate `download_filenames` object.
 Src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 / else omit extra src. Ext .mkv default.
 
 Schema: {json.dumps(movie_schema, **_COMPACT)}"""

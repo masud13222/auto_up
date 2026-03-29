@@ -67,13 +67,19 @@ tvshow_schema = {
                                             "type": "object",
                                             "properties": {
                                                 "u": {"type": "string", "description": "Absolute download URL only; never watch/stream/player/watch-online URL"},
-                                                "l": {"type": "string", "description": "Language name"},
+                                                "l": {
+                                                    "oneOf": [
+                                                        {"type": "string"},
+                                                        {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                                                    ],
+                                                    "description": "Language string for single-audio files, or an array like ['Hindi','English'] when one file is dual/multi audio",
+                                                },
                                                 "f": {"type": "string", "description": "Basename only"},
                                             },
                                             "required": ["u", "l", "f"],
                                         },
                                     },
-                                    "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language, f=filename.",
+                                    "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
                                 },
                             },
                             "required": ["type", "label", "resolutions"],
@@ -111,7 +117,11 @@ Example multi-season shape:
 `"seasons":[{{"season_number":1,"download_items":[...] }},{{"season_number":2,"download_items":[...]}}]`
 
 Each `resolutions` value must be a list like:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}},{{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}}]`
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}}]`
+If one downloadable file contains multiple audio tracks, return ONE file object only:
+`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.S01E05.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
+Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
+Only create separate entries when the page clearly provides separate downloadable files per language.
 Do not return a separate `download_filenames` object.
 - combo: `Title.Year.Hindi.S01.Complete.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
 - partial: `Title.Year.Hindi.S01E01-E08.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`

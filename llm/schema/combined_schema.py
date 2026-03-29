@@ -191,16 +191,21 @@ TV: true only for explicit adult. false for mainstream.
 ## File Download Entries (required):
 Movie `download_links` and TV item `resolutions` must use pure resolution keys only: `480p`, `720p`, `1080p`.
 Each resolution value must be a list of per-file objects:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}},{{"u":"ABSOLUTE_URL","l":"English","f":"BASENAME_ONLY"}}]`
+`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}}]`
+If one downloadable file contains multiple audio tracks, return ONE file object only:
+`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
+Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
+Only create separate entries when the page clearly provides separate downloadable files per language.
 Do not return a separate `download_filenames` object for movie or TV when these fields are already inside each file entry.
-`u`=url, `l`=language, `f`=filename. `f` is basename only — no `/` `\\` `:`.
-Pattern (dots not spaces): `Title.Year.<segment>.<language>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
+`u`=url, `l`=language string or language array, `f`=filename. `f` is basename only — no `/` `\\` `:`.
+Pattern (dots not spaces): `Title.Year.<segment>.<language_or_audio_tag>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
 - Movie segment: (none — just Title.Year.Language.Res...)
 - TV combo: S01.Complete | partial: S01E01-E08 | single: S01E05
+- Use `Dual.Audio` / `Multi.Audio` in filename when one file contains multiple audio tracks.
 - src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 — if clearly in title; else omit extra src token
 - ext: .mkv default; archives → match ext
 Example movie:
-`"download_links":{{"720p":[{{"u":"https://...","l":"Hindi","f":"War.Machine.2026.Hindi.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}},{{"u":"https://...","l":"English","f":"War.Machine.2026.English.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}`
+`"download_links":{{"720p":[{{"u":"https://...","l":["Hindi","English"],"f":"War.Machine.2026.Dual.Audio.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}`
 
 ---
 
