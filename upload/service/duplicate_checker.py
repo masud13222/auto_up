@@ -81,7 +81,11 @@ def _search_db(name: str, year: str = None, exclude_pk: int = None) -> list:
     """
     from rapidfuzz import fuzz
 
-    base_qs = MediaTask.objects.filter(status__in=["completed", "processing"]).exclude(result__isnull=True)
+    # Include pending rows too when they already have structured result data.
+    # This lets later seasons see the earliest queued task as a duplicate candidate.
+    base_qs = MediaTask.objects.filter(
+        status__in=["pending", "processing", "partial", "completed"]
+    ).exclude(result__isnull=True)
     if exclude_pk:
         base_qs = base_qs.exclude(pk=exclude_pk)
 
