@@ -67,21 +67,32 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
         no_db_rules = f"""
 **No DB Candidates (only {site} rows above):**
 - `matched_task_id` = **null** (no MediaTask row).
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON when title+year match; else null.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = the matching row's `id` from the JSON only when title+year+type match; else null.
 - Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys`.
+- Infer the {site} row type from its title: `Season` / `Episode` / `S01` / `E01` / `Series` / `Web Series` => tvshow, otherwise movie.
+- Never use a movie row for a tvshow, and never use a tvshow row for a movie.
 - Also inspect the matched row `title` for source tier.
 - If the matched row clearly shows lower source (example: old `HDTC`, new `WEB-DL`), prefer **replace** even when `Existing` is empty or `Missing` is non-empty.
 - Use **update** only for genuine add-missing-resolutions cases, not for clear low-source -> high-source upgrades.
-- No title+year match → **process**.
+- No title+year+type match → **process**.
 
 """
     db_rules = ""
     if has_db:
         db_rules = f"""
 **DB Candidates present:**
-- `matched_task_id` = DB candidate `id` only when you attach to that row; else null.
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = matching {site} row `id` when you also identify a site row (same title+year); else null.
+- `matched_task_id` = DB candidate `id` only when title+year+type all match that row; else null.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = matching {site} row `id` when you also identify a site row (same title+year+type); else null.
 - Never swap the two id spaces.
+- DB candidate `type` must exactly match the detected new `content_type`.
+- Never match movie ↔ tvshow even when title/year are the same.
+- Ignore punctuation-only differences, but DO NOT ignore meaningful extra words/subtitles.
+- Exact title match is strongest, but not mandatory when the title is clearly an alternate / shortened / variant form of the same media.
+- If the title looks unfamiliar, think carefully: compare core title words, year, type, season/episode clues, and whether the difference looks like an alias vs a different subtitle.
+- For non-exact title matches, require strong evidence. If confidence is not high, use **process**.
+- If the new title contains meaningful words not present in the candidate title
+  (examples: `Members Only`, `Returns`, `Part 2`, `Season 1`, `Episode 5`),
+  treat them as different content and use **process** unless the candidate title also contains the same words.
 
 """
 
@@ -98,7 +109,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
 
 **Source upgrade (replace only):**
-- Run whenever title+year match and source tiers are visible, even if Missing is non-empty.
+- Run whenever title+year+type match and source tiers are visible, even if Missing is non-empty.
 - Use source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - Same resolutions but clearly higher source -> `replace`
 - Lower old source in matched site row title -> higher new source also -> `replace`
@@ -106,10 +117,13 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - Never replace from codec alone.
 
 Steps:
-1. Match title+year to DB candidate (if any) and/or {site} row (if any).
-2. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
-3. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
-4. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
+1. Detect new type first: movie or tvshow.
+2. Match title+exact-year+same-type to DB candidate (if any) and/or {site} row (if any).
+3. If titles are not exact, allow a match only when it is clearly an alternate / shortened / variant title for the same media.
+4. If type mismatches, year mismatches, or the new title has meaningful extra words not present in the candidate title, it is NOT a match.
+5. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
+6. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
+7. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
 
 TV shows:
 - `has_new_episodes=true` only when explicit higher episode numbers are visible.
@@ -123,7 +137,7 @@ TV shows:
 
 Reason format:
 - Single line only.
-- Must start with `Matched candidate id=` or `No candidate matches title+year.`
+- Must start with `Matched candidate id=` or `No candidate matches title+year+type.`
 - Must include `Extracted`, `Existing`, `Missing` lists even when empty, then `Action: ... because ...`
 
 ```json

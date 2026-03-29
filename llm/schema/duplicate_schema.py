@@ -26,7 +26,7 @@ _dup_props = {
     "reason": {
         "type": "string",
         "description": (
-            "Single-line string. MUST start with 'Matched candidate id=X.' or 'No candidate matches title+year.' "
+            "Single-line string. MUST start with 'Matched candidate id=X.' or 'No candidate matches title+year+type.' "
             "then 'Extracted: [list]. Existing: [list]. Missing: [list]. Action: <action> because <why>.' "
             "Always include all three lists (use [] if empty). No other format."
         ),
@@ -51,7 +51,7 @@ _dup_props[TARGET_SITE_ROW_ID_JSON_KEY] = {
     "type": ["integer", "null"],
     "description": (
         f"{SITE_NAME} site content row id from ### {SITE_NAME} search results (`id`) when that row matches "
-        "title+year and you skip/update/replace that site row. "
+        "title+year+type and you skip/update/replace that site row. "
         "Must be null when no matching site row. Never put a MediaTask pk here. "
         "The pipeline does not guess this id — you must return it or null."
     ),
@@ -82,20 +82,28 @@ Hard rules:
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = ONLY a {SITE_NAME} site row `id` when surrounding instructions provide site rows
 - Never invent ids
 - Year mismatch means different content
+- Movie and TV show are DIFFERENT content types. Never match movie <-> tvshow.
+- Exact title match is strongest, but NOT required when the title is clearly an alternate / shortened / variant form of the same media.
+- If the title looks unfamiliar, think carefully before answering: compare core title words, year, type, source clues, episode/season clues, and whether the difference looks like an alias vs a genuinely different subtitle.
+- If the new title has meaningful extra words/subtitle tokens not present in the candidate title
+  (examples: `Members Only`, `Returns`, `Part 2`, `Season 1`, `Episode 5`), treat as different content.
 - If unsure, avoid `replace`
 
-Step 1: pick candidate
-- Match by title + exact year
-- If multiple exact-year matches, choose the closest title
-- If no candidate matches title+year -> `action="process"`, `matched_task_id=null`
-
-Step 2: detect type
+Step 1: detect type
 - TV signs: Season, Episode, S01, E01, Complete Season, Web Series, Series
 - Otherwise movie
 
+Step 2: pick candidate
+- Match by normalized title + exact year + same detected type
+- Ignore punctuation-only differences, but DO NOT ignore meaningful subtitle words
+- If titles are not exact, you may still match when they look like the same media under an alternate / shortened / romanized title AND there is no conflicting subtitle/sequel/season signal.
+- For non-exact title matches, require strong evidence: same year, same type, and close core-title meaning. Otherwise use `process`.
+- If multiple exact-year same-type matches, choose the closest full title
+- If no candidate matches title+year+type -> `action="process"`, `matched_task_id=null`
+
 Step 3: type mismatch
-- If detected type differs from matched candidate type, use `replace` ONLY when title matches closely, year matches exactly, and there are no extra distinguishing keywords like Season, Series, Animated, subtitle, sequel markers
-- Otherwise use `process`
+- If detected type differs from candidate type, that candidate is NOT a match
+- Set `matched_task_id=null` and use `process`
 
 Step 4: resolution comparison
 - Normalize extracted resolution tiers from `new_website_title`
@@ -112,7 +120,7 @@ Step 4: resolution comparison
 - Use `update` for Missing only when this is genuinely an add-missing-resolutions case, not a clear low-source -> high-source replacement
 
 Step 5: source upgrade check
-- Run this whenever title+year match and source tiers are visible, even if `Missing` is non-empty
+- Run this whenever title+year+type match and source tiers are visible, even if `Missing` is non-empty
 - Source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
 - If new source is clearly higher for the same content -> `replace`
 - If same/lower/unclear -> `skip`
@@ -137,20 +145,20 @@ TV pack upgrade rules:
 - Use `replace_items` only when the replace scope is explicit and NOT a whole-season combo pack on either side; if a combo/complete-season pack is involved, prefer full `replace`
 
 Action table:
-- `skip`: same title+year, nothing new, no clear upgrade
-- `update`: same title+year, missing resolutions or explicit new episodes, without a clear low-source -> high-source replacement
-- `replace`: same title+year, same coverage, clearly better source or clear type misclassification
-- `replace_items`: TV only; same title+year, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
-- `process`: no confident match or ambiguous case
+- `skip`: same title+year+type, nothing new, no clear upgrade
+- `update`: same title+year+type, missing resolutions or explicit new episodes, without a clear low-source -> high-source replacement
+- `replace`: same title+year+type, same coverage, clearly better source
+- `replace_items`: TV only; same title+year+type, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
+- `process`: no confident match, ambiguous title, or unfamiliar title without strong evidence
 
 Reason format:
 - Single line only
-- MUST start with `Matched candidate id=` or `No candidate matches title+year.`
+- MUST start with `Matched candidate id=` or `No candidate matches title+year+type.`
 - MUST include all three lists even when empty: `Extracted: [...] . Existing: [...] . Missing: [...]`
 - Pattern:
   `Matched candidate id=X. Extracted: [...]. Existing: [...]. Missing: [...]. Action: <action> because <why>.`
   or
-  `No candidate matches title+year. Extracted: [...]. Existing: []. Missing: [...]. Action: process because <why>.`
+  `No candidate matches title+year+type. Extracted: [...]. Existing: []. Missing: [...]. Action: process because <why>.`
 
 JSON Schema:
 {json.dumps(duplicate_schema, separators=(',',':'))}
