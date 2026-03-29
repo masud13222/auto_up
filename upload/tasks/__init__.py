@@ -60,7 +60,7 @@ def _is_valid_task_url(url: str) -> bool:
     tail = url.split("://", 1)[1] if "://" in url else url
     if "http://" in tail or "https://" in tail:
         return False
-                    return True
+    return True
 
 
 def _first_non_empty(*values):
@@ -199,22 +199,22 @@ def process_media_task(task_pk: int) -> str:
     group_lock = None
     media_task = None
     try:
-    try:
-        media_task = MediaTask.objects.get(pk=task_pk)
-    except MediaTask.DoesNotExist:
-        # Stale django-q job after duplicate-skip delete, admin delete, or re-queue race.
-        logger.warning(
-            "process_media_task: MediaTask pk=%s missing (row deleted); stale queue job — skipping",
-            task_pk,
-        )
-        return json.dumps({"status": "skipped", "message": "MediaTask does not exist"})
+        try:
+            media_task = MediaTask.objects.get(pk=task_pk)
+        except MediaTask.DoesNotExist:
+            # Stale django-q job after duplicate-skip delete, admin delete, or re-queue race.
+            logger.warning(
+                "process_media_task: MediaTask pk=%s missing (row deleted); stale queue job — skipping",
+                task_pk,
+            )
+            return json.dumps({"status": "skipped", "message": "MediaTask does not exist"})
 
-    # Skip if already completed
-    if media_task.status == 'completed':
-        logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
-        return json.dumps({"status": "skipped", "message": "Already completed"})
+        # Skip if already completed
+        if media_task.status == 'completed':
+            logger.info(f"Task already completed, skipping: {media_task.title or media_task.url[:50]} (pk={task_pk})")
+            return json.dumps({"status": "skipped", "message": "Already completed"})
 
-    save_task(media_task, status='processing')
+        save_task(media_task, status='processing')
 
         url = normalize_http_url((media_task.url or "").strip())
         if url != (media_task.url or "").strip():
@@ -311,7 +311,7 @@ def process_media_task(task_pk: int) -> str:
                         existing_task.title,
                     )
                 else:
-                        dup_result["matched_task_id"] = None
+                    dup_result["matched_task_id"] = None
                     logger.warning(
                         "matched_task_id=%s not in DB candidates %s (task pk=%s)",
                         matched_pk,
@@ -520,7 +520,7 @@ def process_media_task(task_pk: int) -> str:
         ):
             media_task.site_content_id = target_site_row_id
             save_task(media_task, site_content_id=target_site_row_id)
-                logger.info(
+            logger.info(
                 "LLM %s site_content_id=%s for '%s' (pk=%s)",
                 SITE_NAME,
                 target_site_row_id,
@@ -670,7 +670,7 @@ def process_media_task(task_pk: int) -> str:
         if media_task is not None:
             try:
                 cleaned = clean_result_keep_drive_links(media_task.result or {})
-        save_task(media_task, status='failed', error_message=str(e), result=cleaned)
+                save_task(media_task, status='failed', error_message=str(e), result=cleaned)
             except Exception as save_exc:
                 logger.error("Could not persist failed MediaTask state: %s", save_exc, exc_info=True)
         return json.dumps({"status": "error", "message": str(e)})
