@@ -578,8 +578,9 @@ def _publish_to_flixbd_series(
     Add Drive links to FlixBD after upload completes.
 
     **Update path:** same as movie — ``site_content_id`` (LLM duplicate_check site row id or DB row)
-    triggers ``patch_series_title`` with latest
-    ``website_tvshow_title``. Without id, POST ``create_series`` only.
+    triggers ``patch_series_title`` / ``update_series`` with latest
+    ``website_tvshow_title``. Full download clear is only for **replace** or **replace_items** scope,
+    not for **update**.
 
     Never raises -- errors are logged only.
     """
@@ -620,10 +621,13 @@ def _publish_to_flixbd_series(
             if dup_info and dup_info.get("action") == "update":
                 if not fx.update_series(content_id, tvshow_data):
                     fx.patch_series_title(content_id, tvshow_data)
-                n = fx.clear_series_download_links(content_id)
+                # Never clear all series downloads on duplicate "update": merged data often
+                # only carries the new season batch, and add_series_download_links may post
+                # only fresh_upload_targets this run — a full clear would wipe S1/S2 already
+                # on FlixBD. New links are POSTed below; duplicates resolve via HTTP 409.
                 logger.info(
-                    "FlixBD: update sync — cleared %s existing download row(s) for series id=%s",
-                    n,
+                    "FlixBD: update — preserving existing download rows for series id=%s; "
+                    "adding links from this run only",
                     content_id,
                 )
             elif dup_info and dup_info.get("clear_flixbd_links"):

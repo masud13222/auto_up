@@ -6,6 +6,11 @@ from .blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 # Duplicate Detection Schema
 # ───────────────────────────────────────────────
 
+_UPDATED_WEBSITE_TITLE_DESC = (
+    f"Full **website** listing title ending ` - {SITE_NAME}`, or `false` if candidate `website_title` is already right. "
+    "On update/replace: rewrite only when needed; TV merges → `Season NN-MM` (zero-pad), series year from candidate when same show."
+)
+
 _dup_props = {
         "is_duplicate": {
             "type": "boolean",
@@ -50,12 +55,7 @@ _dup_props = {
                 {"type": "string"},
                 {"type": "boolean", "enum": [False]},
             ],
-            "description": (
-                "For duplicate update/replace flows only. Return a new website title string ONLY when the matched "
-                "existing row/title should be renamed to reflect broader merged coverage "
-                "(example: old `Season 01 Complete`, incoming `Season 02 Complete` -> `Season 01-02 Complete`). "
-                "If no title change is needed, return false."
-            ),
+            "description": _UPDATED_WEBSITE_TITLE_DESC,
         },
 }
 
@@ -84,7 +84,7 @@ duplicate_schema = {
 }
 
 
-DUPLICATE_CHECK_PROMPT = f"""You are a strict media deduplication assistant. Return ONLY one JSON object matching the schema.
+DUPLICATE_CHECK_PROMPT = f"""You are a media deduplication assistant. Return ONLY one JSON object matching the schema.
 
 Input:
 - `new_website_title`, `new_name`, `new_year`
@@ -147,7 +147,6 @@ Step 6: TV episodes
 - For TV, compare explicit `season_number` first. Different seasons are the same show but DIFFERENT coverage.
 - If the incoming season does not overlap any existing candidate season, NEVER use `replace` or `replace_items` against another season.
 - If the show matches but the incoming season is new/missing in the existing row, prefer `update` so the new season is appended.
-- When the matched title should expand to reflect merged TV coverage (for example old title only shows `Season 01` but incoming data adds `Season 02`), set `updated_website_title` to the better combined website title. Otherwise set `updated_website_title=false`.
 - Show-wide resolution lists are only a weak signal for TV. Do NOT replace based on resolution/source alone when the incoming season differs from the existing season.
 - Use explicit `episode_range` logic:
   - genuinely NEW higher range/batch -> `update`
@@ -164,13 +163,15 @@ TV pack upgrade rules:
 - If only the incoming overlapping TV items should be replaced (for example old singles `09`,`10`,`11` replaced by new partial `09-11` while `01-08` stays untouched), use `action="replace_items"` instead of full `replace`
 - Use `replace_items` only when the replace scope is explicit and NOT a whole-season combo pack on either side; if a combo/complete-season pack is involved, prefer full `replace`
 
+**`updated_website_title`:** Full line ending ` - {SITE_NAME}` only if it beats candidate `website_title`; else `false`. TV season merge → `Season NN-MM` (zero-pad); same show → prefer candidate year.
+
 Action table:
 - `skip`: same title+year+type, nothing new, no clear upgrade
 - `update`: same title+year+type, missing resolutions, explicit new episodes, or a new/missing season, without a clear overlapping same-season replacement
 - `replace`: same title+year+type, same coverage, clearly better source
 - `replace_items`: TV only; same title+year+type, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match, ambiguous title, or unfamiliar title without strong evidence
-- `updated_website_title`: false when the old website title can stay as-is; otherwise the exact replacement website title string
+- `updated_website_title`: see one line above
 
 Reason format:
 - Single line only

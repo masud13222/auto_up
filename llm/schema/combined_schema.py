@@ -124,7 +124,7 @@ Steps:
 4. If type mismatches, year mismatches, or the new title has meaningful extra words not present in the candidate title, it is NOT a match.
 5. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
 6. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
-7. When duplicate TV coverage expands beyond the old title (example old title only says `Season 01` but incoming data adds `Season 02`), set `updated_website_title` to the better merged website title; otherwise set `updated_website_title=false`.
+7. **updated_website_title:** On **update**, compare candidate `website_title` with the new extract; if a clearer, polished **{site}** listing helps (movie: tags/source; TV: merged `Season NN-MM`, sensible series **year**), compose the full string ending ` - {site}`; otherwise `false` when the stored title is already good.
 8. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
 
 TV shows:
@@ -134,7 +134,7 @@ TV shows:
 - Different seasons are the same show but DIFFERENT coverage.
 - If the incoming season does not overlap any existing candidate season, do NOT use **`replace`** or **`replace_items`** against another season.
 - Same show + new/missing season => prefer **`update`** so the new season is appended.
-- If the existing website title should be broadened after merge (example `Season 01 Complete` -> `Season 01-02 Complete`), return that exact string in `updated_website_title`. If no better merged website title is needed, return `false`.
+- TV **update**: when season coverage widens, prefer a thoughtful merged `updated_website_title` (`... - {site}`) if the old line no longer describes the bundle well.
 - Use explicit `episode_range` when available:
   - genuinely NEW later episode range -> **update**
   - same covered range in a better pack form (single -> partial, partial -> combo, same range better source) -> **replace**

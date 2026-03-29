@@ -416,6 +416,9 @@ def _publish_to_flixbd_movie(
     ``site_content_id`` is still null, we **create** a new movie (no PATCH) — title
     will not update an existing row.
 
+    Full download-row clear runs only for duplicate **replace** (``clear_flixbd_links``), not for **update**,
+    so adding a missing quality does not wipe existing FlixBD rows before POST (duplicates use HTTP 409).
+
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
@@ -455,10 +458,11 @@ def _publish_to_flixbd_movie(
             if dup_info and dup_info.get("action") == "update":
                 if not fx.update_movie(content_id, movie_data):
                     fx.patch_movie_title(content_id, movie_data)
-                n = fx.clear_movie_download_links(content_id)
+                # Do not clear all movie downloads on duplicate "update": same failure mode as
+                # TV (wipe site rows then repost a subset). Replace uses clear_flixbd_links below.
                 logger.info(
-                    "FlixBD: update sync — cleared %s existing download row(s) for movie id=%s",
-                    n,
+                    "FlixBD: update — preserving existing download rows for movie id=%s; "
+                    "POST below adds/reconciles links (409 on duplicates)",
                     content_id,
                 )
             elif dup_info and dup_info.get("clear_flixbd_links"):
