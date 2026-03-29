@@ -11,6 +11,7 @@ import logging
 from django.db.models import Q
 from rapidfuzz import fuzz
 from upload.models import MediaTask
+from upload.tasks.helpers import download_source_urls
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,17 @@ def _extract_rich_info(task: MediaTask) -> dict:
     download_links = result.get("download_links", {})
     if download_links:
         # Only count resolutions with actual non-null download URLs
-        info["resolutions"] = sorted(k for k, v in download_links.items() if v)
+        info["resolutions"] = sorted(
+            k
+            for k, v in download_links.items()
+            if (
+                bool(download_source_urls(v))
+                or any(
+                    download_source_urls((entry or {}).get("u"))
+                    for entry in (v if isinstance(v, list) else [])
+                )
+            )
+        )
 
     # ── TV Show details ──
     seasons = result.get("seasons", [])
@@ -59,7 +70,17 @@ def _extract_rich_info(task: MediaTask) -> dict:
                 label = item.get("label", "")
                 resolutions = item.get("resolutions", {})
                 # Only count resolutions with actual non-null download URLs
-                ep_res = sorted(k for k, v in resolutions.items() if v)
+                ep_res = sorted(
+                    k
+                    for k, v in resolutions.items()
+                    if (
+                        bool(download_source_urls(v))
+                        or any(
+                            download_source_urls((entry or {}).get("u"))
+                            for entry in (v if isinstance(v, list) else [])
+                        )
+                    )
+                )
 
                 episodes.append(f"{label}: {','.join(ep_res)}")
 

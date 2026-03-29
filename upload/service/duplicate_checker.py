@@ -13,6 +13,7 @@ import logging
 from django.db.models import Q
 
 from upload.models import MediaTask
+from upload.tasks.helpers import download_source_urls
 from llm.schema.blocked_names import (
     LEGACY_SITE_ROW_ID_JSON_KEY,
     TARGET_SITE_ROW_ID_JSON_KEY,
@@ -152,9 +153,12 @@ def _get_existing_resolutions(task: MediaTask) -> list:
             {
                 str(k).strip().lower()
                 for k, entries in dl.items()
-                if any(
-                    str((entry or {}).get("u") or "").strip()
-                    for entry in (entries if isinstance(entries, list) else [])
+                if (
+                    bool(download_source_urls(entries))
+                    or any(
+                        download_source_urls((entry or {}).get("u"))
+                        for entry in (entries if isinstance(entries, list) else [])
+                    )
                 )
             }
         )
@@ -165,9 +169,12 @@ def _get_existing_resolutions(task: MediaTask) -> list:
             resolutions.update(
                 str(k).strip().lower()
                 for k, entries in item.get("resolutions", {}).items()
-                if any(
-                    str((entry or {}).get("u") or "").strip()
-                    for entry in (entries if isinstance(entries, list) else [])
+                if (
+                    bool(download_source_urls(entries))
+                    or any(
+                        download_source_urls((entry or {}).get("u"))
+                        for entry in (entries if isinstance(entries, list) else [])
+                    )
                 )
             )
 
