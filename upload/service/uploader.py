@@ -36,17 +36,20 @@ class DriveUploader:
 
     @staticmethod
     def build_root_folder_name(title: str, year=None, content_type: str = "") -> str:
-        """Canonical Drive root folder name: `Name Year Type`."""
+        """Canonical Drive root folder: ``Movie: Title Year`` or ``TV Show: Title Year``."""
         safe_title = " ".join(str(title or "Unknown").split()).strip() or "Unknown"
-        parts = [safe_title]
-        if year not in (None, ""):
-            parts.append(str(year).strip())
         type_text = str(content_type or "").strip().lower()
+        tail_parts = [safe_title]
+        if year not in (None, ""):
+            tail_parts.append(str(year).strip())
+        tail = " ".join(tail_parts)
         if type_text == "movie":
-            parts.append("Movie")
-        elif type_text == "tvshow":
-            parts.append("TV Show")
-        return " ".join(part for part in parts if part).strip()
+            return f"Movie: {tail}"
+        if type_text == "tvshow":
+            return f"TV Show: {tail}"
+        if year not in (None, ""):
+            return f"{safe_title} {str(year).strip()}"
+        return safe_title
 
     @staticmethod
     def _get_random_config_id():
