@@ -13,6 +13,7 @@ from django.conf import settings
 
 from .helpers import (
     coerce_download_source_value,
+    coerce_entry_language_value,
     download_source_urls,
     is_drive_link,
     save_task,
@@ -65,8 +66,8 @@ def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]
             if not source_urls:
                 issues.append(f"{entry_ctx}.u: missing or invalid")
                 continue
-            language = raw_entry.get("l")
-            if not isinstance(language, str) or not language.strip():
+            language = coerce_entry_language_value(raw_entry.get("l"))
+            if not language:
                 issues.append(f"{entry_ctx}.l: missing or invalid")
                 continue
             filename_raw = raw_entry.get("f")
@@ -82,7 +83,7 @@ def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]
                 continue
             entry = {
                 "u": coerce_download_source_value(source_urls),
-                "l": " ".join(language.strip().split()),
+                "l": language,
                 "f": safe_filename,
             }
             if isinstance(raw_entry.get("s"), str) and raw_entry["s"].strip():
@@ -211,6 +212,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     # Collect downloadable files (skip already-uploaded ones)
     to_process: list[dict] = []
     uploaded_entry_ids: set[tuple[str, str, str]] = set()
+    fresh_upload_entry_ids: set[tuple[str, str, str]] = set()
     for resolution, entries in download_links.items():
         kept_uploaded = []
         for entry in entries:
@@ -318,7 +320,9 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                     src_entry["s"] = size_str
                     file_sizes[_movie_entry_id(resolution, src_entry)] = size_str
                 drive_links.setdefault(resolution, []).append(src_entry)
-                uploaded_entry_ids.add(_movie_entry_id(resolution, src_entry))
+                entry_id = _movie_entry_id(resolution, src_entry)
+                uploaded_entry_ids.add(entry_id)
+                fresh_upload_entry_ids.add(entry_id)
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)
                 logger.info("Saved Drive link for %s", _movie_entry_label(resolution, src_entry))
@@ -357,14 +361,28 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         logger.info(f"Movie pipeline complete for: {title}")
 
     # Step 5: Publish to FlixBD
-    _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, dup_info=dup_info)
+    _publish_to_flixbd_movie(
+        media_task,
+        movie_data,
+        drive_links,
+        file_sizes,
+        dup_info=dup_info,
+        publish_entry_ids=fresh_upload_entry_ids,
+    )
 
     if missing_targets:
         return json.dumps({"status": "partial", "type": "movie", "data": movie_data})
     return json.dumps({"status": "success", "type": "movie", "data": movie_data})
 
 
-def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, dup_info=None):
+def _publish_to_flixbd_movie(
+    media_task,
+    movie_data,
+    drive_links,
+    file_sizes,
+    dup_info=None,
+    publish_entry_ids=None,
+):
     """
     Add Drive links to FlixBD after upload completes.
 
@@ -377,6 +395,7 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, du
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
+    from upload.tasks.runtime_helpers import refresh_site_sync_snapshot_from_api, save_site_sync_snapshot
 
     title = movie_data.get("title", "Unknown")
 
@@ -402,10 +421,20 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, du
             web_t[:120] + ("…" if len(web_t) > 120 else ""),
         )
 
+        allowed_entry_ids = None
         if cid:
             logger.info(f"FlixBD: existing row id={cid} — update existing movie then add links")
             content_id = int(cid)
-            if dup_info and dup_info.get("clear_flixbd_links"):
+            if dup_info and dup_info.get("action") == "update":
+                if not fx.update_movie(content_id, movie_data):
+                    fx.patch_movie_title(content_id, movie_data)
+                n = fx.clear_movie_download_links(content_id)
+                logger.info(
+                    "FlixBD: update sync — cleared %s existing download row(s) for movie id=%s",
+                    n,
+                    content_id,
+                )
+            elif dup_info and dup_info.get("clear_flixbd_links"):
                 if not fx.update_movie(content_id, movie_data):
                     fx.patch_movie_title(content_id, movie_data)
                 n = fx.clear_movie_download_links(content_id)
@@ -416,6 +445,8 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, du
                 )
             else:
                 fx.patch_movie_title(content_id, movie_data)
+                if publish_entry_ids:
+                    allowed_entry_ids = set(publish_entry_ids)
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_movie (title will be set on new row only; "
@@ -430,11 +461,22 @@ def _publish_to_flixbd_movie(media_task, movie_data, drive_links, file_sizes, du
             drive_links=drive_links,
             file_sizes=file_sizes,
             movie_data=movie_data,
+            allowed_entry_ids=allowed_entry_ids,
         )
 
-        if not media_task.site_content_id:
+        if media_task.site_content_id != content_id:
             media_task.site_content_id = content_id
             media_task.save(update_fields=["site_content_id", "updated_at"])
+        web_t = fx.movie_website_title(movie_data)
+        snapshot_result = refresh_site_sync_snapshot_from_api(media_task, "movie")
+        if not snapshot_result:
+            save_site_sync_snapshot(
+                media_task,
+                "movie",
+                movie_data,
+                website_title=web_t,
+                site_content_id=content_id,
+            )
         logger.info(f"FlixBD: movie done -- site_content_id={content_id} clean_title='{title}'")
 
     except Exception as e:

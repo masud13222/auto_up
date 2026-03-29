@@ -98,6 +98,82 @@ def coerce_download_source_value(value):
     return urls
 
 
+def _flatten_language_value(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        out = []
+        for item in value:
+            out.extend(_flatten_language_value(item))
+        return out
+    if not isinstance(value, str):
+        return []
+
+    s = value.strip()
+    if not s or s.casefold() in _EMPTY_DOWNLOAD_VALUES:
+        return []
+
+    if s[0] in "[({" and s[-1] in "])}":
+        try:
+            parsed = ast.literal_eval(s)
+        except (SyntaxError, ValueError):
+            parsed = None
+        if parsed is not None and parsed != value:
+            return _flatten_language_value(parsed)
+
+    return [s]
+
+
+def coerce_entry_language_value(value) -> str:
+    """
+    Canonical language label for an entry `l` field.
+    Returns a comma-separated string, e.g. "Hindi, English".
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for raw in _flatten_language_value(value):
+        s = " ".join(str(raw).strip().split())
+        if not s:
+            continue
+        key = s.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+
+    return ", ".join(out)
+
+
+def entry_language_key(value) -> str:
+    """Normalized lowercase key for matching entry languages."""
+    return coerce_entry_language_value(value).casefold()
+
+
+def normalize_result_download_languages(data: dict) -> dict:
+    """Normalize every download entry language field in-place to a comma-separated string."""
+    if not isinstance(data, dict):
+        return data
+
+    for entries in (data.get("download_links") or {}).values():
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict):
+                entry["l"] = coerce_entry_language_value(entry.get("l"))
+
+    for season in data.get("seasons", []):
+        if not isinstance(season, dict):
+            continue
+        for item in season.get("download_items", []):
+            if not isinstance(item, dict):
+                continue
+            for entries in (item.get("resolutions") or {}).values():
+                for entry in entries if isinstance(entries, list) else []:
+                    if isinstance(entry, dict):
+                        entry["l"] = coerce_entry_language_value(entry.get("l"))
+
+    return data
+
+
 def validate_llm_download_basename(value, *, context: str) -> str:
     """
     Ensure LLM-supplied download basename is safe for local filesystem use.

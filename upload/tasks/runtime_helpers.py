@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 
@@ -9,7 +10,10 @@ from upload.service.duplicate_checker import (
 )
 from upload.tasks.helpers import (
     coerce_download_source_value,
+    coerce_entry_language_value,
+    entry_language_key,
     is_drive_link,
+    normalize_result_download_languages,
     primary_download_source_url,
 )
 from upload.utils.tv_items import tv_item_key
@@ -27,7 +31,7 @@ _FLIXBD_LLM_MAX_RESULTS = 3
 
 
 def _entry_language_key(entry: dict) -> str:
-    return str((entry or {}).get("l") or "").strip().lower()
+    return entry_language_key((entry or {}).get("l"))
 
 
 def _entry_link(entry: dict) -> str:
@@ -41,12 +45,230 @@ def _entry_filename(entry: dict) -> str:
 def _entry_copy(entry: dict, *, link: str) -> dict:
     out = {
         "u": coerce_download_source_value(link),
-        "l": str(entry.get("l") or "").strip(),
+        "l": coerce_entry_language_value(entry.get("l")),
         "f": _entry_filename(entry),
     }
     if isinstance(entry.get("s"), str) and entry["s"].strip():
         out["s"] = entry["s"].strip()
     return out
+
+
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _entry_size(entry: dict) -> str:
+    return str((entry or {}).get("s") or "").strip()
+
+
+def _same_snapshot_entry(existing: dict, incoming: dict) -> bool:
+    if _entry_language_key(existing) != _entry_language_key(incoming):
+        return False
+    existing_filename = _entry_filename(existing).lower()
+    incoming_filename = _entry_filename(incoming).lower()
+    if existing_filename and incoming_filename:
+        return existing_filename == incoming_filename
+    existing_size = _entry_size(existing).lower()
+    incoming_size = _entry_size(incoming).lower()
+    if existing_size and incoming_size:
+        return existing_size == incoming_size
+    existing_link = _entry_link(existing)
+    incoming_link = _entry_link(incoming)
+    if existing_link and incoming_link:
+        return existing_link == incoming_link
+    return False
+
+
+def _snapshot_entry_with_metadata(incoming: dict, base_entries: list) -> dict:
+    incoming_copy = _json_clone(incoming)
+    incoming_copy.setdefault("f", "")
+    incoming_copy["l"] = coerce_entry_language_value(incoming_copy.get("l"))
+    incoming_copy["u"] = coerce_download_source_value(incoming_copy.get("u"))
+
+    for existing in base_entries or []:
+        if not isinstance(existing, dict):
+            continue
+        if not _same_snapshot_entry(existing, incoming_copy):
+            continue
+        if not _entry_filename(incoming_copy) and _entry_filename(existing):
+            incoming_copy["f"] = _entry_filename(existing)
+        if not _entry_size(incoming_copy) and _entry_size(existing):
+            incoming_copy["s"] = _entry_size(existing)
+        break
+    return incoming_copy
+
+
+def extract_site_sync_snapshot_result(snapshot: dict | None) -> dict:
+    if not isinstance(snapshot, dict):
+        return {}
+    data = snapshot.get("data")
+    return _json_clone(data) if isinstance(data, dict) and data else {}
+
+
+def _published_site_view(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return {}
+    return normalize_result_download_languages(clean_result_keep_drive_links(_json_clone(data)))
+
+
+def overlay_site_sync_snapshot(existing_result: dict, snapshot_result: dict, content_type: str) -> dict:
+    base = _json_clone(existing_result or {}) if isinstance(existing_result, dict) else {}
+    if not isinstance(snapshot_result, dict) or not snapshot_result:
+        return base
+    snapshot_clean = _published_site_view(snapshot_result)
+
+    if content_type == "movie":
+        base_links = base.get("download_links") if isinstance(base.get("download_links"), dict) else {}
+        live_links = snapshot_clean.get("download_links") if isinstance(snapshot_clean.get("download_links"), dict) else {}
+        merged_links = {}
+        for quality, entries in live_links.items():
+            normalized_entries = []
+            base_entries = base_links.get(quality, [])
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                hydrated = _snapshot_entry_with_metadata(entry, base_entries)
+                if is_drive_link(_entry_link(hydrated)):
+                    normalized_entries.append(hydrated)
+            if normalized_entries:
+                merged_links[quality] = normalized_entries
+        base["download_links"] = merged_links
+        base.pop("download_filenames", None)
+    else:
+        base_seasons = {
+            season.get("season_number"): _json_clone(season)
+            for season in (base.get("seasons") or [])
+            if isinstance(season, dict) and season.get("season_number") is not None
+        }
+        authoritative_seasons = []
+        for season in snapshot_clean.get("seasons") or []:
+            if not isinstance(season, dict):
+                continue
+            season_num = season.get("season_number")
+            if season_num is None:
+                continue
+            target_season = {"season_number": season_num, "download_items": []}
+            base_season = base_seasons.get(season_num) or {}
+            existing_items = {
+                tv_item_key(item): item
+                for item in base_season.get("download_items", [])
+                if isinstance(item, dict)
+            }
+            for incoming_item in season.get("download_items") or []:
+                if not isinstance(incoming_item, dict):
+                    continue
+                key = tv_item_key(incoming_item)
+                base_item = existing_items.get(key) or {}
+                item_copy = _json_clone(incoming_item)
+                if base_item.get("label"):
+                    item_copy["label"] = base_item["label"]
+                if not item_copy.get("episode_range") and base_item.get("episode_range"):
+                    item_copy["episode_range"] = base_item.get("episode_range")
+                merged_resolutions = {}
+                for quality, entries in (incoming_item.get("resolutions") or {}).items():
+                    normalized_entries = []
+                    base_entries = (base_item.get("resolutions") or {}).get(quality, [])
+                    for entry in entries if isinstance(entries, list) else []:
+                        if not isinstance(entry, dict):
+                            continue
+                        hydrated = _snapshot_entry_with_metadata(entry, base_entries)
+                        if is_drive_link(_entry_link(hydrated)):
+                            normalized_entries.append(hydrated)
+                    if normalized_entries:
+                        merged_resolutions[quality] = normalized_entries
+                if merged_resolutions:
+                    item_copy["resolutions"] = merged_resolutions
+                    item_copy.pop("download_filenames", None)
+                    target_season["download_items"].append(item_copy)
+            if target_season["download_items"]:
+                authoritative_seasons.append(target_season)
+        base["seasons"] = authoritative_seasons
+
+    return normalize_result_download_languages(base)
+
+
+def build_site_sync_snapshot(
+    content_type: str,
+    data: dict,
+    *,
+    website_title: str = "",
+    site_content_id: int | None = None,
+) -> dict:
+    result = _published_site_view(data or {})
+    payload = {
+        "version": 1,
+        "content_type": content_type,
+        "website_title": str(website_title or "").strip(),
+        "data": {},
+    }
+    if site_content_id is not None:
+        payload["site_content_id"] = int(site_content_id)
+    if result.get("title"):
+        payload["title"] = result.get("title")
+    if result.get("year") is not None:
+        payload["year"] = result.get("year")
+    if content_type == "movie":
+        payload["data"]["download_links"] = result.get("download_links") or {}
+    else:
+        payload["data"]["seasons"] = result.get("seasons") or []
+    return payload
+
+
+def save_site_sync_snapshot(
+    media_task: MediaTask,
+    content_type: str,
+    data: dict,
+    *,
+    website_title: str = "",
+    site_content_id: int | None = None,
+) -> dict:
+    snapshot = build_site_sync_snapshot(
+        content_type,
+        data,
+        website_title=website_title,
+        site_content_id=site_content_id,
+    )
+    media_task.site_sync_snapshot = snapshot
+    media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
+    return snapshot
+
+
+def refresh_site_sync_snapshot_from_api(media_task: MediaTask, content_type: str) -> dict:
+    site_content_id = getattr(media_task, "site_content_id", None)
+    base = extract_site_sync_snapshot_result(getattr(media_task, "site_sync_snapshot", None))
+    if not base and isinstance(media_task.result, dict):
+        base = _json_clone(media_task.result)
+    if not site_content_id:
+        return _published_site_view(base)
+    try:
+        from upload.service import flixbd_client as fx
+
+        if content_type == "movie":
+            live = {"download_links": fx.fetch_movie_drive_links_by_quality(int(site_content_id))}
+        else:
+            live = {"seasons": fx.fetch_series_drive_links_tree(int(site_content_id))}
+        merged = overlay_site_sync_snapshot(base, live, content_type)
+        snapshot = build_site_sync_snapshot(
+            content_type,
+            merged,
+            website_title=getattr(media_task, "website_title", ""),
+            site_content_id=site_content_id,
+        )
+        media_task.site_sync_snapshot = snapshot
+        media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
+        return merged
+    except Exception as e:
+        logger.warning("%s snapshot refresh id=%s: %s", SITE_NAME, site_content_id, e)
+    fallback = _published_site_view(base)
+    snapshot = build_site_sync_snapshot(
+        content_type,
+        fallback,
+        website_title=getattr(media_task, "website_title", ""),
+        site_content_id=site_content_id,
+    )
+    media_task.site_sync_snapshot = snapshot
+    media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
+    return fallback
 
 
 def normalize_flixbd_resolution_keys(qualities: list) -> list[str]:
@@ -235,7 +457,18 @@ def merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
             logger.info("Episode merge: no new episodes to add for S%s", snum)
 
     result = dict(existing_result)
-    result.update({k: v for k, v in new_data.items() if k not in ("seasons",)})
+    for key, value in new_data.items():
+        if key == "seasons":
+            continue
+        current = result.get(key)
+        if current in (None, "", [], {}):
+            if value not in (None, "", [], {}):
+                result[key] = value
+        elif key == "total_seasons":
+            try:
+                result[key] = max(int(current), int(value))
+            except (TypeError, ValueError):
+                pass
     result["seasons"] = sorted(merged_seasons.values(), key=lambda s: s["season_number"])
 
     old_ss = existing_result.get("screen_shots_url")
@@ -500,6 +733,18 @@ def donor_result_for_site_content(
     if exclude_pk is not None:
         query = query.exclude(pk=exclude_pk)
     donor = query.order_by("-updated_at").first()
+    if donor:
+        snapshot_data = extract_site_sync_snapshot_result(getattr(donor, "site_sync_snapshot", None))
+        donor_result = dict(donor.result) if isinstance(donor.result, dict) and donor.result else {}
+        combined = overlay_site_sync_snapshot(donor_result, snapshot_data, content_type)
+        if combined:
+            logger.info(
+                "Donor MediaTask pk=%s for %s site_content_id=%s (merge result + snapshot)",
+                donor.pk,
+                SITE_NAME,
+                site_content_id,
+            )
+            return combined
     if donor and isinstance(donor.result, dict) and donor.result:
         logger.info(
             "Donor MediaTask pk=%s for %s site_content_id=%s (merge drive links)",

@@ -12,10 +12,8 @@ def tv_item_key(item: dict) -> tuple[str, str | None, str]:
         episode_range = episode_range.strip() or None
     else:
         episode_range = None
-    combo_label = ""
-    if item_type == "combo_pack":
-        combo_label = str(item.get("label") or "").strip().lower()
-    return (item_type, episode_range, combo_label)
+    # Combo packs for the same season should key by coverage, not by display label.
+    return (item_type, episode_range, "")
 
 
 def tv_item_bounds(item: dict) -> tuple[int, int] | None:

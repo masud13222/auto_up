@@ -23,6 +23,7 @@ import io
 import logging
 import re
 import threading
+from urllib.parse import urlparse
 
 from markitdown import MarkItDown
 from selectolax.lexbor import LexborHTMLParser
@@ -226,6 +227,21 @@ _PATTERN_VIDEO = re.compile(
     r'href=["\'](?P<url>https://video-downloads\.googleusercontent\.com[^"\']*)["\']'
 )
 _PATTERN_LOC = re.compile(r'window\.location\.href\s*=\s*["\'](.+?)["\']')
+_DIRECT_MEDIA_EXT_RE = re.compile(r"\.(?:mkv|mp4|avi|mov|m4v|ts|webm)(?:$|[?#])", re.I)
+
+
+def _is_direct_media_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    if "video-downloads.googleusercontent.com" in host:
+        return True
+    if any(token in host for token in (".r2.dev", "r2.cloudflarestorage.com")) and _DIRECT_MEDIA_EXT_RE.search(path):
+        return True
+    return False
 
 
 async def _resolve_download_page_async(url: str):
@@ -233,10 +249,11 @@ async def _resolve_download_page_async(url: str):
     One generate.php (or similar) page → R2 or video link list.
     Uses its own browser tab; safe to run many concurrently via asyncio.gather.
     """
-    from urllib.parse import urlparse
-
     try:
         u = _prepare_nav_url(url)
+        if _is_direct_media_url(u):
+            logger.debug(f"[Scrape] Direct media URL detected, skipping browser resolve: {u}")
+            return [u]
         html = await _fetch_html_async(u, 4.0)
         target_url = u
         match_loc = _PATTERN_LOC.search(html)
@@ -247,6 +264,9 @@ async def _resolve_download_page_async(url: str):
             if target_url != raw_target:
                 logger.debug(f"[Scrape] Normalized redirect URL: {raw_target!r} -> {target_url!r}")
             logger.debug(f"[Scrape] Found redirect URL: {target_url}")
+            if _is_direct_media_url(target_url):
+                logger.debug(f"[Scrape] Redirect resolved to direct media URL: {target_url}")
+                return [target_url]
             html = await _fetch_html_async(target_url, 4.0)
         else:
             logger.debug(f"[Scrape] No redirect found, checking current page: {u}")

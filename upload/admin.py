@@ -187,7 +187,7 @@ class MediaTaskAdmin(admin.ModelAdmin):
     ]
     list_filter = ["status", "content_type", HasExtraUrlsFilter]
     search_fields = ["title", "url"]
-    readonly_fields = ["task_id", "result", "created_at", "updated_at", "extra_urls"]
+    readonly_fields = ["task_id", "result", "site_sync_snapshot", "created_at", "updated_at", "extra_urls"]
     ordering = ["-created_at"]
 
     @admin.display(description=_("Extra URLs"))

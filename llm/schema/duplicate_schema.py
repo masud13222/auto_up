@@ -45,6 +45,18 @@ _dup_props = {
             "type": "boolean",
         "description": "True if the new URL has episode labels NOT present in existing_episodes. When true, new episodes will be APPENDED (not replaced).",
     },
+        "updated_title": {
+            "oneOf": [
+                {"type": "string"},
+                {"type": "boolean", "enum": [False]},
+            ],
+            "description": (
+                "For duplicate update/replace flows only. Return a new website title string ONLY when the matched "
+                "existing row/title should be renamed to reflect broader merged coverage "
+                "(example: old `Season 01 Complete`, incoming `Season 02 Complete` -> `Season 01-02 Complete`). "
+                "If no title change is needed, return false."
+            ),
+        },
 }
 
 _dup_props[TARGET_SITE_ROW_ID_JSON_KEY] = {
@@ -67,6 +79,7 @@ duplicate_schema = {
         "action",
         "reason",
         "detected_new_type",
+        "updated_title",
     ],
 }
 
@@ -133,6 +146,7 @@ Step 6: TV episodes
 - For TV, compare explicit `season_number` first. Different seasons are the same show but DIFFERENT coverage.
 - If the incoming season does not overlap any existing candidate season, NEVER use `replace` or `replace_items` against another season.
 - If the show matches but the incoming season is new/missing in the existing row, prefer `update` so the new season is appended.
+- When the matched title should expand to reflect merged TV coverage (for example old title only shows `Season 01` but incoming data adds `Season 02`), set `updated_title` to the better combined website title. Otherwise set `updated_title=false`.
 - Show-wide resolution lists are only a weak signal for TV. Do NOT replace based on resolution/source alone when the incoming season differs from the existing season.
 - Use explicit `episode_range` logic:
   - genuinely NEW higher range/batch -> `update`
@@ -155,6 +169,7 @@ Action table:
 - `replace`: same title+year+type, same coverage, clearly better source
 - `replace_items`: TV only; same title+year+type, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match, ambiguous title, or unfamiliar title without strong evidence
+- `updated_title`: false when old title can stay as-is; otherwise the exact replacement website title string
 
 Reason format:
 - Single line only

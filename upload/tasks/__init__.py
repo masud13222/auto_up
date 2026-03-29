@@ -20,7 +20,7 @@ from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 from llm.utils.name_extractor import extract_title_info
 from upload.task_locks import acquire_runtime_lock
 
-from .helpers import save_task
+from .helpers import normalize_result_download_languages, save_task
 from .movie_pipeline import process_movie_pipeline
 from .runtime_helpers import (
     build_db_candidate,
@@ -32,6 +32,7 @@ from .runtime_helpers import (
     merge_drive_links,
     merge_new_episodes,
     normalize_duplicate_response,
+    refresh_site_sync_snapshot_from_api,
     result_strip_non_drive_download_links,
 )
 from .tvshow_pipeline import process_tvshow_pipeline
@@ -350,6 +351,11 @@ def process_media_task(task_pk: int) -> str:
                 media_task.pk,
             )
 
+        if action in ("update", "replace", "replace_items") and media_task.site_content_id:
+            site_snapshot_result = refresh_site_sync_snapshot_from_api(media_task, content_type)
+            if site_snapshot_result:
+                existing_result = site_snapshot_result
+
         # ── Merge existing data for update (DB row and/or donor / API by site id) ──
         if action in ("update", "replace_items") and not existing_result and target_site_row_id:
             existing_result = donor_result_for_site_content(
@@ -441,7 +447,23 @@ def process_media_task(task_pk: int) -> str:
                     data, on_item_resolved=None, existing_result=existing_result
                 )
 
-        web_title = data.get("website_movie_title") or data.get("website_tvshow_title") or ""
+        if dup_result:
+            updated_title = dup_result.get("updated_title")
+            if isinstance(updated_title, str) and updated_title.strip():
+                if content_type == "tvshow":
+                    data["website_tvshow_title"] = updated_title.strip()
+                else:
+                    data["website_movie_title"] = updated_title.strip()
+
+        data = normalize_result_download_languages(data)
+
+        from upload.service.flixbd_api_content import movie_website_title, series_website_title
+
+        web_title = (
+            series_website_title(data)
+            if content_type == "tvshow"
+            else movie_website_title(data)
+        )
         save_task(media_task, content_type=content_type, title=title, website_title=web_title, result=data)
         logger.info(f"Detected content type: {content_type} — Title: {title}")
 

@@ -8,6 +8,8 @@ from upload.utils.web_scrape import WebScrapeService
 from upload.utils.tv_items import tv_item_key
 from upload.tasks.helpers import (
     coerce_download_source_value,
+    coerce_entry_language_value,
+    entry_language_key,
     is_drive_link,
     primary_download_source_url,
 )
@@ -28,7 +30,7 @@ _JSON_FOR_DB = {"indent": 2, "ensure_ascii": False}
 
 
 def _entry_language_key(entry: dict) -> str:
-    return str((entry or {}).get("l") or "").strip().lower()
+    return entry_language_key((entry or {}).get("l"))
 
 
 def _entry_filename_key(entry: dict) -> str:
@@ -38,7 +40,7 @@ def _entry_filename_key(entry: dict) -> str:
 def _entry_copy(entry: dict, *, link: str) -> dict:
     out = {
         "u": coerce_download_source_value(link),
-        "l": str(entry.get("l") or "").strip(),
+        "l": coerce_entry_language_value(entry.get("l")),
         "f": str(entry.get("f") or "").strip(),
     }
     if isinstance(entry.get("s"), str) and entry["s"].strip():

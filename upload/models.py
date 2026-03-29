@@ -39,6 +39,15 @@ class MediaTask(models.Model):
     content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     result = models.JSONField(null=True, blank=True)
+    site_sync_snapshot = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Last known target-site state used for future duplicate updates. "
+            "Stores a normalized snapshot of published movie/series downloads so "
+            "later extra-URL updates can merge against it."
+        ),
+    )
     task_id = models.CharField(max_length=100, blank=True, default='')
     error_message = models.TextField(blank=True, default='')
     site_content_id = models.PositiveIntegerField(

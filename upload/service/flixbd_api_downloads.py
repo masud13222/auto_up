@@ -3,6 +3,7 @@ import re
 
 import httpx
 
+from upload.tasks.helpers import coerce_entry_language_value
 from upload.utils.tv_items import tv_items_overlap
 
 from .flixbd_api_base import _TIMEOUT, _get_config, _headers, _safe_json
@@ -20,6 +21,7 @@ def add_movie_download_links(
     file_sizes: dict,
     movie_data: dict,
     server_name: str = "GDrive",
+    allowed_entry_ids: set[tuple[str, str, str]] | None = None,
 ) -> list:
     """Add download links for a movie."""
     api_url, api_key = _get_config()
@@ -31,16 +33,23 @@ def add_movie_download_links(
             drive_url = str(drive_item.get("u") or "").strip()
             if not drive_url:
                 continue
+            entry_language = coerce_entry_language_value(drive_item.get("l"))
+            entry_id = (
+                _normalized_resolution_key(quality),
+                entry_language,
+                str(drive_item.get("f") or "").strip(),
+            )
+            if allowed_entry_ids is not None and entry_id not in allowed_entry_ids:
+                continue
             payload = {
                 "server_name": server_name,
                 "download_link": drive_url,
                 "quality": _normalized_resolution_key(quality),
             }
-            entry_language = str(drive_item.get("l") or "").strip()
             if entry_language:
                 payload["language"] = entry_language
             size = (
-                file_sizes.get((quality, entry_language, str(drive_item.get("f") or "").strip()))
+                file_sizes.get(entry_id)
                 or str(drive_item.get("s") or "").strip()
             )
             if size:
@@ -184,7 +193,7 @@ def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, list[dict]]
         quality_key = _normalized_resolution_key(quality)
         if not quality_key:
             continue
-        entry = {"u": str(link).strip()}
+        entry = {"u": str(link).strip(), "f": ""}
         if language:
             entry["l"] = language
         size = str(row.get("size") or "").strip()
@@ -305,7 +314,7 @@ def fetch_series_drive_links_tree(content_id: int) -> list[dict]:
         )
         if episode_range is not None:
             item["episode_range"] = episode_range
-        entry = {"u": str(link).strip()}
+        entry = {"u": str(link).strip(), "f": ""}
         if language:
             entry["l"] = language
         size = row.get("size")
@@ -459,6 +468,7 @@ def add_series_download_links(
     file_sizes_map: dict,
     tvshow_data: dict,
     server_name: str = "GDrive",
+    allowed_entry_ids: set[tuple[int, str, str, str, str]] | None = None,
 ) -> list:
     """Add download links for a series."""
     api_url, api_key = _get_config()
@@ -476,6 +486,16 @@ def add_series_download_links(
                     drive_url = str(drive_item.get("u") or "").strip()
                     if not drive_url or not drive_url.startswith("https://drive.google.com"):
                         continue
+                    entry_language = coerce_entry_language_value(drive_item.get("l"))
+                    entry_id = (
+                        season_num,
+                        item_label,
+                        _normalized_resolution_key(quality),
+                        entry_language,
+                        str(drive_item.get("f") or "").strip(),
+                    )
+                    if allowed_entry_ids is not None and entry_id not in allowed_entry_ids:
+                        continue
 
                     payload = {
                         "server_name": server_name,
@@ -488,20 +508,11 @@ def add_series_download_links(
                     if ep_val is not None:
                         payload["episode_number"] = ep_val
 
-                    entry_language = str(drive_item.get("l") or "").strip()
                     if entry_language:
                         payload["language"] = entry_language
 
                     size = (
-                        file_sizes_map.get(
-                            (
-                                season_num,
-                                item_label,
-                                quality,
-                                entry_language,
-                                str(drive_item.get("f") or "").strip(),
-                            )
-                        )
+                        file_sizes_map.get(entry_id)
                         or str(drive_item.get("s") or "").strip()
                     )
                     if size:

@@ -81,6 +81,9 @@ def _display_movie_title(movie_data: dict) -> str:
 
 
 def _display_series_title(tvshow_data: dict) -> str:
+    explicit = tvshow_data.get("updated_title")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
     return tvshow_data.get("website_tvshow_title") or tvshow_data.get("title", "Unknown")
 
 

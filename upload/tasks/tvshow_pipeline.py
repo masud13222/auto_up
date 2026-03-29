@@ -13,6 +13,7 @@ from django.conf import settings
 
 from .helpers import (
     coerce_download_source_value,
+    coerce_entry_language_value,
     download_source_urls,
     is_drive_link,
     log_memory,
@@ -70,12 +71,7 @@ def _tv_item_download_entries_from_llm(item: dict, season_num) -> tuple[dict, li
                     "reason": f"{entry_ctx}: expected object",
                 })
                 continue
-            language_raw = raw_entry.get("l")
-            language = (
-                " ".join(language_raw.strip().split())
-                if isinstance(language_raw, str) and language_raw.strip()
-                else ""
-            )
+            language = coerce_entry_language_value(raw_entry.get("l"))
             filename_raw = raw_entry.get("f")
             filename = filename_raw.strip() if isinstance(filename_raw, str) and filename_raw.strip() else ""
             source_urls = download_source_urls(raw_entry.get("u"))
@@ -334,6 +330,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     # {(season_num, label, quality): "2.1 GB"} -- collected across all items
     file_sizes_map = {}
     expected_upload_targets = set()
+    fresh_upload_targets = set()
 
     logger.info(f"Processing {total_items} TV show item(s)")
     log_memory("Pipeline start")
@@ -361,8 +358,8 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                         _tv_entry_label(resolution, entry),
                     )
                     kept_uploaded.append(dict(entry))
-                    if entry.get("size"):
-                        file_sizes_map[entry_id] = entry["size"]
+                    if entry.get("s"):
+                        file_sizes_map[entry_id] = entry["s"]
                     continue
                 to_process.append({"resolution": resolution, "entry": dict(entry)})
             if kept_uploaded:
@@ -473,9 +470,11 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                     )
                     entry = dict(uploaded_item["entry"])
                     entry["u"] = link
+                    entry_id = _tv_entry_id(season_num, item_label, uploaded_item["resolution"], entry)
                     if size_str:
                         entry["s"] = size_str
-                        file_sizes_map[_tv_entry_id(season_num, item_label, uploaded_item["resolution"], entry)] = size_str
+                        file_sizes_map[entry_id] = size_str
+                    fresh_upload_targets.add(entry_id)
                     uploaded_resolutions.setdefault(uploaded_item["resolution"], []).append(entry)
 
         if uploaded_resolutions:
@@ -544,7 +543,11 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     # Step 5: Publish to FlixBD
     _publish_to_flixbd_series(
-        media_task, tvshow_data, file_sizes_map, dup_info=dup_info
+        media_task,
+        tvshow_data,
+        file_sizes_map,
+        dup_info=dup_info,
+        publish_entry_ids=fresh_upload_targets,
     )
 
     if missing:
@@ -552,7 +555,13 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     return json.dumps({"status": "success", "type": "tvshow", "data": tvshow_data})
 
 
-def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=None):
+def _publish_to_flixbd_series(
+    media_task,
+    tvshow_data,
+    file_sizes_map,
+    dup_info=None,
+    publish_entry_ids=None,
+):
     """
     Add Drive links to FlixBD after upload completes.
 
@@ -563,6 +572,7 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
+    from upload.tasks.runtime_helpers import refresh_site_sync_snapshot_from_api, save_site_sync_snapshot
 
     title = tvshow_data.get("title", "Unknown")
 
@@ -588,10 +598,20 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
             web_t[:120] + ("…" if len(web_t) > 120 else ""),
         )
 
+        allowed_entry_ids = None
         if cid:
             logger.info(f"FlixBD: existing series id={cid} — update existing series then add links")
             content_id = int(cid)
-            if dup_info and dup_info.get("clear_flixbd_links"):
+            if dup_info and dup_info.get("action") == "update":
+                if not fx.update_series(content_id, tvshow_data):
+                    fx.patch_series_title(content_id, tvshow_data)
+                n = fx.clear_series_download_links(content_id)
+                logger.info(
+                    "FlixBD: update sync — cleared %s existing download row(s) for series id=%s",
+                    n,
+                    content_id,
+                )
+            elif dup_info and dup_info.get("clear_flixbd_links"):
                 if not fx.update_series(content_id, tvshow_data):
                     fx.patch_series_title(content_id, tvshow_data)
                 n = fx.clear_series_download_links(content_id)
@@ -613,6 +633,8 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
                 fx.patch_series_title(content_id, tvshow_data)
             else:
                 fx.patch_series_title(content_id, tvshow_data)
+            if publish_entry_ids:
+                allowed_entry_ids = set(publish_entry_ids)
         else:
             logger.warning(
                 "FlixBD: no site_content_id on task pk=%s — POST create_series (existing row title not updated)",
@@ -629,11 +651,22 @@ def _publish_to_flixbd_series(media_task, tvshow_data, file_sizes_map, dup_info=
             seasons_data=tvshow_data.get("seasons", []),
             file_sizes_map=file_sizes_map,
             tvshow_data=tvshow_data,
+            allowed_entry_ids=allowed_entry_ids,
         )
 
-        if not media_task.site_content_id:
+        if media_task.site_content_id != content_id:
             media_task.site_content_id = content_id
             media_task.save(update_fields=["site_content_id", "updated_at"])
+        web_t = fx.series_website_title(tvshow_data)
+        snapshot_result = refresh_site_sync_snapshot_from_api(media_task, "tvshow")
+        if not snapshot_result:
+            save_site_sync_snapshot(
+                media_task,
+                "tvshow",
+                tvshow_data,
+                website_title=web_t,
+                site_content_id=content_id,
+            )
         logger.info(f"FlixBD: series done -- site_content_id={content_id} clean_title='{title}'")
 
 
