@@ -7,42 +7,42 @@ from .blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 # ───────────────────────────────────────────────
 
 _dup_props = {
-    "is_duplicate": {
-        "type": "boolean",
+        "is_duplicate": {
+            "type": "boolean",
         "description": "True if new content is the same media as existing",
-    },
-    "matched_task_id": {
-        "type": ["integer", "null"],
-        "description": (
+        },
+        "matched_task_id": {
+            "type": ["integer", "null"],
+            "description": (
             "ONLY our upload DB (MediaTask) primary key from ### DB Candidates `id`. "
             "Never use target-site row ids here. If no DB Candidates block or no matching DB row → null."
-        ),
-    },
-    "action": {
-        "type": "string",
+            ),
+        },
+        "action": {
+            "type": "string",
         "enum": ["skip", "update", "replace", "replace_items", "process"],
         "description": "skip=identical, update=add missing parts/episodes, replace=full replacement, replace_items=replace only overlapping TV items/ranges, process=new content",
-    },
-    "reason": {
-        "type": "string",
+        },
+        "reason": {
+            "type": "string",
         "description": (
             "Single-line string. MUST start with 'Matched candidate id=X.' or 'No candidate matches title+year+type.' "
             "then 'Extracted: [list]. Existing: [list]. Missing: [list]. Action: <action> because <why>.' "
             "Always include all three lists (use [] if empty). No other format."
         ),
-    },
-    "detected_new_type": {
-        "type": "string",
-        "enum": ["movie", "tvshow"],
+        },
+        "detected_new_type": {
+            "type": "string",
+            "enum": ["movie", "tvshow"],
         "description": "What you detect the NEW content to be (movie or tvshow) from the website title",
-    },
-    "missing_resolutions": {
-        "type": "array",
-        "items": {"type": "string"},
+        },
+        "missing_resolutions": {
+            "type": "array",
+            "items": {"type": "string"},
         "description": "List of resolutions the new version has that existing is missing (e.g. ['480p']). Only for 'update' action.",
-    },
-    "has_new_episodes": {
-        "type": "boolean",
+        },
+        "has_new_episodes": {
+            "type": "boolean",
         "description": "True if the new URL has episode labels NOT present in existing_episodes. When true, new episodes will be APPENDED (not replaced).",
     },
 }
@@ -130,6 +130,10 @@ Step 6: TV episodes
 - Set `has_new_episodes=true` ONLY when explicit higher episode numbers are visible
 - If episode numbers are unclear, set `has_new_episodes=false`
 - Never use `replace` for new episode batches
+- For TV, compare explicit `season_number` first. Different seasons are the same show but DIFFERENT coverage.
+- If the incoming season does not overlap any existing candidate season, NEVER use `replace` or `replace_items` against another season.
+- If the show matches but the incoming season is new/missing in the existing row, prefer `update` so the new season is appended.
+- Show-wide resolution lists are only a weak signal for TV. Do NOT replace based on resolution/source alone when the incoming season differs from the existing season.
 - Use explicit `episode_range` logic:
   - genuinely NEW higher range/batch -> `update`
   - same range covered in a better pack form (e.g. old singles -> new partial combo, old partial -> new combo, old combo reissued better) -> `replace`
@@ -140,13 +144,14 @@ TV pack upgrade rules:
 - single_episode/partial_combo -> combo_pack for the SAME season coverage = usually `replace`
 - same episode coverage with clearly better source = `replace`
 - only additional later episodes = `update`
+- same show but different explicit season_number = `update`, not `replace` / `replace_items`
 - do NOT invent episode math from labels if explicit `episode_range` is missing; rely on explicit range when available
 - If only the incoming overlapping TV items should be replaced (for example old singles `09`,`10`,`11` replaced by new partial `09-11` while `01-08` stays untouched), use `action="replace_items"` instead of full `replace`
 - Use `replace_items` only when the replace scope is explicit and NOT a whole-season combo pack on either side; if a combo/complete-season pack is involved, prefer full `replace`
 
 Action table:
 - `skip`: same title+year+type, nothing new, no clear upgrade
-- `update`: same title+year+type, missing resolutions or explicit new episodes, without a clear low-source -> high-source replacement
+- `update`: same title+year+type, missing resolutions, explicit new episodes, or a new/missing season, without a clear overlapping same-season replacement
 - `replace`: same title+year+type, same coverage, clearly better source
 - `replace_items`: TV only; same title+year+type, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match, ambiguous title, or unfamiliar title without strong evidence

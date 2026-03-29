@@ -128,12 +128,17 @@ Steps:
 TV shows:
 - `has_new_episodes=true` only when explicit higher episode numbers are visible.
 - If episode numbers are unclear, set `has_new_episodes=false`.
+- Compare explicit `season_number` before making any replace decision.
+- Different seasons are the same show but DIFFERENT coverage.
+- If the incoming season does not overlap any existing candidate season, do NOT use **`replace`** or **`replace_items`** against another season.
+- Same show + new/missing season => prefer **`update`** so the new season is appended.
 - Use explicit `episode_range` when available:
   - genuinely NEW later episode range -> **update**
   - same covered range in a better pack form (single -> partial, partial -> combo, same range better source) -> **replace**
   - do not guess missing ranges from loose label text
- - if only the overlapping incoming TV items/range should replace old ones while the rest of the show stays untouched, use **`replace_items`** (TV only) instead of full **`replace`**
- - use **`replace_items`** only when the replace scope is explicit and no whole-season combo pack is involved; otherwise prefer full **`replace`**
+- if only the overlapping incoming TV items/range in the SAME season should replace old ones while the rest of the show stays untouched, use **`replace_items`** (TV only) instead of full **`replace`**
+- use **`replace_items`** only when the replace scope is explicit, overlaps the SAME season, and no whole-season combo pack is involved; otherwise prefer full **`replace`**
+- Do not use show-wide `Existing` resolution tiers alone to replace one season with another season.
 
 Reason format:
 - Single line only.
