@@ -2,6 +2,8 @@ import json
 import logging
 import re
 
+from django.db import transaction
+
 from upload.models import MediaTask
 from upload.service.duplicate_checker import (
     _get_existing_resolutions,
@@ -230,6 +232,40 @@ def save_site_sync_snapshot(
     )
     media_task.site_sync_snapshot = snapshot
     media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
+    return snapshot
+
+
+def save_publish_state_with_snapshot(
+    media_task: MediaTask,
+    content_type: str,
+    data: dict,
+    *,
+    website_title: str = "",
+    site_content_id: int | None = None,
+) -> dict:
+    """
+    Atomically persist the post-publish local state so `result`, `site_sync_snapshot`,
+    `website_title`, and `site_content_id` never diverge mid-save.
+    """
+    snapshot = build_site_sync_snapshot(
+        content_type,
+        data,
+        website_title=website_title,
+        site_content_id=site_content_id,
+    )
+    result_copy = _json_clone(data)
+    update_fields = ["result", "site_sync_snapshot", "updated_at"]
+
+    with transaction.atomic():
+        media_task.result = result_copy
+        media_task.site_sync_snapshot = snapshot
+        media_task.website_title = str(website_title or "").strip()
+        update_fields.append("website_title")
+        if site_content_id is not None:
+            media_task.site_content_id = int(site_content_id)
+            update_fields.append("site_content_id")
+        media_task.save(update_fields=update_fields)
+
     return snapshot
 
 
@@ -618,10 +654,17 @@ def build_db_candidate(task: MediaTask) -> dict:
     is_tvshow = task.content_type == "tvshow" if task.content_type else bool(
         result_data.get("seasons")
     )
+    website_title = (
+        result_data.get("website_movie_title")
+        or result_data.get("website_tvshow_title")
+        or task.website_title
+        or ""
+    )
 
     candidate = {
         "id": task.pk,
         "title": task.title,
+        "website_title": website_title,
         "year": result_data.get("year"),
         "resolutions": existing_resolutions,
         "type": "tvshow" if is_tvshow else "movie",

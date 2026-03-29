@@ -202,7 +202,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     parent_folder_id = upload_settings.upload_folder_id
     year = tvshow_data.get("year", "")
-    folder_name = f"{title} {year}" if year else title
+    folder_name = DriveUploader.build_root_folder_name(title, year, "tvshow")
     show_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
@@ -572,7 +572,7 @@ def _publish_to_flixbd_series(
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
-    from upload.tasks.runtime_helpers import refresh_site_sync_snapshot_from_api, save_site_sync_snapshot
+    from upload.tasks.runtime_helpers import save_publish_state_with_snapshot
 
     title = tvshow_data.get("title", "Unknown")
 
@@ -654,19 +654,14 @@ def _publish_to_flixbd_series(
             allowed_entry_ids=allowed_entry_ids,
         )
 
-        if media_task.site_content_id != content_id:
-            media_task.site_content_id = content_id
-            media_task.save(update_fields=["site_content_id", "updated_at"])
         web_t = fx.series_website_title(tvshow_data)
-        snapshot_result = refresh_site_sync_snapshot_from_api(media_task, "tvshow")
-        if not snapshot_result:
-            save_site_sync_snapshot(
-                media_task,
-                "tvshow",
-                tvshow_data,
-                website_title=web_t,
-                site_content_id=content_id,
-            )
+        save_publish_state_with_snapshot(
+            media_task,
+            "tvshow",
+            tvshow_data,
+            website_title=web_t,
+            site_content_id=content_id,
+        )
         logger.info(f"FlixBD: series done -- site_content_id={content_id} clean_title='{title}'")
 
 

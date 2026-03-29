@@ -79,41 +79,59 @@ class RuntimeLock:
             pass
 
 
-def acquire_runtime_lock(name: str, *, stale_after_seconds: int) -> RuntimeLock | None:
+def acquire_runtime_lock(
+    name: str,
+    *,
+    stale_after_seconds: int,
+    wait: bool = False,
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float = 1.0,
+) -> RuntimeLock | None:
     _ensure_lock_dir()
     path = _lock_path(name)
+    deadline = (
+        None
+        if not wait or timeout_seconds is None
+        else time.monotonic() + max(0.0, float(timeout_seconds))
+    )
+    poll_interval_seconds = max(0.1, float(poll_interval_seconds))
 
-    for _ in range(2):
-        token = uuid.uuid4().hex
-        payload = {
-            "pid": os.getpid(),
-            "started_at": time.time(),
-            "token": token,
-        }
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            meta = _read_lock_meta(path)
-            if _lock_is_stale(path, meta, stale_after_seconds):
+    while True:
+        for _ in range(2):
+            token = uuid.uuid4().hex
+            payload = {
+                "pid": os.getpid(),
+                "started_at": time.time(),
+                "token": token,
+            }
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                meta = _read_lock_meta(path)
+                if _lock_is_stale(path, meta, stale_after_seconds):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        return None
+                    continue
+                break
+
+            try:
+                os.write(fd, json.dumps(payload).encode("utf-8"))
+            except Exception:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
-                    return None
-                continue
+                    pass
+                raise
+            return RuntimeLock(path=path, fd=fd, token=token)
+
+        if not wait:
             return None
-
-        try:
-            os.write(fd, json.dumps(payload).encode("utf-8"))
-        except Exception:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
-        return RuntimeLock(path=path, fd=fd, token=token)
-
-    return None
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_interval_seconds)

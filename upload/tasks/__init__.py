@@ -57,6 +57,78 @@ def _is_valid_task_url(url: str) -> bool:
     return True
 
 
+def _first_non_empty(*values):
+    for value in values:
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                return trimmed
+            continue
+        if value is not None:
+            return value
+    return None
+
+
+def _runtime_group_lock_name(
+    content_type: str,
+    data: dict,
+    existing_task: MediaTask | None,
+    target_site_row_id: int | None,
+) -> str | None:
+    if content_type not in ("movie", "tvshow"):
+        return None
+
+    existing_result = existing_task.result if existing_task and isinstance(existing_task.result, dict) else {}
+    snapshot = {}
+    if existing_task and isinstance(existing_task.site_sync_snapshot, dict):
+        snapshot_data = existing_task.site_sync_snapshot.get("data")
+        if isinstance(snapshot_data, dict):
+            snapshot = snapshot_data
+
+    site_id = _first_non_empty(
+        getattr(existing_task, "site_content_id", None) if existing_task else None,
+        target_site_row_id,
+        snapshot.get("site_content_id"),
+        existing_result.get("site_content_id"),
+    )
+    if site_id is not None:
+        return f"media-group-{content_type}-site-{site_id}"
+
+    imdb_id = _first_non_empty(
+        existing_result.get("imdb_id"),
+        snapshot.get("imdb_id"),
+        data.get("imdb_id"),
+    )
+    if imdb_id is not None:
+        return f"media-group-{content_type}-imdb-{imdb_id}"
+
+    tmdb_id = _first_non_empty(
+        existing_result.get("tmdb_id"),
+        snapshot.get("tmdb_id"),
+        data.get("tmdb_id"),
+    )
+    if tmdb_id is not None:
+        return f"media-group-{content_type}-tmdb-{tmdb_id}"
+
+    title = _first_non_empty(
+        existing_result.get("title"),
+        snapshot.get("title"),
+        getattr(existing_task, "title", "") if existing_task else "",
+        data.get("title"),
+    )
+    year = _first_non_empty(
+        existing_result.get("year"),
+        snapshot.get("year"),
+        data.get("year"),
+    )
+    if title is not None:
+        return f"media-group-{content_type}-title-{title}-{year if year is not None else 'na'}"
+
+    if existing_task is not None:
+        return f"media-group-{content_type}-task-{existing_task.pk}"
+    return None
+
+
 def process_media_task(task_pk: int) -> str:
     """
     Background task: Full pipeline from URL to Google Drive upload.
@@ -77,6 +149,7 @@ def process_media_task(task_pk: int) -> str:
         )
         return json.dumps({"status": "skipped", "message": "Already running in another worker"})
 
+    group_lock = None
     try:
         try:
             media_task = MediaTask.objects.get(pk=task_pk)
@@ -292,6 +365,59 @@ def process_media_task(task_pk: int) -> str:
                         media_task.delete()
                 return json.dumps({"status": "skipped", "message": reason})
 
+            should_wait_for_group_lock = action in ("update", "replace", "replace_items") and (
+                target_site_row_id is not None
+                or (existing_task is not None and existing_task.pk != media_task.pk)
+            )
+            if should_wait_for_group_lock and group_lock is None:
+                group_lock_name = _runtime_group_lock_name(
+                    content_type,
+                    data,
+                    existing_task,
+                    target_site_row_id,
+                )
+                if group_lock_name:
+                    logger.info(
+                        "Acquiring canonical/group runtime lock %s for task pk=%s (matched_task=%s target_site_row_id=%s)",
+                        group_lock_name,
+                        media_task.pk,
+                        getattr(existing_task, "pk", None),
+                        target_site_row_id,
+                    )
+                    group_lock = acquire_runtime_lock(
+                        group_lock_name,
+                        stale_after_seconds=lock_ttl,
+                        wait=True,
+                        timeout_seconds=lock_ttl + 5,
+                        poll_interval_seconds=1.0,
+                    )
+                    if group_lock is None:
+                        raise RuntimeError(
+                            f"Timed out waiting for canonical/group lock: {group_lock_name}"
+                        )
+                    logger.info(
+                        "Canonical/group runtime lock acquired %s for task pk=%s",
+                        group_lock_name,
+                        media_task.pk,
+                    )
+                    if existing_task is not None and existing_task.pk != media_task.pk:
+                        try:
+                            existing_task = MediaTask.objects.get(pk=existing_task.pk)
+                        except MediaTask.DoesNotExist:
+                            logger.warning(
+                                "Matched existing task pk=%s disappeared while waiting for group lock (task pk=%s)",
+                                dup_result.get("matched_task_id") if dup_result else None,
+                                media_task.pk,
+                            )
+                            existing_task = None
+                            existing_result = {}
+                            if target_site_row_id is None:
+                                action = "process"
+                                if dup_result:
+                                    dup_result["action"] = "process"
+                                    dup_result["matched_task_id"] = None
+                                    dup_result["missing_resolutions"] = []
+
             if action in ("update", "replace", "replace_items") and existing_task:
                 logger.info(f"DUPLICATE {action.upper()}: {reason} — using existing task [{existing_task.pk}], deleting new entry (pk={media_task.pk})")
                 existing_result = existing_task.result or {}
@@ -448,7 +574,11 @@ def process_media_task(task_pk: int) -> str:
                 )
 
         if dup_result:
-            updated_title = dup_result.get("updated_title")
+            updated_title = (
+                dup_result.get("updated_website_title")
+                if dup_result.get("updated_website_title") is not None
+                else dup_result.get("updated_title")
+            )
             if isinstance(updated_title, str) and updated_title.strip():
                 if content_type == "tvshow":
                     data["website_tvshow_title"] = updated_title.strip()
@@ -491,6 +621,8 @@ def process_media_task(task_pk: int) -> str:
         save_task(media_task, status='failed', error_message=str(e), result=cleaned)
         return json.dumps({"status": "error", "message": str(e)})
     finally:
+        if group_lock is not None:
+            group_lock.release()
         task_lock.release()
 
 

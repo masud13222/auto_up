@@ -139,7 +139,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         raise Exception("UploadSettings not configured.")
 
     year = movie_data.get("year", "")
-    folder_name = f"{title} {year}" if year else title
+    folder_name = DriveUploader.build_root_folder_name(title, year, "movie")
     movie_folder_id = DriveUploader._get_or_create_folder(
         service, folder_name, upload_settings.upload_folder_id
     )
@@ -395,7 +395,7 @@ def _publish_to_flixbd_movie(
     Never raises -- errors are logged only.
     """
     from upload.service import flixbd_client as fx
-    from upload.tasks.runtime_helpers import refresh_site_sync_snapshot_from_api, save_site_sync_snapshot
+    from upload.tasks.runtime_helpers import save_publish_state_with_snapshot
 
     title = movie_data.get("title", "Unknown")
 
@@ -464,19 +464,14 @@ def _publish_to_flixbd_movie(
             allowed_entry_ids=allowed_entry_ids,
         )
 
-        if media_task.site_content_id != content_id:
-            media_task.site_content_id = content_id
-            media_task.save(update_fields=["site_content_id", "updated_at"])
         web_t = fx.movie_website_title(movie_data)
-        snapshot_result = refresh_site_sync_snapshot_from_api(media_task, "movie")
-        if not snapshot_result:
-            save_site_sync_snapshot(
-                media_task,
-                "movie",
-                movie_data,
-                website_title=web_t,
-                site_content_id=content_id,
-            )
+        save_publish_state_with_snapshot(
+            media_task,
+            "movie",
+            movie_data,
+            website_title=web_t,
+            site_content_id=content_id,
+        )
         logger.info(f"FlixBD: movie done -- site_content_id={content_id} clean_title='{title}'")
 
     except Exception as e:

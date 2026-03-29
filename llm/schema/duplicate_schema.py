@@ -45,7 +45,7 @@ _dup_props = {
             "type": "boolean",
         "description": "True if the new URL has episode labels NOT present in existing_episodes. When true, new episodes will be APPENDED (not replaced).",
     },
-        "updated_title": {
+        "updated_website_title": {
             "oneOf": [
                 {"type": "string"},
                 {"type": "boolean", "enum": [False]},
@@ -79,7 +79,7 @@ duplicate_schema = {
         "action",
         "reason",
         "detected_new_type",
-        "updated_title",
+        "updated_website_title",
     ],
 }
 
@@ -88,7 +88,7 @@ DUPLICATE_CHECK_PROMPT = f"""You are a strict media deduplication assistant. Ret
 
 Input:
 - `new_website_title`, `new_name`, `new_year`
-- `candidates`: DB rows with `id`, `title`, `year`, `resolutions`, `type`, optional TV episode info
+- `candidates`: DB rows with `id`, `title`, `website_title`, `year`, `resolutions`, `type`, optional TV episode info
 
 Hard rules:
 - `matched_task_id` = ONLY a DB candidate `id`
@@ -97,6 +97,7 @@ Hard rules:
 - Year mismatch means different content
 - Movie and TV show are DIFFERENT content types. Never match movie <-> tvshow.
 - Exact title match is strongest, but NOT required when the title is clearly an alternate / shortened / variant form of the same media.
+- Use candidate `website_title` when present for season/source/subtitle clues; do not rely only on plain `title`.
 - If the title looks unfamiliar, think carefully before answering: compare core title words, year, type, source clues, episode/season clues, and whether the difference looks like an alias vs a genuinely different subtitle.
 - If the new title has meaningful extra words/subtitle tokens not present in the candidate title
   (examples: `Members Only`, `Returns`, `Part 2`, `Season 1`, `Episode 5`), treat as different content.
@@ -146,7 +147,7 @@ Step 6: TV episodes
 - For TV, compare explicit `season_number` first. Different seasons are the same show but DIFFERENT coverage.
 - If the incoming season does not overlap any existing candidate season, NEVER use `replace` or `replace_items` against another season.
 - If the show matches but the incoming season is new/missing in the existing row, prefer `update` so the new season is appended.
-- When the matched title should expand to reflect merged TV coverage (for example old title only shows `Season 01` but incoming data adds `Season 02`), set `updated_title` to the better combined website title. Otherwise set `updated_title=false`.
+- When the matched title should expand to reflect merged TV coverage (for example old title only shows `Season 01` but incoming data adds `Season 02`), set `updated_website_title` to the better combined website title. Otherwise set `updated_website_title=false`.
 - Show-wide resolution lists are only a weak signal for TV. Do NOT replace based on resolution/source alone when the incoming season differs from the existing season.
 - Use explicit `episode_range` logic:
   - genuinely NEW higher range/batch -> `update`
@@ -169,7 +170,7 @@ Action table:
 - `replace`: same title+year+type, same coverage, clearly better source
 - `replace_items`: TV only; same title+year+type, but only the overlapping incoming episode range/pack should replace existing items instead of wiping the whole show
 - `process`: no confident match, ambiguous title, or unfamiliar title without strong evidence
-- `updated_title`: false when old title can stay as-is; otherwise the exact replacement website title string
+- `updated_website_title`: false when the old website title can stay as-is; otherwise the exact replacement website title string
 
 Reason format:
 - Single line only

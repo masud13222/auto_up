@@ -35,6 +35,20 @@ def _get_refresh_lock(config_id):
 class DriveUploader:
 
     @staticmethod
+    def build_root_folder_name(title: str, year=None, content_type: str = "") -> str:
+        """Canonical Drive root folder name: `Name Year Type`."""
+        safe_title = " ".join(str(title or "Unknown").split()).strip() or "Unknown"
+        parts = [safe_title]
+        if year not in (None, ""):
+            parts.append(str(year).strip())
+        type_text = str(content_type or "").strip().lower()
+        if type_text == "movie":
+            parts.append("Movie")
+        elif type_text == "tvshow":
+            parts.append("TV Show")
+        return " ".join(part for part in parts if part).strip()
+
+    @staticmethod
     def _get_random_config_id():
         pk_list = list(GoogleConfig.objects.values_list('pk', flat=True))
         if not pk_list:
@@ -328,7 +342,7 @@ class DriveUploader:
         parent_folder_id = upload_settings.upload_folder_id
         title = movie_data.get("title", "Unknown")
         year = movie_data.get("year", "")
-        folder_name = f"{title} {year}" if year else title
+        folder_name = DriveUploader.build_root_folder_name(title, year, "movie")
 
         service = DriveUploader._get_drive_service()
         movie_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
@@ -375,7 +389,7 @@ class DriveUploader:
         parent_folder_id = upload_settings.upload_folder_id
         title = tvshow_data.get("title", "Unknown")
         year = tvshow_data.get("year", "")
-        folder_name = f"{title} {year}" if year else title
+        folder_name = DriveUploader.build_root_folder_name(title, year, "tvshow")
 
         service = DriveUploader._get_drive_service()
         show_folder_id = DriveUploader._get_or_create_folder(service, folder_name, parent_folder_id)
