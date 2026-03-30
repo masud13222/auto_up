@@ -22,7 +22,10 @@ tvshow_schema = {
         "director": {"type": "string"},
         "rating": {"type": "number", "description": "Numeric only"},
         "plot": {"type": "string"},
-        "poster_url": {"type": "string"},
+        "poster_url": {
+            "type": "string",
+            "description": "Absolute poster/image URL; third-party image hosts/CDNs are allowed.",
+        },
         "meta_title": {"type": "string", "description": "SEO title 50-60 chars"},
         "meta_description": {"type": "string", "description": "Meta desc 140-160 chars with CTA"},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated keywords"},
@@ -117,6 +120,7 @@ website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NA
 is_adult: true only for explicit adult (18+/XXX). false for mainstream.
 
 SEO: meta_title 50-60 chars. meta_description 140-160 chars CTA. meta_keywords 10-15.
+poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
 
 Download item types (classify by Markdown section structure — headings, labels, episode blocks):
 - combo_pack: heading covers entire season, no episode breakdown

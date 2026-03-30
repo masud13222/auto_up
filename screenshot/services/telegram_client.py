@@ -6,14 +6,17 @@ import base64
 import hashlib
 import io
 import logging
-import os
 import secrets
+import time
 from urllib.parse import quote
 
 import httpx
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger(__name__)
+
+# Seconds to wait before 2nd and 3rd upload attempt (after a failure).
+_TELEGRAM_UPLOAD_RETRY_DELAYS_SEC = (10.0, 20.0)
 
 
 def _aes_key(crypto_phrase: str) -> bytes:
@@ -64,35 +67,64 @@ def upload_document_get_file_path(
     file_path_local: str,
     filename: str,
 ) -> str | None:
-    """sendDocument → getFile → return Telegram file_path."""
+    """sendDocument → getFile → return Telegram file_path.
+
+    Retries up to 3 attempts total: first immediate, then after 10s, then after 20s.
+    """
     base = f"https://api.telegram.org/bot{bot_token}"
     with open(file_path_local, "rb") as f:
         raw = f.read()
-    buf = io.BytesIO(raw)
-    buf.seek(0)
-    files = {"document": (filename, buf, "application/octet-stream")}
     data = {
         "chat_id": str(chat_id),
         "disable_content_type_detection": "true",
     }
-    try:
-        result = _api_post(base, "sendDocument", data=data, files=files)
-    except Exception as e:
-        logger.error("Telegram sendDocument failed: %s", e)
-        return None
-    fid = _file_id_from_send_result(result)
-    if not fid:
-        logger.error("No file_id in Telegram response")
-        return None
-    try:
-        finfo = _api_post(base, "getFile", data={"file_id": fid})
-    except Exception as e:
-        logger.error("Telegram getFile failed: %s", e)
-        return None
-    tpath = finfo.get("file_path")
-    if tpath:
-        logger.info("Telegram sendDocument ok: %s (%d bytes)", filename, len(raw))
-    return tpath
+    max_attempts = 1 + len(_TELEGRAM_UPLOAD_RETRY_DELAYS_SEC)
+    last_error: Exception | str | None = None
+
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            delay = _TELEGRAM_UPLOAD_RETRY_DELAYS_SEC[attempt - 1]
+            logger.warning(
+                "Telegram upload retry %s/%s after %.0fs (last error: %s)",
+                attempt + 1,
+                max_attempts,
+                delay,
+                last_error,
+            )
+            time.sleep(delay)
+
+        buf = io.BytesIO(raw)
+        buf.seek(0)
+        files = {"document": (filename, buf, "application/octet-stream")}
+        try:
+            result = _api_post(base, "sendDocument", data=data, files=files)
+        except Exception as e:
+            last_error = e
+            logger.error("Telegram sendDocument failed (attempt %s/%s): %s", attempt + 1, max_attempts, e)
+            continue
+
+        fid = _file_id_from_send_result(result)
+        if not fid:
+            last_error = "No file_id in Telegram response"
+            logger.error("No file_id in Telegram response (attempt %s/%s)", attempt + 1, max_attempts)
+            continue
+
+        try:
+            finfo = _api_post(base, "getFile", data={"file_id": fid})
+        except Exception as e:
+            last_error = e
+            logger.error("Telegram getFile failed (attempt %s/%s): %s", attempt + 1, max_attempts, e)
+            continue
+
+        tpath = finfo.get("file_path")
+        if tpath:
+            logger.info("Telegram sendDocument ok: %s (%d bytes)", filename, len(raw))
+            return tpath
+        last_error = "getFile returned empty file_path"
+        logger.error("Telegram getFile empty file_path (attempt %s/%s)", attempt + 1, max_attempts)
+
+    logger.error("Telegram upload gave up after %s attempts: %s", max_attempts, last_error)
+    return None
 
 
 def worker_image_url(

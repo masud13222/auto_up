@@ -209,6 +209,7 @@ def get_combined_system_prompt(
 - Prefer x264 encodes when multiple options exist.
 - languages: array (e.g. ["Hindi","English"]). countries: array. cast / cast_info: comma-separated. Omit if absent.
 - Absolute URLs only; relative links → prepend the page domain.
+- `poster_url`: any absolute direct image URL is valid, including third-party hosts/CDNs.
 - Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8 — omit that resolution.
 - Strict link rule: never use Watch Online, Watch Resolution, watch link, watch generate link, stream, player, preview, embed, or similar watch-only URLs as download entries.
 - Do not decode, resolve, or alter query strings or paths; keep gateway links intact.

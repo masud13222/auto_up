@@ -22,7 +22,10 @@ movie_schema = {
         "director": {"type": "string"},
         "rating": {"type": "number", "description": "Numeric only (7.5)"},
         "plot": {"type": "string"},
-        "poster_url": {"type": "string"},
+        "poster_url": {
+            "type": "string",
+            "description": "Absolute poster/image URL; third-party image hosts/CDNs are allowed.",
+        },
         "meta_title": {"type": "string", "description": "SEO title 50-60 chars"},
         "meta_description": {"type": "string", "description": "Meta desc 140-160 chars with CTA"},
         "meta_keywords": {"type": "string", "description": "10-15 comma-separated keywords"},
@@ -82,6 +85,7 @@ website_movie_title: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/C
 is_adult: true if Tagalog in title/heading (any case). Else true only for explicit adult (18+/XXX/Adults only). false for mainstream.
 
 SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars natural CTA. meta_keywords 10-15 relevant.
+poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
 
 download_links: keys must be pure resolutions only, for example `480p`, `720p`, `1080p`.
 Never invent a resolution key that is not clearly shown by the page.
