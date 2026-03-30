@@ -239,6 +239,7 @@ Each resolution value must be a list of per-file objects:
 If one downloadable file contains multiple audio tracks, return ONE file object only:
 `[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
 Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
+If the same resolution shows both a dual/multi-audio file and a separate single-language file, keep only the dual/multi-audio file.
 Only create separate entries when the page clearly provides separate downloadable files per language.
 Do not return a separate `download_filenames` object for movie or TV when these fields are already inside each file entry.
 `u`=url, `l`=language string or language array, `f`=filename. `f` is basename only — no `/` `\\` `:`.
