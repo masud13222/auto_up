@@ -38,21 +38,6 @@ services:
       - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
     restart: always
 
-  worker:
-    build: .
-    container_name: flixbd_worker
-    # Must migrate before qcluster — same race as web if DB is empty (django_q_ormq, etc.)
-    command: >
-      sh -c "python manage.py migrate --noinput && exec python manage.py qcluster"
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - flixbd_media:/app/media
-    environment:
-      - DEBUG=False
-      - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
-    restart: always
 
 volumes:
   flixbd_media:
