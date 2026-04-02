@@ -57,18 +57,18 @@ def capture_screenshots_for_publish(video_path: str, name_prefix: str) -> list[s
     try:
         for p in paths:
             try:
-                tpath = tg.upload_document_get_file_path(
+                file_id = tg.upload_document_get_file_id(
                     bot_token=cfg.telegram_bot_token,
                     chat_id=cfg.telegram_chat_id,
                     file_path_local=str(p),
                     filename=p.name,
                 )
-                if not tpath:
+                if not file_id:
                     continue
                 url = tg.worker_image_url(
                     worker_base=cfg.worker_base_url,
                     crypto_phrase=cfg.crypto_phrase,
-                    telegram_file_path=tpath,
+                    telegram_file_id=file_id,
                     download_basename=p.name,
                 )
                 urls.append(url)

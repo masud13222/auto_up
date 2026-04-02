@@ -11,7 +11,9 @@
  * Routes:
  *   GET /              → "FLixBD Image Host"
  *   GET /image/{token}/{filename}  → proxy Telegram file (Content-Disposition filename)
- *   GET /image/{token}             → legacy token only
+ *   GET /image/{token}             → optional: no filename segment
+ *
+ * Token payload: encrypts Telegram file_id. Worker calls getFile → file_path → file download.
  */
 
 /** @type {string} Paste token here only if Worker secrets are not set, e.g. "123456789:AAH..." */
@@ -67,10 +69,15 @@ export default {
     try {
       const plain = await decryptToPlaintext(enc, CRYPTO_PHRASE);
       const parsed = parseImagePayload(plain);
-      filePath = parsed.filePath;
+      const fileId = parsed.filePath;
       if (!downloadName && parsed.downloadName) {
         downloadName = parsed.downloadName;
       }
+      const resolved = await resolveFilePathViaGetFile(fileId, BOT_TOKEN);
+      if (!resolved) {
+        return new Response("File not found", { status: 404 });
+      }
+      filePath = resolved;
     } catch {
       return new Response("Bad token", { status: 400 });
     }
@@ -130,6 +137,30 @@ function parseImagePayload(decrypted) {
     return { filePath: p, downloadName: typeof name === "string" ? name : null };
   }
   return { filePath: decrypted, downloadName: null };
+}
+
+/** Decrypted payload must be Telegram file_id; resolve current CDN path via getFile. */
+async function resolveFilePathViaGetFile(fileId, botToken) {
+  const t = fileId.trim();
+  if (!t) return null;
+
+  try {
+    const gfUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(t)}`;
+    const gfRes = await fetch(gfUrl);
+    let gfData;
+    try {
+      gfData = await gfRes.json();
+    } catch {
+      gfData = { ok: false };
+    }
+    if (gfData.ok && gfData.result && gfData.result.file_path) {
+      return String(gfData.result.file_path).replace(/^\/+/, "");
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function contentDispositionHeader(filename) {

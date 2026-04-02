@@ -23,13 +23,29 @@ def _aes_key(crypto_phrase: str) -> bytes:
     return hashlib.sha256(crypto_phrase.encode("utf-8")).digest()
 
 
-def encrypt_telegram_file_path(file_path: str, crypto_phrase: str) -> str:
-    """Encrypt Telegram getFile path only (short token)."""
+def encrypt_telegram_file_id(file_id: str, crypto_phrase: str) -> str:
+    """Encrypt Telegram file_id for Worker URL segment (AES-GCM, matches worker.js)."""
     aes = AESGCM(_aes_key(crypto_phrase))
     nonce = secrets.token_bytes(12)
-    ct = aes.encrypt(nonce, file_path.encode("utf-8"), None)
+    ct = aes.encrypt(nonce, file_id.encode("utf-8"), None)
     raw = nonce + ct
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decrypt_telegram_file_id(token: str, crypto_phrase: str) -> str:
+    """Decrypt Worker URL segment back to plaintext Telegram file_id."""
+    s = token.strip().strip("/")
+    if not s:
+        raise ValueError("empty token")
+    pad = (4 - len(s) % 4) % 4
+    b64 = s + "=" * pad
+    raw = base64.urlsafe_b64decode(b64.encode("ascii"))
+    if len(raw) < 13:
+        raise ValueError("token too short")
+    nonce, ciphertext = raw[:12], raw[12:]
+    aes = AESGCM(_aes_key(crypto_phrase))
+    plain = aes.decrypt(nonce, ciphertext, None)
+    return plain.decode("utf-8")
 
 
 def _api_post(base: str, method: str, **kwargs) -> dict:
@@ -60,14 +76,14 @@ def _file_id_from_send_result(result: dict) -> str | None:
     return None
 
 
-def upload_document_get_file_path(
+def upload_document_get_file_id(
     *,
     bot_token: str,
     chat_id: str,
     file_path_local: str,
     filename: str,
 ) -> str | None:
-    """sendDocument → getFile → return Telegram file_path.
+    """sendDocument → getFile → return Telegram file_id (stable; Worker resolves path via getFile).
 
     Retries up to 3 attempts total: first immediate, then after 10s, then after 20s.
     """
@@ -119,7 +135,7 @@ def upload_document_get_file_path(
         tpath = finfo.get("file_path")
         if tpath:
             logger.info("Telegram sendDocument ok: %s (%d bytes)", filename, len(raw))
-            return tpath
+            return fid
         last_error = "getFile returned empty file_path"
         logger.error("Telegram getFile empty file_path (attempt %s/%s)", attempt + 1, max_attempts)
 
@@ -131,10 +147,11 @@ def worker_image_url(
     *,
     worker_base: str,
     crypto_phrase: str,
-    telegram_file_path: str,
+    telegram_file_id: str,
     download_basename: str,
 ) -> str:
+    """Build /image/{token}/{filename}; token encrypts file_id (Worker calls getFile to get file_path)."""
     base = worker_base.rstrip("/")
-    token = encrypt_telegram_file_path(telegram_file_path, crypto_phrase)
+    token = encrypt_telegram_file_id(telegram_file_id, crypto_phrase)
     tail = quote(download_basename, safe="-_.")
     return f"{base}/image/{token}/{tail}"
