@@ -22,7 +22,9 @@ import asyncio
 import io
 import logging
 import re
+import subprocess
 import threading
+import time
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown
@@ -47,6 +49,11 @@ logging.getLogger("pydoll").setLevel(logging.WARNING)
 logging.getLogger("pydoll.browser.tab").setLevel(logging.ERROR)  # CF bypass WebSocket noise
 logging.getLogger("pydoll.connection.connection_handler").setLevel(logging.ERROR)
 
+# Maximum consecutive browser restart attempts before giving up
+_MAX_RESTART_ATTEMPTS = 3
+# Delay between restart attempts (seconds)
+_RESTART_BACKOFF = [2, 5, 10]
+
 
 # ── Chrome options ────────────────────────────────────────────────────────────
 
@@ -69,11 +76,28 @@ def _chrome_options():
     opts.add_argument("--disable-translate")
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--window-size=1280,720")
-    opts.start_timeout = 30
+    opts.add_argument("--single-process")
+    opts.add_argument("--no-zygote")
+    opts.start_timeout = 60
     opts.block_notifications = True
     opts.block_popups = True
     opts.password_manager_enabled = False
     return opts
+
+
+def _kill_zombie_chrome():
+    """Kill any leftover Chrome/Chromium processes to free resources before restart."""
+    try:
+        result = subprocess.run(
+            ["pkill", "-9", "-f", "chrome"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            logger.info("[Browser] Killed zombie Chrome processes")
+        time.sleep(1)
+    except Exception as exc:
+        logger.debug(f"[Browser] pkill chrome: {exc}")
 
 
 # ── Per-Worker Browser Singleton ──────────────────────────────────────────────
@@ -92,7 +116,7 @@ def _chrome_options():
 _event_loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _browser = None                     # pydoll Chrome instance (shared)
-_browser_lock: asyncio.Lock | None = None   # async lock for init
+_browser_lock: asyncio.Lock | None = None   # async lock for init + restart
 
 
 def _get_persistent_loop() -> asyncio.AbstractEventLoop:
@@ -118,7 +142,7 @@ def _submit(coro, timeout: int = 180):
 
 
 async def _get_browser_lock() -> asyncio.Lock:
-    """Return (or create) the asyncio.Lock used to guard browser init."""
+    """Return (or create) the asyncio.Lock used to guard browser init and restart."""
     global _browser_lock
     if _browser_lock is None:
         _browser_lock = asyncio.Lock()
@@ -126,18 +150,42 @@ async def _get_browser_lock() -> asyncio.Lock:
 
 
 async def _launch_browser():
-    """Start Chrome singleton (warmup tab only; Turnstile handling is per-navigation via pydoll CM)."""
+    """
+    Start Chrome singleton with retry logic.
+    Kills zombie processes first, then attempts launch up to _MAX_RESTART_ATTEMPTS times.
+    """
     global _browser
     from pydoll.browser.chromium import Chrome
-    b = Chrome(options=_chrome_options())
-    await b.__aenter__()                            # start Chrome process
-    await b.start()                                 # open 1st (warmup) tab
-    _browser = b
-    logger.info("[Browser] Chrome singleton started")
+
+    last_exc = None
+    for attempt in range(_MAX_RESTART_ATTEMPTS):
+        if attempt > 0:
+            backoff = _RESTART_BACKOFF[min(attempt - 1, len(_RESTART_BACKOFF) - 1)]
+            logger.warning(f"[Browser] Launch attempt {attempt + 1}/{_MAX_RESTART_ATTEMPTS}, waiting {backoff}s...")
+            await asyncio.sleep(backoff)
+            _kill_zombie_chrome()
+            await asyncio.sleep(1)
+
+        try:
+            b = Chrome(options=_chrome_options())
+            await b.__aenter__()
+            await b.start()
+            _browser = b
+            logger.info("[Browser] Chrome singleton started")
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(f"[Browser] Launch attempt {attempt + 1} failed: {exc}")
+            try:
+                await b.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    raise last_exc
 
 
 async def _ensure_browser():
-    """Start browser if not already running. Safe for concurrent callers."""
+    """Start browser if not already running. Safe for concurrent callers (lock-protected)."""
     if _browser is not None:
         return
     lock = await _get_browser_lock()
@@ -147,16 +195,24 @@ async def _ensure_browser():
 
 
 async def _restart_browser():
-    """Kill crashed browser and restart cleanly."""
+    """
+    Kill crashed browser and restart cleanly.
+    Lock-protected to prevent concurrent restarts racing against each other.
+    """
     global _browser
-    logger.warning("[Browser] Restarting Chrome singleton after crash...")
-    if _browser is not None:
-        try:
-            await _browser.__aexit__(None, None, None)
-        except Exception:
-            pass
-        _browser = None
-    await _launch_browser()
+    lock = await _get_browser_lock()
+    async with lock:
+        logger.warning("[Browser] Restarting Chrome singleton after crash...")
+        if _browser is not None:
+            try:
+                await asyncio.wait_for(_browser.__aexit__(None, None, None), timeout=10)
+            except Exception:
+                pass
+            _browser = None
+
+        _kill_zombie_chrome()
+        await asyncio.sleep(1)
+        await _launch_browser()
 
 
 async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
@@ -171,7 +227,12 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
 
     for attempt in range(2):
         try:
-            tab = await _browser.new_tab()
+            current_browser = _browser
+            if current_browser is None:
+                await _ensure_browser()
+                current_browser = _browser
+
+            tab = await current_browser.new_tab()
             try:
                 cm = getattr(tab, "expect_and_bypass_cloudflare_captcha", None)
                 nav_timeout = 45.0
@@ -189,7 +250,7 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
                 return await tab.page_source
             finally:
                 try:
-                    await tab.close()
+                    await asyncio.wait_for(tab.close(), timeout=5)
                 except Exception:
                     pass
 
@@ -325,8 +386,16 @@ async def _resolve_download_page_async(url: str):
 async def _resolve_download_pages_parallel(urls: list[str]) -> list:
     if not urls:
         return []
+    # Limit concurrent tabs to 2 to avoid overwhelming the browser singleton.
+    # More than 2 concurrent tabs causes WebSocket command timeouts under load.
+    sem = asyncio.Semaphore(2)
+
+    async def _guarded(u):
+        async with sem:
+            return await _resolve_download_page_async(u)
+
     return await asyncio.gather(
-        *(_resolve_download_page_async(u) for u in urls),
+        *(_guarded(u) for u in urls),
         return_exceptions=True,
     )
 
