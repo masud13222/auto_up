@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     aria2 ffmpeg wget gnupg ca-certificates \
     postgresql-client \
     libx11-xcb1 libdbus-glib-1-2 \
+    libglib2.0-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Step 2: Google Chrome (WITHOUT --no-install-recommends so all runtime deps install)
