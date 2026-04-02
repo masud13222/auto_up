@@ -88,7 +88,11 @@ def _chrome_options():
 
 
 def _kill_zombie_chrome():
-    """Kill any leftover Chrome/Chromium processes to free resources before restart."""
+    """
+    Kill any leftover Chrome/Chromium processes to free resources before restart.
+    Sync — must be called from a thread, NOT from inside the asyncio event loop directly.
+    Use ``await asyncio.to_thread(_kill_zombie_chrome)`` when calling from async context.
+    """
     try:
         result = subprocess.run(
             ["pkill", "-9", "-f", "chrome"],
@@ -154,7 +158,10 @@ async def _get_browser_lock() -> asyncio.Lock:
 async def _launch_browser():
     """
     Start Chrome singleton with retry logic.
-    Kills zombie processes first, then attempts launch up to _MAX_RESTART_ATTEMPTS times.
+
+    Uses pydoll's recommended pattern: async-with context manager so __aenter__/__aexit__
+    handle process cleanup correctly. Keeps the warmup tab returned by start() alive in the
+    browser instance (pydoll tracks it internally) — we do NOT close it manually.
     """
     global _browser
     from pydoll.browser.chromium import Chrome
@@ -165,12 +172,15 @@ async def _launch_browser():
             backoff = _RESTART_BACKOFF[min(attempt - 1, len(_RESTART_BACKOFF) - 1)]
             logger.warning(f"[Browser] Launch attempt {attempt + 1}/{_MAX_RESTART_ATTEMPTS}, waiting {backoff}s...")
             await asyncio.sleep(backoff)
-            _kill_zombie_chrome()
-            await asyncio.sleep(1)
+            await asyncio.to_thread(_kill_zombie_chrome)
 
+        b = Chrome(options=_chrome_options())
         try:
-            b = Chrome(options=_chrome_options())
+            # __aenter__ just returns self; no process is started here.
             await b.__aenter__()
+            # start() spawns the Chrome process and returns the warmup Tab.
+            # We intentionally keep (but don't use) this tab — pydoll tracks it
+            # internally. All real work opens fresh tabs via new_tab().
             await b.start()
             _browser = b
             logger.info("[Browser] Chrome singleton started")
@@ -178,8 +188,14 @@ async def _launch_browser():
         except Exception as exc:
             last_exc = exc
             logger.warning(f"[Browser] Launch attempt {attempt + 1} failed: {exc}")
+            # Ensure the failed Chrome process is fully torn down before next attempt.
             try:
-                await b.__aexit__(None, None, None)
+                await asyncio.wait_for(b.__aexit__(None, None, None), timeout=8)
+            except Exception:
+                pass
+            # Explicitly stop the OS-level process if __aexit__ didn't clean up.
+            try:
+                b._browser_process_manager.stop_process()
             except Exception:
                 pass
 
@@ -212,8 +228,7 @@ async def _restart_browser():
                 pass
             _browser = None
 
-        _kill_zombie_chrome()
-        await asyncio.sleep(1)
+        await asyncio.to_thread(_kill_zombie_chrome)
         await _launch_browser()
 
 
