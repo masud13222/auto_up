@@ -1,30 +1,44 @@
 """
 Web scraping service using pydoll (headless Chromium).
 
-Browser Singleton Strategy (Approach 3 — Per-Worker Persistent Browser):
-  - One persistent asyncio event loop runs in a background daemon thread per worker.
-  - One Chrome instance is kept alive for the entire worker lifetime.
-  - Every fetch opens a NEW TAB, does the work, then closes that tab.
-  - On browser crash, it auto-restarts transparently (one retry).
+Browser Singleton Strategy — Remote-Connect Architecture:
+  Root cause of previous failures: pydoll's internal ``get_browser_ws_address()``
+  uses ``aiohttp`` to query ``http://localhost:PORT/json/version``. In this Docker
+  environment aiohttp raises ``ssl:default [Connect call failed]`` for plain HTTP
+  on localhost, regardless of aiohttp version. This is an environment-level issue
+  (confirmed via test_chrome*.py diagnostic scripts).
 
-Cloudflare Turnstile (pydoll docs — Behavioral Captcha Bypass, recommended pattern):
-  Each navigation uses ``async with tab.expect_and_bypass_cloudflare_captcha(...): await tab.go_to(url)``.
-  If Turnstile appears, pydoll waits (up to ``time_to_wait_captcha``) and performs the checkbox
-  interaction; if no Turnstile shadow root appears in time, pydoll logs an ERROR and continues —
-  the page often still loads (no challenge, or challenge not in shadow DOM). This is expected noise,
-  not necessarily a failed scrape. We do not use per-tab ``enable_auto_solve_cloudflare_captcha()``
-  (that caused WebSocket HTTP 500 noise on some hosts in practice).
+  Fix: We manage the Chrome subprocess ourselves and resolve the WS address via
+  ``urllib`` (stdlib, no SSL quirks). We then connect with pydoll's
+  ``browser.connect(ws_url)`` which goes straight to the WebSocket — bypassing
+  the broken aiohttp HTTP call entirely.
 
-Public API is unchanged — all callers (WebScrapeService.*) work as before.
+  Architecture:
+    - One Chrome subprocess per worker, bound to a fixed CDP port.
+    - One background asyncio event loop thread per worker process.
+    - ``browser.connect()`` gives us a Tab; we use ``browser.new_tab()`` for each
+      fetch, navigate, read, close.
+    - On any crash the subprocess is killed, a fresh one is started, and we
+      reconnect — all lock-protected to prevent concurrent restart races.
+
+Cloudflare Turnstile:
+  Each navigation uses ``tab.expect_and_bypass_cloudflare_captcha`` (pydoll CM).
+  If the Turnstile shadow root does not appear within ``time_to_wait_captcha``
+  pydoll logs an ERROR and continues — page usually still loads. Expected noise.
+
+Public API (WebScrapeService.*) is unchanged.
 """
 
 import asyncio
 import io
+import json
 import logging
+import os
 import re
 import subprocess
 import threading
 import time
+import urllib.request
 from urllib.parse import urlparse
 
 from markitdown import MarkItDown
@@ -41,63 +55,155 @@ from upload.utils.web_scrape_html import (
 logger = logging.getLogger(__name__)
 _markitdown = MarkItDown()
 
-# Main content wrapper (e.g. CineFreak). If missing, try PrimeHub-style layout.
+# Main content wrapper (CineFreak). Fallback for PrimeHub-style layout.
 _CONTENT_SELECTOR_FALLBACK = "div.single-service-content"
 
 # Suppress pydoll internal CDP/websocket logs
 logging.getLogger("pydoll").setLevel(logging.WARNING)
-logging.getLogger("pydoll.browser.tab").setLevel(logging.ERROR)  # CF bypass WebSocket noise
+logging.getLogger("pydoll.browser.tab").setLevel(logging.ERROR)
 logging.getLogger("pydoll.connection.connection_handler").setLevel(logging.ERROR)
 
-# Maximum consecutive browser restart attempts before giving up
+# CDP port for our managed Chrome subprocess (fixed — avoids random-port collisions)
+_CDP_PORT = int(os.environ.get("PYDOLL_CDP_PORT", "9222"))
+
+# Chrome binary to use
+_CHROME_BINARY = "google-chrome-stable"
+
+# How long to wait for Chrome CDP port after launching (seconds)
+_CHROME_STARTUP_TIMEOUT = 20
+
+# Retry/backoff for browser launch failures
 _MAX_RESTART_ATTEMPTS = 3
-# Delay between restart attempts (seconds)
 _RESTART_BACKOFF = [2, 5, 10]
-# _submit() must allow worst-case _launch_browser: 3 * opts.start_timeout + backoffs + pkill (~191s+)
+
+# submit() outer timeout: startup + navigation budget
 _FETCH_HTML_SUBMIT_TIMEOUT = 240
 
 
-# ── Chrome options ────────────────────────────────────────────────────────────
+# ── Chrome subprocess args ────────────────────────────────────────────────────
 
-def _chrome_options():
-    from pydoll.browser.options import ChromiumOptions
-    opts = ChromiumOptions()
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--headless=new")
-    opts.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-    )
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--enable-webgl")
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-default-apps")
-    opts.add_argument("--disable-sync")
-    opts.add_argument("--disable-translate")
-    opts.add_argument("--disable-background-networking")
-    opts.add_argument("--window-size=1280,720")
-    opts.add_argument("--single-process")
-    opts.add_argument("--no-zygote")
-    opts.start_timeout = 60
-    opts.block_notifications = True
-    opts.block_popups = True
-    opts.password_manager_enabled = False
-    return opts
+def _chrome_args() -> list[str]:
+    return [
+        _CHROME_BINARY,
+        f"--remote-debugging-port={_CDP_PORT}",
+        "--remote-debugging-address=127.0.0.1",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--enable-webgl",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-background-networking",
+        "--window-size=1280,720",
+        "--no-zygote",
+        (
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        ),
+        f"--user-data-dir=/tmp/chrome-pydoll-{_CDP_PORT}",
+    ]
+
+
+# ── WS address resolver (stdlib only — avoids aiohttp ssl:default bug) ───────
+
+def _get_ws_address_sync(timeout: int = _CHROME_STARTUP_TIMEOUT) -> str:
+    """
+    Poll Chrome's /json/version endpoint via urllib until it responds.
+    Returns the browser-level WebSocket URL with 127.0.0.1 (not localhost).
+    Raises RuntimeError if Chrome doesn't respond within ``timeout`` seconds.
+    """
+    deadline = time.monotonic() + timeout
+    last_exc: Exception = RuntimeError("Chrome never started")
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{_CDP_PORT}/json/version",
+                timeout=2,
+            ) as resp:
+                data = json.loads(resp.read())
+                ws = data["webSocketDebuggerUrl"]
+                # Replace 'localhost' with '127.0.0.1' to avoid IPv6 surprises
+                return ws.replace("localhost", "127.0.0.1")
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.5)
+    raise RuntimeError(f"Chrome CDP port {_CDP_PORT} not ready: {last_exc}")
+
+
+# ── Per-Worker Browser Singleton ──────────────────────────────────────────────
+#
+# Globals (module-level, per-worker-process):
+#   _chrome_proc  — the Chrome subprocess
+#   _browser      — pydoll Chrome instance (connected via remote-connect)
+#   _browser_lock — asyncio.Lock guards init + restart (created inside the loop)
+#   _event_loop / _loop_thread — the single persistent asyncio loop for this worker
+
+_event_loop: asyncio.AbstractEventLoop | None = None
+_loop_thread: threading.Thread | None = None
+_chrome_proc: subprocess.Popen | None = None
+_browser = None
+_browser_lock: asyncio.Lock | None = None
+
+
+def _get_persistent_loop() -> asyncio.AbstractEventLoop:
+    global _event_loop, _loop_thread
+    if _event_loop is None or _event_loop.is_closed():
+        _event_loop = asyncio.new_event_loop()
+        _loop_thread = threading.Thread(
+            target=_event_loop.run_forever,
+            name="pydoll-worker-loop",
+            daemon=True,
+        )
+        _loop_thread.start()
+        logger.info("[Browser] Persistent asyncio event loop started")
+    return _event_loop
+
+
+def _submit(coro, timeout: int = 180):
+    loop = _get_persistent_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
+
+
+async def _get_browser_lock() -> asyncio.Lock:
+    global _browser_lock
+    if _browser_lock is None:
+        _browser_lock = asyncio.Lock()
+    return _browser_lock
+
+
+def _kill_chrome_proc():
+    """Kill the managed Chrome subprocess (sync, safe to call from any thread)."""
+    global _chrome_proc
+    proc = _chrome_proc
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=4)
+    except Exception as exc:
+        logger.debug(f"[Browser] kill chrome proc: {exc}")
+    finally:
+        _chrome_proc = None
 
 
 def _kill_zombie_chrome():
     """
-    Kill any leftover Chrome/Chromium processes to free resources before restart.
-    Sync — must be called from a thread, NOT from inside the asyncio event loop directly.
-    Use ``await asyncio.to_thread(_kill_zombie_chrome)`` when calling from async context.
+    Kill any leftover Chrome processes by name (fallback for orphaned procs).
+    Sync — run in a thread via asyncio.to_thread from async context.
     """
     try:
         result = subprocess.run(
-            ["pkill", "-9", "-f", "chrome"],
-            capture_output=True,
-            timeout=5,
+            ["pkill", "-9", "-f", f"remote-debugging-port={_CDP_PORT}"],
+            capture_output=True, timeout=5,
         )
         if result.returncode == 0:
             logger.info("[Browser] Killed zombie Chrome processes")
@@ -106,104 +212,63 @@ def _kill_zombie_chrome():
         logger.debug(f"[Browser] pkill chrome: {exc}")
 
 
-# ── Per-Worker Browser Singleton ──────────────────────────────────────────────
-#
-# Architecture:
-#   One background daemon thread runs a persistent asyncio event loop.
-#   All async operations are submitted to that loop via run_coroutine_threadsafe().
-#   The Chrome browser is started once inside that loop and stays alive.
-#   Every fetch call:  new_tab() → navigate → get HTML → tab.close()
-#
-# Why this works across Django-Q tasks:
-#   Django-Q runs each task in the same worker process (ORM connection reuse etc.)
-#   Module-level globals persist for the worker's lifetime → browser stays alive.
-#   CF clearance cookie is in the browser's cookie store → no re-solve needed.
-
-_event_loop: asyncio.AbstractEventLoop | None = None
-_loop_thread: threading.Thread | None = None
-_browser = None                     # pydoll Chrome instance (shared)
-_browser_lock: asyncio.Lock | None = None   # async lock for init + restart
-
-
-def _get_persistent_loop() -> asyncio.AbstractEventLoop:
-    """Return (or create) the per-worker persistent asyncio event loop."""
-    global _event_loop, _loop_thread
-    if _event_loop is None or _event_loop.is_closed():
-        _event_loop = asyncio.new_event_loop()
-        _loop_thread = threading.Thread(
-            target=_event_loop.run_forever,
-            name="pydoll-worker-loop",
-            daemon=True,        # dies automatically when worker process exits
-        )
-        _loop_thread.start()
-        logger.info("[Browser] Persistent asyncio event loop started")
-    return _event_loop
-
-
-def _submit(coro, timeout: int = 180):
-    """Submit an async coroutine to the persistent loop and block until done."""
-    loop = _get_persistent_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
-
-
-async def _get_browser_lock() -> asyncio.Lock:
-    """Return (or create) the asyncio.Lock used to guard browser init and restart."""
-    global _browser_lock
-    if _browser_lock is None:
-        _browser_lock = asyncio.Lock()
-    return _browser_lock
-
-
 async def _launch_browser():
     """
-    Start Chrome singleton with retry logic.
+    Start Chrome subprocess + connect pydoll via remote-connect.
 
-    Uses pydoll's recommended pattern: async-with context manager so __aenter__/__aexit__
-    handle process cleanup correctly. Keeps the warmup tab returned by start() alive in the
-    browser instance (pydoll tracks it internally) — we do NOT close it manually.
+    1. Kill any existing Chrome on our port.
+    2. Launch fresh Chrome subprocess.
+    3. Poll /json/version via urllib until CDP port is ready.
+    4. pydoll browser.connect(ws_url) — no aiohttp involved.
     """
-    global _browser
+    global _chrome_proc, _browser
     from pydoll.browser.chromium import Chrome
 
-    last_exc = None
+    last_exc: Exception = RuntimeError("never tried")
+
     for attempt in range(_MAX_RESTART_ATTEMPTS):
         if attempt > 0:
             backoff = _RESTART_BACKOFF[min(attempt - 1, len(_RESTART_BACKOFF) - 1)]
-            logger.warning(f"[Browser] Launch attempt {attempt + 1}/{_MAX_RESTART_ATTEMPTS}, waiting {backoff}s...")
+            logger.warning(
+                f"[Browser] Launch attempt {attempt + 1}/{_MAX_RESTART_ATTEMPTS}, waiting {backoff}s..."
+            )
             await asyncio.sleep(backoff)
-            await asyncio.to_thread(_kill_zombie_chrome)
 
-        b = Chrome(options=_chrome_options())
+        # Kill previous process and any zombies on the same port
+        _kill_chrome_proc()
+        await asyncio.to_thread(_kill_zombie_chrome)
+
         try:
-            # __aenter__ just returns self; no process is started here.
-            await b.__aenter__()
-            # start() spawns the Chrome process and returns the warmup Tab.
-            # We intentionally keep (but don't use) this tab — pydoll tracks it
-            # internally. All real work opens fresh tabs via new_tab().
-            await b.start()
-            _browser = b
-            logger.info("[Browser] Chrome singleton started")
+            # Start Chrome subprocess
+            proc = subprocess.Popen(
+                _chrome_args(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _chrome_proc = proc
+            logger.info(f"[Browser] Chrome subprocess started (pid={proc.pid}, port={_CDP_PORT})")
+
+            # Wait for CDP port in a thread (urllib blocks — keep event loop free)
+            ws_url = await asyncio.to_thread(_get_ws_address_sync)
+            logger.info(f"[Browser] CDP ready: {ws_url}")
+
+            # Connect pydoll (pure WebSocket — no aiohttp)
+            browser = Chrome()
+            tab = await browser.connect(ws_url)
+            _browser = browser
+            logger.info("[Browser] Chrome singleton connected via remote-connect")
             return
+
         except Exception as exc:
             last_exc = exc
             logger.warning(f"[Browser] Launch attempt {attempt + 1} failed: {exc}")
-            # Ensure the failed Chrome process is fully torn down before next attempt.
-            try:
-                await asyncio.wait_for(b.__aexit__(None, None, None), timeout=8)
-            except Exception:
-                pass
-            # Explicitly stop the OS-level process if __aexit__ didn't clean up.
-            try:
-                b._browser_process_manager.stop_process()
-            except Exception:
-                pass
+            _kill_chrome_proc()
 
     raise last_exc
 
 
 async def _ensure_browser():
-    """Start browser if not already running. Safe for concurrent callers (lock-protected)."""
+    """Start browser if not already running. Lock-protected for concurrent callers."""
     if _browser is not None:
         return
     lock = await _get_browser_lock()
@@ -213,32 +278,27 @@ async def _ensure_browser():
 
 
 async def _restart_browser():
-    """
-    Kill crashed browser and restart cleanly.
-    Lock-protected to prevent concurrent restarts racing against each other.
-    """
+    """Kill crashed browser + restart. Lock-protected."""
     global _browser
     lock = await _get_browser_lock()
     async with lock:
         logger.warning("[Browser] Restarting Chrome singleton after crash...")
         if _browser is not None:
             try:
-                await asyncio.wait_for(_browser.__aexit__(None, None, None), timeout=10)
+                await asyncio.wait_for(_browser.close(), timeout=5)
             except Exception:
                 pass
             _browser = None
-
-        await asyncio.to_thread(_kill_zombie_chrome)
         await _launch_browser()
 
 
+# ── HTML fetcher ──────────────────────────────────────────────────────────────
+
 async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
     """
-    Fetch HTML using the singleton browser.
-    Opens a new tab, navigates, waits, returns HTML, closes tab.
+    Fetch page HTML via singleton browser.
+    Opens a new tab, navigates (with CF Turnstile bypass), reads HTML, closes tab.
     Auto-restarts browser once on crash.
-
-    Turnstile: pydoll-recommended ``expect_and_bypass_cloudflare_captcha`` around ``go_to`` only.
     """
     await _ensure_browser()
 
@@ -254,14 +314,10 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
                 cm = getattr(tab, "expect_and_bypass_cloudflare_captcha", None)
                 nav_timeout = 45.0
                 if cm is not None:
-                    # Docs: if shadow root does not appear within time_to_wait_captcha, interaction is skipped.
                     async with cm(time_to_wait_captcha=10):
                         await asyncio.wait_for(tab.go_to(url), timeout=nav_timeout)
                 else:
-                    logger.warning(
-                        "[Browser] expect_and_bypass_cloudflare_captcha missing on this pydoll version; "
-                        "plain navigation (no Turnstile helper)"
-                    )
+                    logger.warning("[Browser] CF captcha helper missing — plain navigation")
                     await asyncio.wait_for(tab.go_to(url), timeout=30)
                 await asyncio.sleep(settle)
                 return await tab.page_source
@@ -280,23 +336,22 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
 
 
 def _fetch_html(url: str, settle: float = 2.0) -> str:
-    """Sync entry point: fetch HTML via singleton browser (blocks until done)."""
+    """Sync entry point: fetch HTML via singleton browser."""
     normalized = normalize_http_url(url)
     if normalized != url:
-        logger.info(f"[Browser] Normalized URL for navigation: {url!r} -> {normalized!r}")
+        logger.info(f"[Browser] Normalized URL: {url!r} -> {normalized!r}")
     gateway_fixed = normalize_download_gateway_path(normalized)
     if gateway_fixed != normalized:
-        logger.info(
-            f"[Browser] Download gateway path /x/ -> /f/: {normalized!r} -> {gateway_fixed!r}"
-        )
+        logger.info(f"[Browser] Gateway path fix: {normalized!r} -> {gateway_fixed!r}")
     return _submit(_fetch_html_async(gateway_fixed, settle), timeout=_FETCH_HTML_SUBMIT_TIMEOUT)
 
 
 def _prepare_nav_url(url: str) -> str:
-    """Same normalization as ``_fetch_html`` before navigation."""
     n = normalize_http_url((url or "").strip())
     return normalize_download_gateway_path(n)
 
+
+# ── URL pattern matchers ──────────────────────────────────────────────────────
 
 _PATTERN_R2 = re.compile(
     r'href=["\'](?P<url>(?:https?:)?//[^"\']*(?:\.r2\.dev|r2\.cloudflarestorage\.com)[^"\']*)["\']'
@@ -317,21 +372,24 @@ def _is_direct_media_url(url: str) -> bool:
     path = parsed.path or ""
     if "video-downloads.googleusercontent.com" in host:
         return True
-    if any(token in host for token in (".r2.dev", "r2.cloudflarestorage.com")) and _DIRECT_MEDIA_EXT_RE.search(path):
+    if any(t in host for t in (".r2.dev", "r2.cloudflarestorage.com")) and _DIRECT_MEDIA_EXT_RE.search(path):
         return True
     return False
 
 
+# ── Download page resolver ────────────────────────────────────────────────────
+
 async def _resolve_download_page_async(url: str):
     """
-    One generate.php (or similar) page → R2 or video link list.
-    Uses its own browser tab; safe to run many concurrently via asyncio.gather.
+    One generate.php (or similar) page → R2 / video link list.
+    Safe to run concurrently via asyncio.gather (each opens its own tab).
     """
     try:
         u = _prepare_nav_url(url)
         if _is_direct_media_url(u):
-            logger.debug(f"[Scrape] Direct media URL detected, skipping browser resolve: {u}")
+            logger.debug(f"[Scrape] Direct media URL, skipping browser: {u}")
             return [u]
+
         html = await _fetch_html_async(u, 4.0)
         target_url = u
         match_loc = _PATTERN_LOC.search(html)
@@ -340,10 +398,9 @@ async def _resolve_download_page_async(url: str):
             raw_target = match_loc.group(1)
             target_url = normalize_download_gateway_path(normalize_http_url(raw_target))
             if target_url != raw_target:
-                logger.debug(f"[Scrape] Normalized redirect URL: {raw_target!r} -> {target_url!r}")
+                logger.debug(f"[Scrape] Normalized redirect: {raw_target!r} -> {target_url!r}")
             logger.debug(f"[Scrape] Found redirect URL: {target_url}")
             if _is_direct_media_url(target_url):
-                logger.debug(f"[Scrape] Redirect resolved to direct media URL: {target_url}")
                 return [target_url]
             html = await _fetch_html_async(target_url, 4.0)
         else:
@@ -385,16 +442,15 @@ async def _resolve_download_page_async(url: str):
                     instant_html = await _fetch_html_async(instant_url, 5.0)
                     instant_matches = _PATTERN_VIDEO.findall(instant_html)
                     if instant_matches:
-                        logger.info(
-                            f"[Scrape] Found {len(instant_matches)} video link(s) via instant: {instant_url}"
-                        )
+                        logger.info(f"[Scrape] Found {len(instant_matches)} video link(s) via instant: {instant_url}")
                         return instant_matches
-                    logger.warning(f"[Scrape] Instant fallback returned no video links: {instant_url}")
+                    logger.warning(f"[Scrape] Instant fallback returned no links: {instant_url}")
                 except Exception as ie:
                     logger.warning(f"[Scrape] Instant fallback failed for {instant_url}: {ie}")
 
         logger.warning(f"[Scrape] No links found for URL: {url}")
         return None
+
     except Exception as exc:
         logger.error(f"[Scrape] resolve download page ({url}): {exc}", exc_info=True)
         return None
@@ -403,18 +459,14 @@ async def _resolve_download_page_async(url: str):
 async def _resolve_download_pages_parallel(urls: list[str]) -> list:
     if not urls:
         return []
-    # Limit concurrent tabs to 2 to avoid overwhelming the browser singleton.
-    # More than 2 concurrent tabs causes WebSocket command timeouts under load.
+    # Limit to 2 concurrent tabs — more causes WebSocket timeouts under load
     sem = asyncio.Semaphore(2)
 
     async def _guarded(u):
         async with sem:
             return await _resolve_download_page_async(u)
 
-    return await asyncio.gather(
-        *(_guarded(u) for u in urls),
-        return_exceptions=True,
-    )
+    return await asyncio.gather(*(_guarded(u) for u in urls), return_exceptions=True)
 
 
 # ── Public scraping service ───────────────────────────────────────────────────
@@ -425,14 +477,12 @@ class WebScrapeService:
 
     @staticmethod
     def clean_html(html: str) -> str:
-        """Converts HTML to LLM-friendly Markdown. Collapses blank lines."""
+        """Convert HTML to LLM-friendly Markdown."""
         buf = io.BytesIO(html.encode("utf-8"))
         md = _markitdown.convert_stream(buf, file_extension=".html").text_content
         md = re.sub(r"\n{3,}", "\n\n", md).strip()
         md = truncate_markdown_for_llm(md)
         return sanitize_markdown_for_llm(md)
-
-    # ── 1. get_page_content ───────────────────────────────────────────────────
 
     @staticmethod
     def get_page_content(url: str, selector: str = "div.content-grid.container"):
@@ -464,8 +514,6 @@ class WebScrapeService:
             logger.error(f"[Scrape] get_page_content({url}): {exc}", exc_info=True)
             return None
 
-    # ── 2. cinefreak_title ────────────────────────────────────────────────────
-
     @staticmethod
     def cinefreak_title(url: str):
         """Fetch page, return h1 title text."""
@@ -486,15 +534,9 @@ class WebScrapeService:
             logger.error(f"[Scrape] cinefreak_title({url}): {exc}", exc_info=True)
             return None
 
-    # ── 3. get_url / get_urls_parallel ─────────────────────────────────────────
-
     @staticmethod
     def get_url(url: str):
-        """
-        Follows window.location.href redirects and extracts R2/video links.
-
-        Same logic as ``_resolve_download_page_async``; one URL, one tab, sync API.
-        """
+        """Resolve one gateway URL → R2/video link list."""
         try:
             logger.info(f"[Scrape] get_url → {url}")
             return _submit(_resolve_download_page_async(url), timeout=180)
@@ -505,9 +547,8 @@ class WebScrapeService:
     @staticmethod
     def get_urls_parallel(urls: list[str]) -> list:
         """
-        Resolve multiple gateway URLs at once (one tab each, ``asyncio.gather`` on the worker loop).
-        Return list aligned with input; each entry is a link list, None, or Exception if
-        ``return_exceptions`` surfaced (caller should treat like failure).
+        Resolve multiple gateway URLs concurrently (2 tabs at a time).
+        Returns list aligned with input — each entry is a link list or None.
         """
         urls = [u for u in urls if u]
         if not urls:
