@@ -53,9 +53,6 @@ services:
       - DEBUG=False
       - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
     restart: always
-    shm_size: '512mb'
-    tmpfs:
-      - /tmp:size=512m,mode=1777
 
 volumes:
   flixbd_media:
