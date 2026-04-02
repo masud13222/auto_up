@@ -53,6 +53,8 @@ logging.getLogger("pydoll.connection.connection_handler").setLevel(logging.ERROR
 _MAX_RESTART_ATTEMPTS = 3
 # Delay between restart attempts (seconds)
 _RESTART_BACKOFF = [2, 5, 10]
+# _submit() must allow worst-case _launch_browser: 3 * opts.start_timeout + backoffs + pkill (~191s+)
+_FETCH_HTML_SUBMIT_TIMEOUT = 240
 
 
 # ── Chrome options ────────────────────────────────────────────────────────────
@@ -272,7 +274,7 @@ def _fetch_html(url: str, settle: float = 2.0) -> str:
         logger.info(
             f"[Browser] Download gateway path /x/ -> /f/: {normalized!r} -> {gateway_fixed!r}"
         )
-    return _submit(_fetch_html_async(gateway_fixed, settle))
+    return _submit(_fetch_html_async(gateway_fixed, settle), timeout=_FETCH_HTML_SUBMIT_TIMEOUT)
 
 
 def _prepare_nav_url(url: str) -> str:
