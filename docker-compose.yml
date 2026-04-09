@@ -1,11 +1,19 @@
 # Local Postgres for web + worker. Override DATABASE_URL on web/worker to use Neon etc.
 # Password: set POSTGRES_PASSWORD in .env (default below is dev-only).
+# All services share ``flixbd_net`` so hostnames ``db``, ``web``, ``worker`` resolve inside the stack.
+
+networks:
+  flixbd_net:
+    driver: bridge
+    name: flixbd_net
 
 services:
   db:
     image: postgres:16-alpine
     container_name: flixbd_db
     restart: always
+    networks:
+      - flixbd_net
     environment:
       POSTGRES_USER: flixbd
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flixbd_local_dev}
@@ -24,6 +32,8 @@ services:
   web:
     build: .
     container_name: flixbd_app
+    networks:
+      - flixbd_net
     depends_on:
       db:
         condition: service_healthy
@@ -41,6 +51,8 @@ services:
   worker:
     build: .
     container_name: flixbd_worker
+    networks:
+      - flixbd_net
     # Must migrate before qcluster — same race as web if DB is empty (django_q_ormq, etc.)
     command: >
       sh -c "python manage.py migrate --noinput && exec python manage.py qcluster"
