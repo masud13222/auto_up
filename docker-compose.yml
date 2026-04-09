@@ -42,9 +42,6 @@ services:
     volumes:
       - flixbd_media:/app/media
     environment:
-      - DEBUG=False
-      - ALLOWED_HOSTS=upload.gcloud.sbs,drivebot.gcloud.lol,45.86.153.231,localhost,sw.flixbd.xyz,upload.flixbd.xyz,*
-      - CSRF_TRUSTED_ORIGINS=https://upload.gcloud.sbs,https://drivebot.gcloud.lol,http://45.86.153.231:5000,https://upload.flixbd.xyz,https://sw.flixbd.xyz
       - DATABASE_URL=postgresql://flixbd:${POSTGRES_PASSWORD:-flixbd_local_dev}@db:5432/flixbd?sslmode=disable
     restart: always
 
