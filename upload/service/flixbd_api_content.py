@@ -11,6 +11,7 @@ from .flixbd_api_base import (
     _get_config,
     _headers,
     _safe_json,
+    _url,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ def search(title: str, content_type: str = "all") -> dict | None:
     Returns a simple ``{"id": int, "title": str}`` match or ``None``.
     """
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/search"
+    endpoint = _url(api_url, "api/v1/search")
     params = {"q": title, "type": content_type, "per_page": 5, "page": 1}
 
     try:
@@ -104,7 +105,7 @@ def series_website_title(tvshow_data: dict) -> str:
 def create_movie(movie_data: dict) -> int:
     """Create a new movie on FlixBD using extracted data."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies"
+    endpoint = _url(api_url, "api/v1/movies")
 
     payload = _build_movie_payload(movie_data)
     logger.info("FlixBD: creating movie %r", payload.get("title"))
@@ -139,7 +140,7 @@ def create_movie(movie_data: dict) -> int:
 def create_series(tvshow_data: dict) -> int:
     """Create a new series on FlixBD using extracted data."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series"
+    endpoint = _url(api_url, "api/v1/series")
 
     payload = _build_series_payload(tvshow_data)
     logger.info("FlixBD: creating series %r", payload.get("title"))
@@ -174,7 +175,7 @@ def create_series(tvshow_data: dict) -> int:
 def patch_movie_title(content_id: int, movie_data: dict) -> bool:
     """PUT title-only payload on an existing movie."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies/{content_id}"
+    endpoint = _url(api_url, "api/v1/movies", content_id)
     display = _display_movie_title(movie_data)
     payload = {"title": display}
     logger.info("FlixBD: PUT movie id=%s title-only -> %r", content_id, display[:100])
@@ -205,7 +206,7 @@ def patch_movie_title(content_id: int, movie_data: dict) -> bool:
 def update_movie(content_id: int, movie_data: dict) -> bool:
     """PUT full movie payload on an existing movie row."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies/{content_id}"
+    endpoint = _url(api_url, "api/v1/movies", content_id)
     payload = _build_movie_payload(movie_data)
     logger.info(
         "FlixBD: PUT movie id=%s full payload title=%r",
@@ -239,7 +240,7 @@ def update_movie(content_id: int, movie_data: dict) -> bool:
 def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
     """PUT title-only payload on an existing series."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series/{content_id}"
+    endpoint = _url(api_url, "api/v1/series", content_id)
     display = _display_series_title(tvshow_data)
     payload = {"title": display}
     logger.info("FlixBD: PUT series id=%s title-only -> %r", content_id, display[:100])
@@ -270,7 +271,7 @@ def patch_series_title(content_id: int, tvshow_data: dict) -> bool:
 def update_series(content_id: int, tvshow_data: dict) -> bool:
     """PUT full series payload on an existing series row."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series/{content_id}"
+    endpoint = _url(api_url, "api/v1/series", content_id)
     payload = _build_series_payload(tvshow_data)
     logger.info(
         "FlixBD: PUT series id=%s full payload title=%r",

@@ -7,7 +7,7 @@ import httpx
 from upload.tasks.helpers import coerce_entry_language_value
 from upload.utils.tv_items import tv_items_overlap
 
-from .flixbd_api_base import _TIMEOUT, _get_config, _headers, _safe_json
+from .flixbd_api_base import _TIMEOUT, _get_config, _headers, _safe_json, _url
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def add_movie_download_links(
     (each failure: quality, language, filename, reason).
     """
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads"
+    endpoint = _url(api_url, "api/v1/movies", content_id, "downloads")
     created_ids: list = []
     attempted = 0
     succeeded = 0
@@ -253,7 +253,7 @@ def add_movie_download_links(
 def list_movie_downloads(content_id: int) -> list[dict]:
     """GET movie downloads list (best-effort)."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/movies/{content_id}/downloads"
+    endpoint = _url(api_url, "api/v1/movies", content_id, "downloads")
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.get(endpoint, headers=_headers(api_key))
@@ -278,7 +278,7 @@ def list_movie_downloads(content_id: int) -> list[dict]:
 def delete_movie_download(content_id: int, download_row_id: int) -> bool:
     """DELETE one movie download row. False on failure."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/downloads/{download_row_id}"
+    endpoint = _url(api_url, "api/v1/downloads", download_row_id)
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.delete(endpoint, headers=_headers(api_key))
@@ -348,7 +348,7 @@ def fetch_movie_drive_links_by_quality(content_id: int) -> dict[str, list[dict]]
 def list_series_downloads(content_id: int) -> list[dict]:
     """GET series downloads list (best-effort)."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series/{content_id}/downloads"
+    endpoint = _url(api_url, "api/v1/series", content_id, "downloads")
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.get(endpoint, headers=_headers(api_key))
@@ -373,7 +373,7 @@ def list_series_downloads(content_id: int) -> list[dict]:
 def delete_series_download(content_id: int, download_row_id: int) -> bool:
     """DELETE one series download row. False on failure."""
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/downloads/{download_row_id}"
+    endpoint = _url(api_url, "api/v1/downloads", download_row_id)
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.delete(endpoint, headers=_headers(api_key))
@@ -619,7 +619,7 @@ def add_series_download_links(
     include season_number, label, quality, language, filename, reason).
     """
     api_url, api_key = _get_config()
-    endpoint = f"{api_url}/api/v1/series/{content_id}/downloads"
+    endpoint = _url(api_url, "api/v1/series", content_id, "downloads")
     created_ids: list = []
     attempted = 0
     succeeded = 0

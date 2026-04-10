@@ -34,6 +34,19 @@ def _get_config():
     return api_url, cfg.api_key
 
 
+def _url(api_url: str, *parts: str | int) -> str:
+    """
+    Build an API endpoint URL that always ends with a trailing slash.
+    Django REST Framework returns 301 for slash-less URLs which converts
+    PUT/POST to GET — always include the slash to avoid the redirect.
+
+    Example: _url(base, "api/v1/movies", 42, "downloads") ->
+             "{base}/api/v1/movies/42/downloads/"
+    """
+    path = "/".join(str(p).strip("/") for p in parts)
+    return f"{api_url}/{path}/"
+
+
 def _headers(api_key: str) -> dict:
     return {
         "X-API-Key": api_key,

@@ -14,6 +14,7 @@ from .flixbd_api_base import (
     _get_config,
     _headers,
     _safe_json,
+    _url,
     logger,
 )
 from .flixbd_api_content import (
