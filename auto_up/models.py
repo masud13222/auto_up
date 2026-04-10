@@ -38,7 +38,7 @@ class ScrapeItem(models.Model):
     """
     Tracks each individual item found during a scrape run.
     Used for:
-    - Daily limit enforcement (max 2 process per URL per day)
+    - Daily limit enforcement (max 2 process per URL per day; bypassed 22:00–01:00 Asia/Dhaka)
     - Audit trail / debugging
     - Auto-cleaned after a few days (see ``LOG_RETENTION_DAYS`` in ``auto_up.tasks``).
     """

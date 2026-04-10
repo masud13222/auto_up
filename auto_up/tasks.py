@@ -4,7 +4,8 @@ Auto-upload tasks for Django-Q.
 Main entry point: auto_scrape_and_queue()
 - Scrapes CineFreak homepage
 - Extracts clean names from titles
-- Enforces daily limit (max 2 process per URL per day)
+- Enforces daily limit (max 2 process per URL per day), except during the
+  Bangladesh bypass window (see _daily_limit_bypass_window_active)
 - Searches DB for existing entries (fuzzy matching)
 - Sends everything to LLM for filtering
 - Queues approved items via process_media_task
@@ -14,6 +15,7 @@ Main entry point: auto_scrape_and_queue()
 
 import logging
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 from django_q.tasks import async_task
@@ -43,8 +45,30 @@ def _llm_priority_to_q_priority(priority: str | None) -> int:
 # Maximum times the same URL can be sent to process in a single day
 DAILY_PROCESS_LIMIT = 2
 
+# Outside this window (Asia/Dhaka local clock), the daily cap applies.
+# Inside: 22:00–23:59 and 00:00–00:59 (i.e. "10 PM–1 AM" with 01:00 excluded).
+_DAILY_LIMIT_BYPASS_TZ = ZoneInfo("Asia/Dhaka")
+_DAILY_LIMIT_BYPASS_START_HOUR = 22
+_DAILY_LIMIT_BYPASS_END_HOUR = 1
+
 # Days to keep ScrapeRun / ScrapeItem logs in admin
 LOG_RETENTION_DAYS = 3
+
+
+def _daily_limit_bypass_window_active(at=None) -> bool:
+    """
+    True when auto-scrape should not enforce DAILY_PROCESS_LIMIT per URL.
+
+    Fixed window in Bangladesh time (Asia/Dhaka): 22:00 through 00:59 inclusive
+    (01:00 local is outside the window; cap applies again from 01:00 onward).
+    """
+    if at is None:
+        at = timezone.now()
+    if timezone.is_naive(at):
+        at = timezone.make_aware(at, timezone.utc)
+    local = at.astimezone(_DAILY_LIMIT_BYPASS_TZ)
+    h = local.hour
+    return h >= _DAILY_LIMIT_BYPASS_START_HOUR or h < _DAILY_LIMIT_BYPASS_END_HOUR
 
 
 # Match upload pipeline: cap FlixBD rows in auto_up LLM payload (token savings).
@@ -157,7 +181,7 @@ def auto_scrape_and_queue() -> str:
     Full auto-scrape pipeline:
     1. Cleanup old logs (older than ``LOG_RETENTION_DAYS``)
     2. Scrape CineFreak homepage
-    3. Daily limit check: max 2 process per URL per day
+    3. Daily limit check: max 2 process per URL per day (skipped 22:00–01:00 Asia/Dhaka)
     4. For each remaining entry: extract clean name + year
     5. Search DB for existing matches (fuzzy matching)
     6. Send all items + DB results to LLM for filtering
@@ -193,8 +217,17 @@ def auto_scrape_and_queue() -> str:
         # ── Step 2: Daily limit check ──
         daily_filtered = []
         daily_limit_skipped = 0
+        limit_bypass = _daily_limit_bypass_window_active(run_start)
+        if limit_bypass:
+            logger.info(
+                "Daily per-URL cap bypassed (Asia/Dhaka 22:00–01:00 window, run time %s)",
+                run_start.isoformat(),
+            )
 
         for entry in entries:
+            if limit_bypass:
+                daily_filtered.append(entry)
+                continue
             count = _get_daily_process_count(entry["url"])
             if count >= DAILY_PROCESS_LIMIT:
                 daily_limit_skipped += 1
