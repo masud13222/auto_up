@@ -27,7 +27,7 @@ def search(title: str, content_type: str = "all") -> dict | None:
     params = {"q": title, "type": content_type, "per_page": 5, "page": 1}
 
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
+        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
             resp = client.get(endpoint, params=params, headers=_headers(api_key))
 
         if resp.status_code == 422:

@@ -455,30 +455,16 @@ def fetch_flixbd_results(name: str, min_score: int = 40) -> list:
     """
     try:
         from upload.service import flixbd_client as fx
-        import httpx
         from rapidfuzz import fuzz
 
+        from upload.service.flixbd_api_base import flixbd_search_response_dict
+
         api_url, api_key = fx._get_config()
-        endpoint = f"{api_url}/api/v1/search"
         params = {"q": name, "type": "all", "per_page": _FLIXBD_LLM_MAX_RESULTS, "page": 1}
 
-        with httpx.Client(timeout=fx._TIMEOUT) as client:
-            resp = client.get(endpoint, params=params, headers=fx._headers(api_key))
-
-        if resp.status_code != 200:
-            logger.debug("FlixBD search: HTTP %s for %r", resp.status_code, name)
-            return []
-
-        try:
-            payload = resp.json()
-        except ValueError:
-            snippet = (resp.text or "")[:300].replace("\n", " ")
-            logger.warning(
-                "FlixBD search: invalid JSON for %r (HTTP %s): %r",
-                name,
-                resp.status_code,
-                snippet,
-            )
+        payload = flixbd_search_response_dict(api_url, api_key, params)
+        if not payload:
+            logger.debug("FlixBD search: no usable JSON response for %r", name)
             return []
 
         raw_results = payload.get("data", [])

@@ -90,7 +90,7 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
 
     try:
         from upload.service import flixbd_client as fx
-        import httpx
+        from upload.service.flixbd_api_base import flixbd_search_response_dict
         import re
         from rapidfuzz import fuzz
 
@@ -99,17 +99,11 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
         api_url, api_key = fx._get_config()
         params = {"q": name, "type": "all", "per_page": max_results, "page": 1}
 
-        with httpx.Client(timeout=fx._TIMEOUT) as client:
-            resp = client.get(
-                f"{api_url}/api/v1/search",
-                params=params,
-                headers=fx._headers(api_key),
-            )
-
-        if resp.status_code != 200:
+        body = flixbd_search_response_dict(api_url, api_key, params)
+        if not body:
             return []
 
-        raw = resp.json().get("data", [])
+        raw = body.get("data", [])
         if not raw:
             return []
 

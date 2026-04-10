@@ -255,7 +255,7 @@ def list_movie_downloads(content_id: int) -> list[dict]:
     api_url, api_key = _get_config()
     endpoint = _url(api_url, "api/v1/movies", content_id, "downloads")
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
+        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
             resp = client.get(endpoint, headers=_headers(api_key))
         if resp.status_code == 404:
             return []
@@ -350,7 +350,7 @@ def list_series_downloads(content_id: int) -> list[dict]:
     api_url, api_key = _get_config()
     endpoint = _url(api_url, "api/v1/series", content_id, "downloads")
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
+        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
             resp = client.get(endpoint, headers=_headers(api_key))
         if resp.status_code == 404:
             return []
