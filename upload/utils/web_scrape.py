@@ -79,6 +79,15 @@ _RESTART_BACKOFF = [2, 5, 10]
 # submit() outer timeout: startup + navigation budget
 _FETCH_HTML_SUBMIT_TIMEOUT = 240
 
+# Skip redundant full restart if another coroutine just finished launch (same burst).
+_RESTART_COALESCE_SEC = float(os.environ.get("PYDOLL_RESTART_COALESCE_SEC", "1.0"))
+
+# Concurrent browser tabs for parallel gateway resolution (override with PYDOLL_MAX_PARALLEL_TABS).
+try:
+    _MAX_PARALLEL_TABS = max(1, min(4, int(os.environ.get("PYDOLL_MAX_PARALLEL_TABS", "4"))))
+except ValueError:
+    _MAX_PARALLEL_TABS = 4
+
 
 # ── Chrome subprocess args ────────────────────────────────────────────────────
 
@@ -147,6 +156,8 @@ _loop_thread: threading.Thread | None = None
 _chrome_proc: subprocess.Popen | None = None
 _browser = None
 _browser_lock: asyncio.Lock | None = None
+# Set when _launch_browser() succeeds; cleared at the start of a full _restart_browser().
+_last_successful_launch_mono: float | None = None
 
 
 def _get_persistent_loop() -> asyncio.AbstractEventLoop:
@@ -221,7 +232,7 @@ async def _launch_browser():
     3. Poll /json/version via urllib until CDP port is ready.
     4. pydoll browser.connect(ws_url) — no aiohttp involved.
     """
-    global _chrome_proc, _browser
+    global _chrome_proc, _browser, _last_successful_launch_mono
     from pydoll.browser.chromium import Chrome
 
     last_exc: Exception = RuntimeError("never tried")
@@ -256,6 +267,7 @@ async def _launch_browser():
             browser = Chrome()
             tab = await browser.connect(ws_url)
             _browser = browser
+            _last_successful_launch_mono = time.monotonic()
             logger.info("[Browser] Chrome singleton connected via remote-connect")
             return
 
@@ -277,11 +289,34 @@ async def _ensure_browser():
             await _launch_browser()
 
 
+def _format_fetch_error(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    if msg:
+        return f"{type(exc).__name__}: {msg}"
+    return type(exc).__name__
+
+
 async def _restart_browser():
     """Kill crashed browser + restart. Lock-protected."""
-    global _browser
+    global _browser, _last_successful_launch_mono
     lock = await _get_browser_lock()
     async with lock:
+        # Second waiter after a successful launch in the same burst: do not tear down
+        # the fresh singleton (fixes double Chrome on port 9222 / errno 111 races).
+        if (
+            _RESTART_COALESCE_SEC > 0
+            and _last_successful_launch_mono is not None
+            and (time.monotonic() - _last_successful_launch_mono) < _RESTART_COALESCE_SEC
+            and _browser is not None
+            and _chrome_proc is not None
+            and _chrome_proc.poll() is None
+        ):
+            logger.info(
+                "[Browser] Restart coalesced — singleton was just refreshed by another task"
+            )
+            return
+
+        _last_successful_launch_mono = None
         logger.warning("[Browser] Restarting Chrome singleton after crash...")
         if _browser is not None:
             try:
@@ -300,16 +335,10 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
     Opens a new tab, navigates (with CF Turnstile bypass), reads HTML, closes tab.
     Auto-restarts browser once on crash.
     """
-    await _ensure_browser()
-
     for attempt in range(2):
         try:
-            current_browser = _browser
-            if current_browser is None:
-                await _ensure_browser()
-                current_browser = _browser
-
-            tab = await current_browser.new_tab()
+            await _ensure_browser()
+            tab = await _browser.new_tab()
             try:
                 cm = getattr(tab, "expect_and_bypass_cloudflare_captcha", None)
                 nav_timeout = 45.0
@@ -324,12 +353,20 @@ async def _fetch_html_async(url: str, settle: float = 2.0) -> str:
             finally:
                 try:
                     await asyncio.wait_for(tab.close(), timeout=5)
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    # Tab close is cleanup only; failure does not imply a broken browser
+                    # (e.g. Page.DISABLE timeout after HTML was already read).
+                    logger.debug(
+                        "[Browser] tab.close() failed (%s) — ignoring, singleton unchanged",
+                        _format_fetch_error(close_exc),
+                    )
 
         except Exception as exc:
             if attempt == 0:
-                logger.warning(f"[Browser] Fetch failed: {exc} — restarting browser, retrying...")
+                logger.warning(
+                    "[Browser] Fetch failed: %s — restarting browser, retrying...",
+                    _format_fetch_error(exc),
+                )
                 await _restart_browser()
             else:
                 raise
@@ -459,8 +496,8 @@ async def _resolve_download_page_async(url: str):
 async def _resolve_download_pages_parallel(urls: list[str]) -> list:
     if not urls:
         return []
-    # Limit to 2 concurrent tabs — more causes WebSocket timeouts under load
-    sem = asyncio.Semaphore(2)
+    # Default 4 concurrent tabs; set PYDOLL_MAX_PARALLEL_TABS lower if CDP timeouts return.
+    sem = asyncio.Semaphore(_MAX_PARALLEL_TABS)
 
     async def _guarded(u):
         async with sem:
@@ -547,7 +584,7 @@ class WebScrapeService:
     @staticmethod
     def get_urls_parallel(urls: list[str]) -> list:
         """
-        Resolve multiple gateway URLs concurrently (2 tabs at a time).
+        Resolve multiple gateway URLs concurrently (``PYDOLL_MAX_PARALLEL_TABS``, default 4).
         Returns list aligned with input — each entry is a link list or None.
         """
         urls = [u for u in urls if u]

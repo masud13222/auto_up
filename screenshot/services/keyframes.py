@@ -53,6 +53,8 @@ from typing import Literal
 
 from PIL import Image
 
+from upload.utils.ffmpeg_low_priority import low_priority_cmd
+
 logger = logging.getLogger(__name__)
 
 MAX_TOTAL_BYTES_DEFAULT = 5 * 1024 * 1024
@@ -134,21 +136,35 @@ def _decoder_attempts() -> list[tuple[str | None, bool]]:
     return [(None, True), (raw, False)]
 
 
-def _ffprobe_duration(path: str) -> float:
-    cmd = [
-        "ffprobe", "-v", "quiet",
-        "-print_format", "json",
-        "-show_format", path,
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if r.returncode != 0:
-        logger.error("ffprobe failed: %s", r.stderr[:500])
-        return 0.0
+# Single probe: duration + minimal stream fields (avoids two full demux passes).
+_FFPROBE_KEYFRAMES_ENTRIES = (
+    "format=duration:stream=index,codec_type,codec_name,width,height,disposition"
+)
+
+
+def _ffprobe_keyframes_payload(path: str) -> dict:
+    cmd = low_priority_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            _FFPROBE_KEYFRAMES_ENTRIES,
+            path,
+        ]
+    )
     try:
-        fmt = json.loads(r.stdout).get("format", {})
-        return float(fmt.get("duration", 0) or 0)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return 0.0
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            logger.error("ffprobe failed: %s", (r.stderr or "")[:500])
+            return {}
+        data = json.loads(r.stdout)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError, subprocess.TimeoutExpired) as e:
+        logger.error("ffprobe error: %s", e)
+        return {}
 
 
 @dataclass(frozen=True)
@@ -161,30 +177,21 @@ class _PrimaryVideo:
     height: int
 
 
-def _ffprobe_primary_video(path: str) -> _PrimaryVideo | None:
+def _primary_video_from_streams(streams: list[dict]) -> _PrimaryVideo | None:
     """
-    Pick the **episode** video stream:
+    Pick the **episode** video stream from a probe ``streams`` list:
 
     1. Skip ``attached_pic``.
     2. Prefer codecs that are normal **moving** video (drop ``png`` / ``mjpeg`` / ``gif``
        etc. — often hi-res posters that are not the x264/hevc track).
     3. Among those, take largest ``width * height``.
     """
-    cmd = [
-        "ffprobe", "-v", "quiet",
-        "-print_format", "json",
-        "-show_streams",
-        path,
-    ]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            return None
-        streams = json.loads(r.stdout).get("streams", [])
-    except (json.JSONDecodeError, TypeError, subprocess.TimeoutExpired):
+    if not isinstance(streams, list):
         return None
 
-    videos: list[dict] = [s for s in streams if s.get("codec_type") == "video"]
+    videos: list[dict] = [
+        s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"
+    ]
     if not videos:
         return None
 
@@ -251,7 +258,7 @@ def _lead(hwaccel: str | None, sw_threads: bool) -> list[str]:
     if sw_threads:
         cmd.extend(["-threads", "0"])
     cmd.extend(["-fflags", _fflags_value()])
-    return cmd
+    return low_priority_cmd(cmd)
 
 
 SeekMode = Literal["hybrid", "fast", "accurate"]
@@ -515,12 +522,17 @@ def extract_keyframes_webp(
     if not video_path or not os.path.isfile(video_path):
         return []
 
-    duration = _ffprobe_duration(video_path)
+    probe = _ffprobe_keyframes_payload(video_path)
+    fmt = probe.get("format") or {}
+    try:
+        duration = float(fmt.get("duration", 0) or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
     if duration <= 0.5:
         logger.warning("Duration too short or unknown: %s", video_path)
         return []
 
-    primary = _ffprobe_primary_video(video_path)
+    primary = _primary_video_from_streams(probe.get("streams") or [])
     vidx = primary.stream_index if primary else None
     logger.info(
         "Screenshot: %s | video_stream=0:%s %s %dx%d | duration=%.1fs | hybrid=%.0fs | hw=%s",

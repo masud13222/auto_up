@@ -14,6 +14,8 @@ from typing import Optional
 
 from llm.schema.blocked_names import BLOCKED_SITE_NAMES, SITE_NAME
 
+from .ffmpeg_low_priority import low_priority_cmd
+
 logger = logging.getLogger(__name__)
 
 _EXTRA_BLOCKED_MEDIA_NAMES = ["torrent", "yts", "rarbg", "yify"]
@@ -136,23 +138,38 @@ def _needs_metadata_cleanup(input_path: str, probe_data: dict, kept_streams: lis
     return False
 
 
+# Only fields used by remux / metadata logic (smaller probe than full format+streams).
+_FFPROBE_SUBTITLE_ENTRIES = (
+    "format_tags=title:stream=index,codec_type,codec_name,disposition,tags"
+)
+
+
 def _get_stream_info(input_path: str) -> dict:
     """
-    Uses ffprobe to get all stream info as JSON.
+    Uses ffprobe to fetch stream and container title metadata as JSON.
     """
-    cmd = [
-        "ffprobe",
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_format",
-        "-show_streams",
-        input_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0:
-        logger.error(f"ffprobe failed: {result.stderr}")
+    cmd = low_priority_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            _FFPROBE_SUBTITLE_ENTRIES,
+            input_path,
+        ]
+    )
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.error("ffprobe failed: %s", (result.stderr or "")[:800])
+            return {}
+        data = json.loads(result.stdout)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError, subprocess.TimeoutExpired) as e:
+        logger.error("ffprobe error: %s", e)
         return {}
-    return json.loads(result.stdout)
 
 
 def remove_subtitles(input_path: str) -> Optional[str]:
@@ -210,11 +227,15 @@ def remove_subtitles(input_path: str) -> Optional[str]:
         _, ext = os.path.splitext(input_path)
         output_path = input_path + f".clean{ext}"
 
-        cmd = [
-            "ffmpeg",
-            "-i", input_path,
-            "-map", "0",           # Map all streams first
-        ]
+        cmd = low_priority_cmd(
+            [
+                "ffmpeg",
+                "-i",
+                input_path,
+                "-map",
+                "0",  # Map all streams first
+            ]
+        )
 
         # Add negative mappings for blocked subtitle streams
         for idx in streams_to_remove:
