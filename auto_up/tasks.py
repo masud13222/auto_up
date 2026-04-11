@@ -30,18 +30,6 @@ from upload.models import MediaTask
 logger = logging.getLogger(__name__)
 
 
-def _llm_priority_to_q_priority(priority: str | None) -> int:
-    """
-    Map auto_filter ``priority`` (high/normal/low) to django-q ``q_priority``.
-    Higher value is dequeued first; ties break by OrmQ id (enqueue order within the loop).
-    """
-    p = (priority or "normal").strip().lower()
-    if p == "high":
-        return 100
-    if p == "low":
-        return 0
-    return 50
-
 # Maximum times the same URL can be sent to process in a single day
 DAILY_PROCESS_LIMIT = 2
 
@@ -395,13 +383,12 @@ def auto_scrape_and_queue() -> str:
             else:
                 media_task = MediaTask.objects.create(url=url)
 
-            # Queue for processing (q_priority: high > normal > low among waiting rows)
-            q_pri = _llm_priority_to_q_priority(priority)
+            # Queue at default ORM priority (LLM "priority" is still stored on ScrapeItem only)
             q_task_id = async_task(
                 "upload.tasks.process_media_task",
                 media_task.pk,
                 task_name=f"Auto: {raw_title[:50]}",
-                q_options={"q_priority": q_pri},
+                q_options={"q_priority": 0},
             )
 
             media_task.task_id = q_task_id or ""
