@@ -15,6 +15,7 @@ from upload.tasks.helpers import (
     coerce_entry_language_value,
     entry_language_key,
     is_drive_link,
+    movie_download_entry_key,
     normalize_result_download_languages,
     primary_download_source_url,
 )
@@ -194,20 +195,29 @@ def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: li
     Remove movie ``download_links`` entries that failed FlixBD POST so ``result`` /
     ``site_sync_snapshot`` only list rows we believe were accepted (after retries).
     No API fetch — matches ``failed`` records from ``add_movie_download_links``.
+
+    When ``failed`` items include ``link_id`` (same as the fourth element of
+    ``movie_download_entry_key``), only that specific row is stripped so duplicate
+    basenames are safe.
     """
     if not failed or not isinstance(movie_data, dict):
         return
     dl = movie_data.get("download_links")
     if not isinstance(dl, dict):
         return
-    fail_set = set()
+    fail_by_link: set[tuple[str, str, str, str]] = set()
+    fail_legacy_triple: set[tuple[str, str, str]] = set()
     for f in failed:
         if not isinstance(f, dict):
             continue
         q = str(f.get("quality") or "").strip().lower()
         lang = coerce_entry_language_value(f.get("language"))
         fn = str(f.get("filename") or "").strip()
-        fail_set.add((q, lang, fn))
+        lid = f.get("link_id")
+        if isinstance(lid, str) and lid.strip():
+            fail_by_link.add((q, lang, fn, lid.strip()))
+        else:
+            fail_legacy_triple.add((q, lang, fn))
 
     for res_key in list(dl.keys()):
         entries = dl.get(res_key)
@@ -220,7 +230,10 @@ def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: li
                 continue
             lang = coerce_entry_language_value(entry.get("l"))
             fn = str(entry.get("f") or "").strip()
-            if (rk, lang, fn) in fail_set:
+            eid = movie_download_entry_key(rk, entry)
+            if eid in fail_by_link:
+                continue
+            if (rk, lang, fn) in fail_legacy_triple:
                 continue
             kept.append(entry)
         if kept:

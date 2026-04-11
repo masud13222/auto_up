@@ -16,6 +16,7 @@ from .helpers import (
     coerce_entry_language_value,
     download_source_urls,
     is_drive_link,
+    movie_download_entry_key,
     save_task,
     validate_llm_download_basename,
 )
@@ -33,10 +34,6 @@ def _normalized_resolution_key(value) -> str:
 
 def _movie_entry_label(resolution: str, entry: dict) -> str:
     return f"{resolution} [{entry['l']}]"
-
-
-def _movie_entry_id(resolution: str, entry: dict) -> tuple[str, str, str]:
-    return (resolution, entry["l"], entry["f"])
 
 
 def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]:
@@ -146,7 +143,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
     drive_links: dict[str, list[dict]] = {}
-    # {(resolution, language, filename): "2.15 GB"} keyed from compact entry fields (l/f)
+    # {movie_download_entry_key(...): "2.15 GB"} — key includes Drive file id so duplicate basenames differ
     file_sizes = {}
 
     # Duplicate "update": LLM lists only qualities missing on FlixBD/DB — skip re-downloading the rest.
@@ -211,12 +208,12 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     # Collect downloadable files (skip already-uploaded ones)
     to_process: list[dict] = []
-    uploaded_entry_ids: set[tuple[str, str, str]] = set()
-    fresh_upload_entry_ids: set[tuple[str, str, str]] = set()
+    uploaded_entry_ids: set[tuple[str, str, str, str]] = set()
+    fresh_upload_entry_ids: set[tuple[str, str, str, str]] = set()
     for resolution, entries in download_links.items():
         kept_uploaded = []
         for entry in entries:
-            entry_id = _movie_entry_id(resolution, entry)
+            entry_id = movie_download_entry_key(resolution, entry)
             if is_drive_link(entry["u"]):
                 logger.info("Skipping %s: already uploaded to Drive", _movie_entry_label(resolution, entry))
                 kept_uploaded.append(dict(entry))
@@ -330,9 +327,9 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 src_entry["u"] = link
                 if size_str:
                     src_entry["s"] = size_str
-                    file_sizes[_movie_entry_id(resolution, src_entry)] = size_str
+                    file_sizes[movie_download_entry_key(resolution, src_entry)] = size_str
                 drive_links.setdefault(resolution, []).append(src_entry)
-                entry_id = _movie_entry_id(resolution, src_entry)
+                entry_id = movie_download_entry_key(resolution, src_entry)
                 uploaded_entry_ids.add(entry_id)
                 fresh_upload_entry_ids.add(entry_id)
                 movie_data["download_links"] = drive_links
@@ -355,7 +352,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
     missing_targets = validation_issues + [
         _movie_entry_label(item["resolution"], item["entry"])
         for item in to_process
-        if _movie_entry_id(item["resolution"], item["entry"]) not in uploaded_entry_ids
+        if movie_download_entry_key(item["resolution"], item["entry"]) not in uploaded_entry_ids
     ]
     if missing_targets:
         movie_data["partial_upload"] = True

@@ -4,7 +4,11 @@ import time
 
 import httpx
 
-from upload.tasks.helpers import coerce_entry_language_value
+from upload.tasks.helpers import (
+    coerce_entry_language_value,
+    movie_download_entry_key,
+    primary_download_source_url,
+)
 from upload.utils.tv_items import tv_items_overlap
 
 from .flixbd_api_base import _TIMEOUT, _get_config, _headers, _safe_json, _url
@@ -91,7 +95,7 @@ def add_movie_download_links(
     file_sizes: dict,
     movie_data: dict,
     server_name: str = "GDrive",
-    allowed_entry_ids: set[tuple[str, str, str]] | None = None,
+    allowed_entry_ids: set[tuple[str, str, str, str]] | None = None,
 ) -> dict:
     """
     Add download links for a movie.
@@ -107,23 +111,22 @@ def add_movie_download_links(
     failed: list[dict] = []
 
     for quality, entries in drive_links.items():
+        quality_norm = _normalized_resolution_key(quality)
         for drive_item in entries if isinstance(entries, list) else []:
-            drive_url = str(drive_item.get("u") or "").strip()
+            drive_url = (primary_download_source_url(drive_item.get("u")) or "").strip()
+            if not drive_url:
+                drive_url = str(drive_item.get("u") or "").strip()
             if not drive_url:
                 continue
             entry_language = coerce_entry_language_value(drive_item.get("l"))
-            entry_id = (
-                _normalized_resolution_key(quality),
-                entry_language,
-                str(drive_item.get("f") or "").strip(),
-            )
+            entry_id = movie_download_entry_key(quality_norm, drive_item)
             if allowed_entry_ids is not None and entry_id not in allowed_entry_ids:
                 continue
             attempted += 1
             payload = {
                 "server_name": server_name,
                 "download_link": drive_url,
-                "quality": _normalized_resolution_key(quality),
+                "quality": quality_norm,
             }
             if entry_language:
                 payload["language"] = entry_language
@@ -141,9 +144,10 @@ def add_movie_download_links(
             if net_err is not None:
                 failed.append(
                     {
-                        "quality": str(quality),
+                        "quality": quality_norm,
                         "language": entry_language,
                         "filename": str(drive_item.get("f") or "").strip(),
+                        "link_id": entry_id[3],
                         "reason": "network",
                         "detail": str(net_err)[:500],
                     }
@@ -176,9 +180,10 @@ def add_movie_download_links(
                 )
                 failed.append(
                     {
-                        "quality": str(quality),
+                        "quality": quality_norm,
                         "language": entry_language,
                         "filename": str(drive_item.get("f") or "").strip(),
+                        "link_id": entry_id[3],
                         "reason": f"HTTP {resp.status_code}",
                         "detail": (resp.text or "")[:500],
                     }
@@ -196,9 +201,10 @@ def add_movie_download_links(
                 )
                 failed.append(
                     {
-                        "quality": str(quality),
+                        "quality": quality_norm,
                         "language": entry_language,
                         "filename": str(drive_item.get("f") or "").strip(),
+                        "link_id": entry_id[3],
                         "reason": f"HTTP {resp.status_code}",
                         "detail": (resp.text or "")[:500],
                     }
@@ -210,9 +216,10 @@ def add_movie_download_links(
             except httpx.HTTPStatusError as e:
                 failed.append(
                     {
-                        "quality": str(quality),
+                        "quality": quality_norm,
                         "language": entry_language,
                         "filename": str(drive_item.get("f") or "").strip(),
+                        "link_id": entry_id[3],
                         "reason": f"HTTP {e.response.status_code}",
                         "detail": (e.response.text or "")[:500],
                     }
@@ -220,13 +227,14 @@ def add_movie_download_links(
                 continue
 
             try:
-                dl_id = _safe_json(resp, f"movie {content_id} add_download {quality}")["data"]["id"]
+                dl_id = _safe_json(resp, f"movie {content_id} add_download {quality_norm}")["data"]["id"]
             except (KeyError, TypeError, ValueError) as e:
                 failed.append(
                     {
-                        "quality": str(quality),
+                        "quality": quality_norm,
                         "language": entry_language,
                         "filename": str(drive_item.get("f") or "").strip(),
+                        "link_id": entry_id[3],
                         "reason": "bad_response",
                         "detail": str(e)[:500],
                     }

@@ -1,5 +1,7 @@
 import ast
+import hashlib
 import logging
+import re
 from urllib.parse import urlparse
 
 from upload.utils.web_scrape_html import normalize_http_url
@@ -122,6 +124,45 @@ def _flatten_language_value(value):
             return _flatten_language_value(parsed)
 
     return [s]
+
+
+def drive_url_file_id(url: str) -> str:
+    """Return Google Drive file id from ``url`` if present, else empty string."""
+    if not url or not isinstance(url, str):
+        return ""
+    s = url.strip()
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", s, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    if "drive.google.com" in s.casefold():
+        m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", s, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def movie_download_entry_key(resolution: str, entry: dict) -> tuple[str, str, str, str]:
+    """
+    Stable per-file key for FlixBD ``file_sizes`` maps and publish allowlists.
+
+    Same resolution + language + basename can denote two different encodes
+    (different Drive files). The fourth element disambiguates using the Drive
+    file id when ``u`` is a Drive link; otherwise a short hash of the canonical
+    primary URL (handles ``u`` as str or list of sources).
+    """
+    res = str(resolution or "").strip().lower()
+    lang = coerce_entry_language_value(entry.get("l"))
+    fname = str(entry.get("f") or "").strip()
+    raw_u = entry.get("u")
+    u = primary_download_source_url(raw_u)
+    if not u and raw_u is not None:
+        tail = str(raw_u).strip()
+        if tail:
+            u = tail
+    link_id = drive_url_file_id(u)
+    if not link_id and u:
+        link_id = hashlib.sha256(u.encode("utf-8")).hexdigest()[:16]
+    return (res, lang, fname, link_id)
 
 
 def coerce_entry_language_value(value) -> str:
