@@ -10,6 +10,7 @@ import logging
 
 from llm.services import LLMService
 from llm.json_repair import repair_json
+from upload.service.info import _save_duplicate_usage_snapshot_to_latest_usage
 from auto_up.schema import AUTO_FILTER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,21 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
 
         result = repair_json(raw_response)
         decisions = result.get("decisions", [])
+        if not isinstance(decisions, list):
+            logger.warning(
+                "auto_filter: expected decisions to be a list, got %s; using empty list",
+                type(decisions).__name__,
+            )
+            decisions = []
+
+        _save_duplicate_usage_snapshot_to_latest_usage(
+            dup_result={"decisions": decisions},
+            db_match_candidates=None,
+            flixbd_results=None,
+            purpose="auto_filter",
+            response_text=raw_response,
+            extra_context={"auto_filter_items": payload} if payload else None,
+        )
 
         logger.info(f"LLM returned {len(decisions)} decisions")
 

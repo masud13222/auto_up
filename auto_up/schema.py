@@ -57,7 +57,7 @@ You receive a JSON array of items. Each item has:
 - `url`: The page URL
 
 - `db_results`: Object containing existing DB matches:
-  - `results`: Deduplicated list of matching DB entries (same task never appears twice)
+  - `results`: Up to 2 deduplicated matching DB entries (same task never appears twice)
   - `has_matches`: Whether any matches were found
 
   Each DB result entry has these fields (use them!):
@@ -81,7 +81,7 @@ You receive a JSON array of items. Each item has:
     → Episode 06 is missing 480p. This tells you EXACTLY which episodes have which resolutions.
 
 - `flixbd_results` (OPTIONAL — only present if {SITE_NAME} search returned rows):
-  Up to 3 rows from the target site ({SITE_NAME}). Each entry: `{{id, title, release_date?, download_links, qualities}}`.
+  Up to 2 results from the target site ({SITE_NAME}). Each entry: `{{id, title, release_date?, download_links, qualities}}`.
   `qualities` is parsed from `download_links.qualities` when present.
   Use this to understand if the content already exists on the target site.
   NOTE: Even if {SITE_NAME} has it, we may still want to process to ADD new download links.

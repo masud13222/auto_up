@@ -24,6 +24,11 @@ from auto_up.scraper import CineFreakScraper
 from auto_up.db_search import search_existing
 from auto_up.llm_filter import filter_items_with_llm
 from auto_up.models import ScrapeRun, ScrapeItem
+from constant import (
+    AUTO_UP_FLIXBD_LLM_MAX_RESULTS,
+    FLIXBD_FUZZY_THRESHOLD,
+    FLIXBD_SEARCH_PER_PAGE,
+)
 from llm.utils.name_extractor import extract_title_info
 from upload.models import MediaTask
 
@@ -59,46 +64,44 @@ def _daily_limit_bypass_window_active(at=None) -> bool:
     return h >= _DAILY_LIMIT_BYPASS_START_HOUR or h < _DAILY_LIMIT_BYPASS_END_HOUR
 
 
-# Match upload pipeline: cap FlixBD rows in auto_up LLM payload (token savings).
-_FLIXBD_AUTO_UP_MAX = 3
-
-
-def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
+def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = None) -> list:
     """
-    Search FlixBD for existing content by name.
-    Returns up to ``max_results`` hits (default ``_FLIXBD_AUTO_UP_MAX``) from the search API
-    (no client-side scoring). Each item mirrors API fields useful to the LLM: ``id``, ``title``,
-    ``release_date`` (when present), ``download_links``, ``qualities`` (parsed list).
-
-    Returns [] if FlixBD is not configured, disabled, or no results found.
+    FlixBD: name-only then name+year API phases (when distinct), merged by ``id``, fuzzy on titles,
+    then up to ``max_results`` rows (same shape as before for auto_up LLM).
     """
+    from upload.service import flixbd_client as fx
+    from upload.tasks.runtime_helpers import _flixbd_merge_two_phase_raw, _flixbd_title_fuzzy_score
+
     if max_results is None:
-        max_results = _FLIXBD_AUTO_UP_MAX
-    max_results = min(int(max_results), _FLIXBD_AUTO_UP_MAX)
+        max_results = AUTO_UP_FLIXBD_LLM_MAX_RESULTS
+    max_results = min(int(max_results), AUTO_UP_FLIXBD_LLM_MAX_RESULTS)
+
+    if not (name or "").strip():
+        return []
 
     try:
-        from upload.service import flixbd_client as fx
-        from upload.service.flixbd_api_base import flixbd_search_response_dict
-
-        fx._get_config()  # Raises RuntimeError if not configured/disabled
-
+        fx._get_config()
         api_url, api_key = fx._get_config()
-        params = {"q": name, "type": "all", "per_page": max_results, "page": 1}
 
-        body = flixbd_search_response_dict(api_url, api_key, params)
-        if not body:
+        raw_merged, queries_run, _ = _flixbd_merge_two_phase_raw(
+            name,
+            year,
+            per_page=FLIXBD_SEARCH_PER_PAGE,
+            api_url=api_url,
+            api_key=api_key,
+        )
+        if not raw_merged:
             return []
 
-        raw = body.get("data", []) or []
-        if not raw:
-            return []
-
-        top = []
-        for item in raw[:max_results]:
+        scored: list[tuple[int, dict]] = []
+        for item in raw_merged:
             fid = item.get("id")
             if fid is None:
                 continue
             item_title = item.get("title", "") or ""
+            fs = _flixbd_title_fuzzy_score(name, year, item_title)
+            if fs < FLIXBD_FUZZY_THRESHOLD:
+                continue
             download_links = item.get("download_links") or {}
             qualities_raw = download_links.get("qualities")
             qualities = []
@@ -115,12 +118,16 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
             rd = item.get("release_date")
             if rd is not None and rd != "":
                 entry["release_date"] = rd
-            top.append(entry)
+            scored.append((fs, entry))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [e for _, e in scored[:max_results]]
 
         if top:
             logger.debug(
-                "FlixBD auto_up search %r: %s result(s)",
+                "FlixBD auto_up search name=%r queries=%s: %s result(s) after fuzzy",
                 name,
+                queries_run,
                 len(top),
             )
         return top
@@ -128,7 +135,7 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
     except RuntimeError:
         return []
     except Exception as e:
-        logger.warning(f"FlixBD auto_up search error for '{name}': {e}")
+        logger.warning("FlixBD auto_up search error for %r: %s", name, e)
         return []
 
 
@@ -286,8 +293,8 @@ def auto_scrape_and_queue() -> str:
             # Search our DB
             db_results = search_existing(title_info.title, title_info.year)
 
-            # Search FlixBD (top 2 per title — enough context for LLM, limits API load)
-            flixbd_results = _fetch_flixbd_top(title_info.title)
+            # Search FlixBD (two-phase merge + fuzzy; capped by ``AUTO_UP_FLIXBD_LLM_MAX_RESULTS``)
+            flixbd_results = _fetch_flixbd_top(title_info.title, year=title_info.year)
 
             enriched_items.append({
                 "raw_title": raw_title,

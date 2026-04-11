@@ -61,10 +61,12 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
     flixbd_results: list | None,
     purpose: str,
     response_text: str = "",
+    flixbd_fetch_debug: dict | None = None,
+    extra_context: dict | None = None,
 ) -> None:
     """Persist duplicate-check output and prompt context on the matching LLMUsage row."""
     has_dup = bool(dup_result)
-    has_ctx = bool(db_match_candidates or flixbd_results)
+    has_ctx = bool(db_match_candidates or flixbd_results or extra_context)
     if not purpose or (not has_dup and not has_ctx):
         return
     try:
@@ -83,13 +85,17 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
             row.duplicate_check_json = json.dumps(dup_result, **_JSON_FOR_DB)
             update_fields.append("duplicate_check_json")
         if has_ctx:
-            ctx = {}
-            if db_match_candidates:
-                ctx["db_match_candidates"] = db_match_candidates
-            if flixbd_results:
-                ctx["flixbd_results"] = flixbd_results
-            row.duplicate_context_json = json.dumps(ctx, **_JSON_FOR_DB)
-            update_fields.append("duplicate_context_json")
+            ctx: dict = {}
+            if db_match_candidates or flixbd_results:
+                ctx["db_match_candidates"] = db_match_candidates or []
+                ctx["flixbd_results"] = flixbd_results or []
+            if flixbd_fetch_debug:
+                ctx["flixbd_fetch"] = dict(flixbd_fetch_debug)
+            if extra_context:
+                ctx.update(extra_context)
+            if ctx:
+                row.duplicate_context_json = json.dumps(ctx, **_JSON_FOR_DB)
+                update_fields.append("duplicate_context_json")
         if update_fields:
             row.save(update_fields=update_fields)
     except Exception as e:
@@ -144,7 +150,12 @@ def _repair_with_llm_retry(
     raise last_error or ValueError("Could not parse structured JSON response")
 
 
-def detect_and_extract(html_content: str, db_match_candidates: list = None, flixbd_results: list = None) -> tuple:
+def detect_and_extract(
+    html_content: str,
+    db_match_candidates: list = None,
+    flixbd_results: list = None,
+    flixbd_fetch_debug: dict | None = None,
+) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
     If db_match_candidates or flixbd_results provided, also performs duplicate check in same call.
@@ -214,6 +225,7 @@ def detect_and_extract(html_content: str, db_match_candidates: list = None, flix
             dup_result=dup_result,
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
+            flixbd_fetch_debug=flixbd_fetch_debug,
             purpose=purpose,
             response_text=llm_response,
         )
@@ -417,7 +429,14 @@ def resolve_tvshow_links(tvshow_data: dict, on_item_resolved=None, existing_resu
     return tvshow_data
 
 
-def get_content_info(url, on_progress=None, db_match_candidates=None, flixbd_results=None, existing_result=None):
+def get_content_info(
+    url,
+    on_progress=None,
+    db_match_candidates=None,
+    flixbd_results=None,
+    flixbd_fetch_debug: dict | None = None,
+    existing_result=None,
+):
     """
     Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
     then resolves URLs. Scrapes only ONCE, then reuses the HTML.
@@ -428,6 +447,7 @@ def get_content_info(url, on_progress=None, db_match_candidates=None, flixbd_res
                      URL resolution. Called after each download item is resolved.
         db_match_candidates: Optional list of candidate dicts (with id/pk) for duplicate check.
         flixbd_results: Optional list of FlixBD search results (typically max 3) for duplicate check.
+        flixbd_fetch_debug: Optional dict from ``fetch_flixbd_results(..., fetch_debug=...)`` for DB snapshot.
         existing_result: Optional dict with previous task result containing
                          Drive links — used to skip resolving already-uploaded items.
 
@@ -445,6 +465,7 @@ def get_content_info(url, on_progress=None, db_match_candidates=None, flixbd_res
         html_content,
         db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
+        flixbd_fetch_debug=flixbd_fetch_debug,
     )
 
     # Save immediately after LLM extraction (before URL resolution)

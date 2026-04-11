@@ -10,13 +10,17 @@ so the LLM can make informed decisions.
 import logging
 from django.db.models import Q
 from rapidfuzz import fuzz
+from constant import (
+    AUTO_UP_DB_LLM_MAX_CANDIDATES,
+    DB_SEARCH_QUERY_SLICE_AUTO_UP,
+    FUZZY_THRESHOLD_DB,
+)
 from upload.models import MediaTask
 from upload.tasks.helpers import download_source_urls
 
 logger = logging.getLogger(__name__)
 
-# Minimum fuzzy score to consider a match
-FUZZY_THRESHOLD = 85
+FUZZY_THRESHOLD = FUZZY_THRESHOLD_DB
 
 
 def _extract_rich_info(task: MediaTask) -> dict:
@@ -127,26 +131,57 @@ def _fuzzy_score(query: str, candidate_title: str, candidate_web_title: str) -> 
     return max(scores) if scores else 0
 
 
+def _fuzzy_score_merged(name: str, year: str | None, candidate_title: str, candidate_web_title: str) -> int:
+    """Like ``_fuzzy_score`` on ``name``, plus optional ``name + year`` query when year is set."""
+    s = _fuzzy_score(name, candidate_title, candidate_web_title)
+    if not year:
+        return s
+    ys = str(year).strip()
+    if not ys:
+        return s
+    qy = f"{(name or '').strip()} {ys}".lower()
+    qn = (name or "").strip().lower()
+    if qy == qn:
+        return s
+    texts = []
+    if candidate_title:
+        texts.append(candidate_title.lower())
+    if candidate_web_title:
+        texts.append(candidate_web_title.lower())
+    if not texts:
+        return s
+    for t in texts:
+        s = max(s, fuzz.partial_ratio(qy, t))
+    return int(s)
+
+
 def _fetch_candidates(base_qs, name: str, year: str = None) -> dict:
     """
-    Fetch candidate tasks from DB using keyword search + fuzzy filtering.
-    Returns {pk: (task, matched_by)} dict.
+    Broad DB fetch in two phases (name-only keywords, then name+year keywords), merged by pk,
+    then a single fuzzy pass (name and optional name+year vs titles).
+    Returns {pk: (task, matched_by_list, score)}.
     """
-    candidates = {}  # pk -> (task, matched_by_list)
+    candidates: dict = {}
     keywords = _get_search_keywords(name)
+    merged: dict[int, tuple] = {}  # pk -> (task, matched_by list)
+    order: list[int] = []
 
-    # Search 1: Name only (try all keyword variants)
+    def _ingest(qs, tag: str) -> None:
+        for task in qs:
+            if task.pk not in merged:
+                merged[task.pk] = (task, [tag])
+                order.append(task.pk)
+            else:
+                _, tags = merged[task.pk]
+                if tag not in tags:
+                    tags.append(tag)
+
     for keyword in keywords:
         qs = base_qs.filter(
             Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
-        ).order_by("-updated_at")[:15]
-        for task in qs:
-            if task.pk not in candidates:
-                score = _fuzzy_score(name, task.title, task.website_title)
-                if score >= FUZZY_THRESHOLD:
-                    candidates[task.pk] = (task, ["name_only"], score)
+        ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_AUTO_UP]
+        _ingest(qs, "name_only")
 
-    # Search 2: Name + Year (if year available)
     if year:
         try:
             year_int = int(year)
@@ -154,18 +189,16 @@ def _fetch_candidates(base_qs, name: str, year: str = None) -> dict:
                 qs = base_qs.filter(
                     Q(title__icontains=keyword) | Q(website_title__icontains=keyword),
                     result__year=year_int,
-                ).order_by("-updated_at")[:15]
-                for task in qs:
-                    if task.pk not in candidates:
-                        score = _fuzzy_score(name, task.title, task.website_title)
-                        if score >= FUZZY_THRESHOLD:
-                            candidates[task.pk] = (task, ["name_with_year"], score)
-                    else:
-                        _, matched_by, _ = candidates[task.pk]
-                        if "name_with_year" not in matched_by:
-                            matched_by.append("name_with_year")
+                ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_AUTO_UP]
+                _ingest(qs, "name_with_year")
         except (ValueError, TypeError):
             logger.warning(f"Invalid year value: {year}")
+
+    for pk in order:
+        task, matched_by = merged[pk]
+        score = _fuzzy_score_merged(name, year, task.title, task.website_title)
+        if score >= FUZZY_THRESHOLD_DB:
+            candidates[task.pk] = (task, matched_by, score)
 
     return candidates
 
@@ -175,10 +208,9 @@ def search_existing(name: str, year: str = None) -> dict:
     Search MediaTask for matching entries using fuzzy matching.
     
     Strategy:
-      1. Fetch candidates from DB using keyword search (broad)
-      2. Score each candidate with rapidfuzz partial_ratio
-      3. Keep only matches at or above ``FUZZY_THRESHOLD`` (85)
-      4. Return deduplicated list with rich info
+      1. Broad fetch: name-only keyword queries, then (if year) name+year queries — merged by pk
+      2. One fuzzy pass per merged row (name and optional name+year vs titles); keep >= ``FUZZY_THRESHOLD_DB``
+      3. Return at most ``AUTO_UP_DB_LLM_MAX_CANDIDATES`` rows (best fuzzy score first), deduplicated
 
     Returns a DEDUPLICATED list — same PK never appears twice.
     Each result has a `matched_by` field showing which queries hit.
@@ -201,7 +233,7 @@ def search_existing(name: str, year: str = None) -> dict:
             **rich,
         }
 
-    results = list(seen_pks.values())
+    results = list(seen_pks.values())[:AUTO_UP_DB_LLM_MAX_CANDIDATES]
     has_matches = bool(results)
 
     if has_matches:

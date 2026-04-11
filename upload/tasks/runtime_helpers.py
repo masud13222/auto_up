@@ -2,6 +2,11 @@ import json
 import logging
 import re
 
+from constant import (
+    FLIXBD_FUZZY_THRESHOLD,
+    FLIXBD_LLM_MAX_RESULTS,
+    FLIXBD_SEARCH_PER_PAGE,
+)
 from django.db import transaction
 
 from upload.models import MediaTask
@@ -29,8 +34,29 @@ from llm.schema.blocked_names import (
 logger = logging.getLogger(__name__)
 
 
-# Max FlixBD hits to fetch from API and pass to LLM (keeps prompt tokens lower).
-_FLIXBD_LLM_MAX_RESULTS = 3
+def _normalize_flixbd_row_id(fid) -> int | str | None:
+    """
+    Canonical id for merge/dedupe so API ``201`` and ``\"201\"`` map to the same key.
+    Prefer positive int; otherwise non-empty stripped string; else None.
+    """
+    if fid is None or isinstance(fid, bool):
+        return None
+    if isinstance(fid, int):
+        return fid if fid > 0 else None
+    if isinstance(fid, str):
+        s = fid.strip()
+        if not s:
+            return None
+        if s.isdigit():
+            v = int(s)
+            return v if v > 0 else None
+        return s
+    try:
+        v = int(fid)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        s = str(fid).strip()
+        return s or None
 
 
 def _entry_language_key(entry: dict) -> str:
@@ -460,35 +486,153 @@ def result_strip_non_drive_download_links(data: dict) -> dict:
     return out
 
 
-def fetch_flixbd_results(name: str) -> list:
+def flixbd_search_query(name: str, year: str | int | None = None) -> str:
     """
-    Search FlixBD for existing content by name.
-    Returns up to ``_FLIXBD_LLM_MAX_RESULTS`` slim rows from the search API (no client-side scoring).
-    Each row: ``id``, ``title``, ``resolution_keys``, and ``release_date`` when the API provides it.
-    Never raises — returns [] on any error or if FlixBD is not configured.
+    Build FlixBD search API ``q`` string: cleaned title, plus year when present
+    and not already redundant at the end of the title (e.g. avoid ``Bandi 2026 2026``).
     """
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if year is None:
+        return n
+    ys = str(year).strip()
+    if not ys:
+        return n
+    if n.endswith(ys):
+        return n
+    return f"{n} {ys}"
+
+
+def _flixbd_title_fuzzy_score(name: str, year: str | int | None, title: str) -> int:
+    """partial_ratio of API ``title`` vs extracted name and (when distinct) name+year query."""
+    from rapidfuzz import fuzz
+
+    t = (title or "").lower()
+    if not t:
+        return 0
+    qn = (name or "").strip().lower()
+    s = fuzz.partial_ratio(qn, t) if qn else 0
+    ys = str(year).strip() if year is not None else ""
+    if ys:
+        qy = flixbd_search_query(name, year).strip().lower()
+        if qy and qy != qn:
+            s = max(s, fuzz.partial_ratio(qy, t))
+    return int(s)
+
+
+def _flixbd_merge_two_phase_raw(
+    name: str,
+    year: str | int | None,
+    *,
+    per_page: int,
+    api_url: str,
+    api_key: str,
+) -> tuple[list[dict], list[str], int]:
+    """
+    Run FlixBD search twice when useful (name-only, then name+year), merge rows by ``id``.
+
+    Returns ``(merged_items, queries_used, phases_without_payload_count)``.
+    """
+    from upload.service.flixbd_api_base import flixbd_search_response_dict
+
+    merged: list[dict] = []
+    seen: set[int | str] = set()
+    queries_run: list[str] = []
+    phases_no_payload = 0
+
+    def _phase(q: str) -> None:
+        nonlocal phases_no_payload
+        q = (q or "").strip()
+        if not q:
+            return
+        if queries_run and queries_run[-1] == q:
+            return
+        queries_run.append(q)
+        body = flixbd_search_response_dict(
+            api_url, api_key, {"q": q, "type": "all", "per_page": per_page, "page": 1}
+        )
+        if not body:
+            phases_no_payload += 1
+            return
+        for item in body.get("data", []) or []:
+            if not isinstance(item, dict):
+                continue
+            nk = _normalize_flixbd_row_id(item.get("id"))
+            if nk is None:
+                continue
+            if nk in seen:
+                continue
+            seen.add(nk)
+            row = dict(item)
+            row["id"] = nk
+            merged.append(row)
+
+    q_name = (name or "").strip()
+    _phase(q_name)
+    q_year = flixbd_search_query(name, year).strip()
+    if q_year and q_year != q_name:
+        _phase(q_year)
+
+    return merged, queries_run, phases_no_payload
+
+
+def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debug: dict | None = None) -> list:
+    """
+    FlixBD: two API phases (``q`` = name only, then ``q`` = name+year when distinct), merged by ``id``,
+    then fuzzy filter on titles (>= ``FLIXBD_FUZZY_THRESHOLD``), best scores first, capped at
+    ``FLIXBD_LLM_MAX_RESULTS``. Slim rows for the LLM (no match_score field).
+
+    If ``fetch_debug`` is a dict, it is cleared and filled with ``name``, ``year``, ``queries``,
+    ``merged_raw_count``, ``after_fuzzy_count``, ``status``, optional ``message``.
+    """
+    def _mark(status: str, message: str | None = None) -> None:
+        if fetch_debug is not None:
+            fetch_debug["status"] = status
+            if message:
+                fetch_debug["message"] = message
+
+    if fetch_debug is not None:
+        fetch_debug.clear()
+        fetch_debug["name"] = name
+        fetch_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
+
+    q_label = (name or "").strip()
+    if not q_label:
+        _mark("skipped", "empty search query")
+        return []
+
     try:
         from upload.service import flixbd_client as fx
 
-        from upload.service.flixbd_api_base import flixbd_search_response_dict
-
         api_url, api_key = fx._get_config()
-        params = {"q": name, "type": "all", "per_page": _FLIXBD_LLM_MAX_RESULTS, "page": 1}
 
-        payload = flixbd_search_response_dict(api_url, api_key, params)
-        if not payload:
-            logger.debug("FlixBD search: no usable JSON response for %r", name)
+        raw_merged, queries_run, phases_no_payload = _flixbd_merge_two_phase_raw(
+            name,
+            year,
+            per_page=FLIXBD_SEARCH_PER_PAGE,
+            api_url=api_url,
+            api_key=api_key,
+        )
+
+        if fetch_debug is not None:
+            fetch_debug["queries"] = list(queries_run)
+            fetch_debug["per_phase_per_page"] = FLIXBD_SEARCH_PER_PAGE
+            fetch_debug["merged_raw_count"] = len(raw_merged)
+            fetch_debug["llm_max_flixbd_rows"] = FLIXBD_LLM_MAX_RESULTS
+            fetch_debug["fuzzy_threshold"] = FLIXBD_FUZZY_THRESHOLD
+
+        if not raw_merged:
+            if queries_run and phases_no_payload >= len(queries_run):
+                logger.debug("FlixBD search: no usable JSON for phases %s", queries_run)
+                _mark("no_payload", "No usable JSON from search API")
+            else:
+                logger.info("FlixBD search: no merged rows for %r (queries=%s)", name, queries_run)
+                _mark("empty", "API returned no rows for merged phases")
             return []
 
-        raw_results = payload.get("data", [])
-        if not raw_results:
-            logger.info("FlixBD search: no results for %r", name)
-            return []
-
-        results = []
-        for item in raw_results:
-            if len(results) >= _FLIXBD_LLM_MAX_RESULTS:
-                break
+        scored: list[tuple[int, dict]] = []
+        for item in raw_merged:
             fid = item.get("id")
             item_title = item.get("title", "") or ""
             if fid is None:
@@ -502,8 +646,6 @@ def fetch_flixbd_results(name: str) -> list:
             elif isinstance(qualities_raw, list):
                 qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
 
-            # Slim payload for LLM + duplicate_context_json: avoid duplicate strings (qualities vs
-            # resolution_keys vs download_links) — saves prompt tokens; rules use resolution_keys + title.
             row: dict = {
                 "id": fid,
                 "title": item_title,
@@ -512,21 +654,50 @@ def fetch_flixbd_results(name: str) -> list:
             rd = item.get("release_date")
             if rd is not None and rd != "":
                 row["release_date"] = rd
-            results.append(row)
+
+            fs = _flixbd_title_fuzzy_score(name, year, item_title)
+            if fs >= FLIXBD_FUZZY_THRESHOLD:
+                scored.append((fs, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if fetch_debug is not None:
+            fetch_debug["passed_fuzzy_count"] = len(scored)
+        results = [r for _, r in scored[:FLIXBD_LLM_MAX_RESULTS]]
+
+        if fetch_debug is not None:
+            fetch_debug["after_fuzzy_count"] = len(results)
+
+        if not results:
+            if raw_merged:
+                _mark("empty", "No merged row passed fuzzy threshold")
+                logger.info(
+                    "FlixBD search: 0 rows after fuzzy (threshold=%s) for %r; merged=%s",
+                    FLIXBD_FUZZY_THRESHOLD,
+                    name,
+                    len(raw_merged),
+                )
+            else:
+                _mark("parsed_empty", "Merged list empty after parse")
+        else:
+            _mark("ok")
 
         logger.info(
-            "FlixBD search: %s result(s) (max=%s) for %r",
+            "FlixBD search: %s result(s) (cap=%s, fuzzy>=%s) for %r queries=%s",
             len(results),
-            _FLIXBD_LLM_MAX_RESULTS,
+            FLIXBD_LLM_MAX_RESULTS,
+            FLIXBD_FUZZY_THRESHOLD,
             name,
+            queries_run,
         )
         return results
 
     except RuntimeError as e:
         logger.debug("FlixBD search skipped: %s", e)
+        _mark("skipped", str(e))
         return []
     except Exception as e:
         logger.warning("FlixBD search error for %r: %s", name, e)
+        _mark("error", str(e))
         return []
 
 
