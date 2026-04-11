@@ -61,7 +61,6 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
     flixbd_results: list | None,
     purpose: str,
     response_text: str = "",
-    flixbd_fetch_debug: dict | None = None,
     extra_context: dict | None = None,
 ) -> None:
     """Persist duplicate-check output and prompt context on the matching LLMUsage row."""
@@ -89,8 +88,6 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
             if db_match_candidates or flixbd_results:
                 ctx["db_match_candidates"] = db_match_candidates or []
                 ctx["flixbd_results"] = flixbd_results or []
-            if flixbd_fetch_debug:
-                ctx["flixbd_fetch"] = dict(flixbd_fetch_debug)
             if extra_context:
                 ctx.update(extra_context)
             if ctx:
@@ -154,7 +151,6 @@ def detect_and_extract(
     html_content: str,
     db_match_candidates: list = None,
     flixbd_results: list = None,
-    flixbd_fetch_debug: dict | None = None,
 ) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
@@ -225,7 +221,6 @@ def detect_and_extract(
             dup_result=dup_result,
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
-            flixbd_fetch_debug=flixbd_fetch_debug,
             purpose=purpose,
             response_text=llm_response,
         )
@@ -434,7 +429,6 @@ def get_content_info(
     on_progress=None,
     db_match_candidates=None,
     flixbd_results=None,
-    flixbd_fetch_debug: dict | None = None,
     existing_result=None,
 ):
     """
@@ -447,7 +441,6 @@ def get_content_info(
                      URL resolution. Called after each download item is resolved.
         db_match_candidates: Optional list of candidate dicts (with id/pk) for duplicate check.
         flixbd_results: Optional list of FlixBD search results (typically max 3) for duplicate check.
-        flixbd_fetch_debug: Optional dict from ``fetch_flixbd_results(..., fetch_debug=...)`` for DB snapshot.
         existing_result: Optional dict with previous task result containing
                          Drive links — used to skip resolving already-uploaded items.
 
@@ -465,7 +458,6 @@ def get_content_info(
         html_content,
         db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
-        flixbd_fetch_debug=flixbd_fetch_debug,
     )
 
     # Save immediately after LLM extraction (before URL resolution)

@@ -240,7 +240,6 @@ def process_media_task(task_pk: int) -> str:
         db_match_candidates = None
         db_candidate_map = {}
         flixbd_results = []
-        flixbd_fetch_debug: dict | None = None
         existing_task = None
         existing_result = {}
         resume_result_raw = clean_result_keep_drive_links(media_task.result or {})
@@ -270,8 +269,7 @@ def process_media_task(task_pk: int) -> str:
                     logger.info(f"No existing match for '{name}'. New content.")
 
                 # ── FlixBD search (pre-LLM, results passed to LLM as context) ──
-                flixbd_fetch_debug = {}
-                flixbd_results = fetch_flixbd_results(name, year=year, fetch_debug=flixbd_fetch_debug)
+                flixbd_results = fetch_flixbd_results(name, year=year)
 
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
@@ -287,7 +285,6 @@ def process_media_task(task_pk: int) -> str:
             on_progress=_on_progress,
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
-            flixbd_fetch_debug=flixbd_fetch_debug,
             existing_result=resume_result if resume_result else None,
         )
         title = data.get("title", "Unknown")
