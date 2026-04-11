@@ -460,15 +460,15 @@ def result_strip_non_drive_download_links(data: dict) -> dict:
     return out
 
 
-def fetch_flixbd_results(name: str, min_score: int = 40) -> list:
+def fetch_flixbd_results(name: str) -> list:
     """
     Search FlixBD for existing content by name.
-    Returns at most _FLIXBD_LLM_MAX_RESULTS items (score >= min_score), sorted best-first.
+    Returns up to ``_FLIXBD_LLM_MAX_RESULTS`` slim rows from the search API (no client-side scoring).
+    Each row: ``id``, ``title``, ``resolution_keys``, and ``release_date`` when the API provides it.
     Never raises — returns [] on any error or if FlixBD is not configured.
     """
     try:
         from upload.service import flixbd_client as fx
-        from rapidfuzz import fuzz
 
         from upload.service.flixbd_api_base import flixbd_search_response_dict
 
@@ -485,18 +485,12 @@ def fetch_flixbd_results(name: str, min_score: int = 40) -> list:
             logger.info("FlixBD search: no results for %r", name)
             return []
 
-        year_re = re.compile(r"\b(19|20)\d{2}\b")
-        name_lower = name.lower().strip()
-
         results = []
         for item in raw_results:
-            item_title = item.get("title", "")
-            year_match = year_re.search(item_title)
-            clean = item_title[:year_match.start()].strip() if year_match else item_title
-            score = fuzz.ratio(name_lower, clean.lower())
-            if score < min_score:
-                continue
+            if len(results) >= _FLIXBD_LLM_MAX_RESULTS:
+                break
             fid = item.get("id")
+            item_title = item.get("title", "") or ""
             if fid is None:
                 logger.debug("FlixBD search: skipping hit without id: %r", item_title[:80])
                 continue
@@ -510,25 +504,21 @@ def fetch_flixbd_results(name: str, min_score: int = 40) -> list:
 
             # Slim payload for LLM + duplicate_context_json: avoid duplicate strings (qualities vs
             # resolution_keys vs download_links) — saves prompt tokens; rules use resolution_keys + title.
-            results.append(
-                {
-                    "id": fid,
-                    "title": item_title,
-                    "match_score": score,
-                    "resolution_keys": normalize_flixbd_resolution_keys(qualities),
-                }
-            )
+            row: dict = {
+                "id": fid,
+                "title": item_title,
+                "resolution_keys": normalize_flixbd_resolution_keys(qualities),
+            }
+            rd = item.get("release_date")
+            if rd is not None and rd != "":
+                row["release_date"] = rd
+            results.append(row)
 
-        results.sort(key=lambda x: x["match_score"], reverse=True)
-        results = results[:_FLIXBD_LLM_MAX_RESULTS]
-        top = results[0]["match_score"] if results else 0
         logger.info(
-            "FlixBD search: %s result(s) (score>=%s, max=%s) for %r (top=%s)",
+            "FlixBD search: %s result(s) (max=%s) for %r",
             len(results),
-            min_score,
             _FLIXBD_LLM_MAX_RESULTS,
             name,
-            top,
         )
         return results
 

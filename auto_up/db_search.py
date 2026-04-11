@@ -177,7 +177,7 @@ def search_existing(name: str, year: str = None) -> dict:
     Strategy:
       1. Fetch candidates from DB using keyword search (broad)
       2. Score each candidate with rapidfuzz partial_ratio
-      3. Keep only matches above FUZZY_THRESHOLD (75)
+      3. Keep only matches at or above ``FUZZY_THRESHOLD`` (85)
       4. Return deduplicated list with rich info
 
     Returns a DEDUPLICATED list — same PK never appears twice.

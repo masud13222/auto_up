@@ -16,5 +16,5 @@ staticfiles/
 .cursor/
 **/.dev.vars
 node_modules/
-m.txt
+log.txt
 extracted_links.txt

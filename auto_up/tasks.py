@@ -66,11 +66,11 @@ _FLIXBD_AUTO_UP_MAX = 3
 def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
     """
     Search FlixBD for existing content by name.
-    Returns up to `max_results` hits (default _FLIXBD_AUTO_UP_MAX), scored with rapidfuzz, sorted best first.
-    Each item includes download_links + parsed qualities when the API returns them (same shape as upload task).
-    Returns [] if FlixBD is not configured, disabled, or no results found.
+    Returns up to ``max_results`` hits (default ``_FLIXBD_AUTO_UP_MAX``) from the search API
+    (no client-side scoring). Each item mirrors API fields useful to the LLM: ``id``, ``title``,
+    ``release_date`` (when present), ``download_links``, ``qualities`` (parsed list).
 
-    Used by auto_up to pass site context to LLM for smarter filtering.
+    Returns [] if FlixBD is not configured, disabled, or no results found.
     """
     if max_results is None:
         max_results = _FLIXBD_AUTO_UP_MAX
@@ -79,8 +79,6 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
     try:
         from upload.service import flixbd_client as fx
         from upload.service.flixbd_api_base import flixbd_search_response_dict
-        import re
-        from rapidfuzz import fuzz
 
         fx._get_config()  # Raises RuntimeError if not configured/disabled
 
@@ -91,19 +89,16 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
         if not body:
             return []
 
-        raw = body.get("data", [])
+        raw = body.get("data", []) or []
         if not raw:
             return []
 
-        _year_re = re.compile(r'\b(19|20)\d{2}\b')
-        name_lower = name.lower().strip()
-
-        scored = []
-        for item in raw:
-            item_title = item.get("title", "")
-            year_match = _year_re.search(item_title)
-            clean = item_title[:year_match.start()].strip() if year_match else item_title
-            score = fuzz.ratio(name_lower, clean.lower())
+        top = []
+        for item in raw[:max_results]:
+            fid = item.get("id")
+            if fid is None:
+                continue
+            item_title = item.get("title", "") or ""
             download_links = item.get("download_links") or {}
             qualities_raw = download_links.get("qualities")
             qualities = []
@@ -111,22 +106,22 @@ def _fetch_flixbd_top(name: str, max_results: int = None) -> list:
                 qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
             elif isinstance(qualities_raw, list):
                 qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
-            scored.append({
-                "id": item["id"],
+            entry: dict = {
+                "id": fid,
                 "title": item_title,
-                "match_score": score,
                 "download_links": download_links,
                 "qualities": qualities,
-            })
-
-        # Sort best first, return top N
-        scored.sort(key=lambda x: x["match_score"], reverse=True)
-        top = scored[:max_results]
+            }
+            rd = item.get("release_date")
+            if rd is not None and rd != "":
+                entry["release_date"] = rd
+            top.append(entry)
 
         if top:
             logger.debug(
-                f"FlixBD auto_up search '{name}': top {len(top)} results "
-                f"(scores: {[r['match_score'] for r in top]})"
+                "FlixBD auto_up search %r: %s result(s)",
+                name,
+                len(top),
             )
         return top
 
