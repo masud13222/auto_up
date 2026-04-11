@@ -1417,6 +1417,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pysubs2"
+version = "1.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/73/eff32fcc4babb32b76d7fce6d74995de2d04201f7b43c9a7764554d6ab49/pysubs2-1.8.1.tar.gz", hash = "sha256:af3a288643da87db6bb13dbde70e94c9570765cc8f6423b1c21de11f16d734da", size = 1153150, upload-time = "2026-03-19T17:25:01.941Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/bb/0dc8b9a38609701ca3f107dc516300b317641bed9b2ef1c964a9ad37ae9e/pysubs2-1.8.1-py3-none-any.whl", hash = "sha256:eb5d8872b7f87208070dd6f0d85fc110b7ad6cc2a7ec422f5b12363e9194e4e4", size = 44269, upload-time = "2026-03-19T17:24:59.953Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -1732,6 +1741,7 @@ dependencies = [
     { name = "pillow" },
     { name = "psycopg2-binary" },
     { name = "pydoll-python" },
+    { name = "pysubs2" },
     { name = "python-dotenv" },
     { name = "rapidfuzz" },
     { name = "selectolax" },
@@ -1760,6 +1770,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=11.0.0,<13" },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
     { name = "pydoll-python", specifier = ">=2.22.0" },
+    { name = "pysubs2", specifier = ">=1.8.1" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "rapidfuzz", specifier = ">=3.14.0" },
     { name = "selectolax", specifier = ">=0.4.7" },
