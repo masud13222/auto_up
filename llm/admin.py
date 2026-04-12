@@ -156,14 +156,20 @@ class LLMUsageAdmin(admin.ModelAdmin):
         (
             'Duplicate check (extract+dup_check)',
             {
-                'description': 'Parsed duplicate_check object stored separately when present.',
+                'description': (
+                    'extract+dup_check: parsed duplicate_check from the model. '
+                    'auto_filter: full outbound request (system + user JSON) for that call.'
+                ),
                 'fields': ('duplicate_check_display',),
             },
         ),
         (
             'Duplicate prompt context',
             {
-                'description': 'DB candidates + target-site search results snapshot sent to the combined duplicate check prompt.',
+                'description': (
+                    'extract+dup_check: DB candidates + target-site rows sent with the combined prompt. '
+                    'auto_filter: usually empty (request is under Duplicate check).'
+                ),
                 'fields': ('duplicate_context_display',),
             },
         ),

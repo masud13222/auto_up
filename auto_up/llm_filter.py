@@ -126,13 +126,19 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             )
             decisions = []
 
+        # LLMUsage "Duplicate check (JSON)": store full outbound request (not decisions — those are in Full response).
         _save_duplicate_usage_snapshot_to_latest_usage(
-            dup_result={"decisions": decisions},
+            dup_result={
+                "auto_filter_full_request": {
+                    "system_prompt": AUTO_FILTER_SYSTEM_PROMPT,
+                    "user_message": prompt,
+                },
+            },
             db_match_candidates=None,
             flixbd_results=None,
             purpose="auto_filter",
             response_text=raw_response,
-            extra_context={"auto_filter_items": payload} if payload else None,
+            extra_context=None,
         )
 
         logger.info(f"LLM returned {len(decisions)} decisions")

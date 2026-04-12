@@ -83,7 +83,10 @@ class LLMUsage(models.Model):
     duplicate_check_json = models.TextField(
         blank=True,
         default="",
-        help_text="When present: duplicate_check object from combined extract+dup_check (JSON text).",
+        help_text=(
+            "extract+dup_check: duplicate_check object from the model. "
+            "auto_filter: full outbound request (system_prompt + user_message JSON) for that call."
+        ),
     )
     duplicate_context_json = models.TextField(
         blank=True,
