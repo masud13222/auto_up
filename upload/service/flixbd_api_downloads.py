@@ -583,16 +583,25 @@ def _parse_episode_range_field(raw) -> str | None:
 
 def _episode_number_for_flixbd_item(item: dict) -> str | None:
     """
-    Value for FlixBD ``episode_number`` (``05``, ``01-08``) or ``None`` (combo pack).
+    Value for FlixBD ``episode_number`` (``05``, ``01-08``).
+
+    ``combo_pack`` with an explicit ``episode_range`` (e.g. episodes 01-08 batch) must
+    send that range — FlixBD expects the Episode field. Omit only when there is no
+    parseable range (true whole-season pack).
     """
     item_type = item.get("type", "")
-    if item_type == "combo_pack":
-        return None
-
     label = (item.get("label") or "").strip()
+
     value = _parse_episode_range_field(item.get("episode_range"))
     if value:
         return value
+
+    if item_type == "combo_pack":
+        if label:
+            m = re.search(r"(?i)episodes?\s+(\d+)\s*[-–]\s*(\d+)", label)
+            if m:
+                return f"{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        return None
 
     if item_type == "single_episode":
         match = re.search(r"(?i)(?:episode|ep\.?)\s*(\d+)", label)
