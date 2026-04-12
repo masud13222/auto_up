@@ -60,7 +60,7 @@ tvshow_schema = {
                                 "label": {"type": "string"},
                                 "episode_range": {
                                     "type": "string",
-                                    "description": "Required for single_episode/partial_combo. Zero-padded: '01', '01-08'. Omit for combo_pack.",
+                                    "description": "Always set. Zero-padded span: '01', '01-08'. single_episode/partial_combo. Omit for combo_pack.",
                                 },
                                 "resolutions": {
                                     "type": "object",
@@ -89,7 +89,7 @@ tvshow_schema = {
                                     "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
                                 },
                             },
-                            "required": ["type", "label", "resolutions"],
+                            "required": ["type", "label", "episode_range", "resolutions"],
                             "additionalProperties": False,
                         },
                     },
@@ -124,8 +124,8 @@ poster_url: any absolute direct image URL is valid, including third-party hosts/
 
 Download item types (classify by Markdown section structure — headings, labels, episode blocks):
 - combo_pack: heading covers entire season, no episode breakdown
-- partial_combo: heading has episode RANGE (Ep X-Y). Set episode_range.
-- single_episode: heading = exactly one episode. Set episode_range (zero-padded).
+- partial_combo: heading has episode RANGE (Ep X-Y). Set `episode_range` (zero-padded).
+- single_episode: heading = exactly one episode. Set `episode_range` (zero-padded, e.g. `05`).
 Priority: combo > partial > single (never duplicate coverage).
 Never invent a season number, episode range, or resolution key that is not clearly shown by the page.
 Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
