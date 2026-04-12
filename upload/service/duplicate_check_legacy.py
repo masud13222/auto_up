@@ -143,16 +143,19 @@ def _llm_compare(matches: list, new_name: str, new_year: str, new_website_title:
     candidates = []
     for task in matches:
         result_data = task.result or {}
-        resolutions = _get_existing_resolutions(task)
         is_tvshow = task.content_type == "tvshow" if task.content_type else bool(result_data.get("seasons"))
+        resolutions = (
+            _get_existing_resolutions(task) if not is_tvshow else []
+        )
 
         candidate = {
             "id": task.pk,
             "title": task.title,
             "year": result_data.get("year"),
-            "resolutions": resolutions,
             "type": "tvshow" if is_tvshow else "movie",
         }
+        if not is_tvshow:
+            candidate["resolutions"] = resolutions
 
         if is_tvshow:
             episodes = []

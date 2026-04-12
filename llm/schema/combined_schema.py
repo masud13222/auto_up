@@ -80,7 +80,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 **No DB Candidates (only {site} rows above):**
 - `matched_task_id` = **null** (no MediaTask row).
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = must be one of the `id` values **literally present** in the JSON block above, or null. Never invent an id.
-- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys` and, when present, `download_links` from the search API (episode lines / qualities).
+- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing for {site} rows = parse tiers from that row's `download_links` (`qualities` / `episodes_range` strings only; no separate summary field).
 - Infer the {site} row type from its title: `Season` / `Episode` / `S01` / `E01` / `Series` / `Web Series` => tvshow, otherwise movie.
 - Never use a movie row for a tvshow, and never use a tvshow row for a movie.
 - Also inspect the matched row `title` for source tier.
@@ -121,7 +121,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 - If a clear tier appears without `p` (e.g. `720`), normalize to `720p`.
 - Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
 - Extracted = normalized keys from extracted `data` links.
-- Existing = matched DB `resolutions` and/or matched {site} `resolution_keys`.
+- Existing = matched DB movie `resolutions`; matched DB tvshow tiers from `tv_items` / `episodes` strings; matched {site} tiers parsed from `download_links` only.
 - Rejected candidates/site rows contribute nothing to `Existing`.
 - If Extracted is empty -> default `action=process` unless duplicate evidence is overwhelming.
 - Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
@@ -159,7 +159,7 @@ TV shows:
   - do not guess missing ranges from loose label text
 - if only the overlapping incoming TV items/range in the SAME season should replace old ones while the rest of the show stays untouched, use **`replace_items`** (TV only) instead of full **`replace`**
 - use **`replace_items`** only when the replace scope is explicit, overlaps the SAME season, and no whole-season combo pack is involved; otherwise prefer full **`replace`**
-- Do not use show-wide `Existing` resolution tiers alone to replace one season with another season.
+- Do not use show-wide aggregated tiers alone (e.g. every pack union) to replace one season with another; use per-season / per-item coverage from `tv_items` and explicit ranges.
 
 Reason format:
 - Single line only.

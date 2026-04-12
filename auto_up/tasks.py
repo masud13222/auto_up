@@ -73,7 +73,6 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
     from upload.tasks.runtime_helpers import (
         _flixbd_merge_two_phase_raw,
         _flixbd_title_fuzzy_score,
-        flixbd_slim_qualities_from_download_links,
     )
 
     if max_results is None:
@@ -107,12 +106,10 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
             if fs < FLIXBD_FUZZY_THRESHOLD:
                 continue
             download_links = item.get("download_links") or {}
-            qualities = flixbd_slim_qualities_from_download_links(download_links)
             entry: dict = {
                 "id": fid,
                 "title": item_title,
                 "download_links": download_links,
-                "qualities": qualities,
             }
             rd = item.get("release_date")
             if rd is not None and rd != "":

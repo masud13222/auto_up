@@ -664,15 +664,13 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
                 logger.debug("FlixBD search: skipping hit without id: %r", item_title[:80])
                 continue
             download_links = item.get("download_links") or {}
-            qualities = flixbd_slim_qualities_from_download_links(download_links)
 
             row: dict = {
                 "id": fid,
                 "title": item_title,
-                "resolution_keys": normalize_flixbd_resolution_keys(qualities),
             }
-            # Pass through API download_links (qualities / episodes_range) for LLM + duplicate_context_json
-            # parity with FlixBD search responses — same detail as auto_up flixbd_results.
+            # Pass through API download_links only (qualities / episodes_range). Omit derived
+            # resolution_keys — same info is parseable from download_links; saves LLM tokens.
             if download_links:
                 row["download_links"] = dict(download_links)
             rd = item.get("release_date")
@@ -936,9 +934,11 @@ def clean_result_keep_drive_links(result: dict) -> dict:
 def build_db_candidate(task: MediaTask) -> dict:
     """Build a single candidate dict (with PK) for the LLM duplicate prompt."""
     result_data = task.result or {}
-    existing_resolutions = _get_existing_resolutions(task)
     is_tvshow = task.content_type == "tvshow" if task.content_type else bool(
         result_data.get("seasons")
+    )
+    existing_resolutions = (
+        [] if is_tvshow else _get_existing_resolutions(task)
     )
     website_title = (
         result_data.get("website_movie_title")
@@ -952,9 +952,10 @@ def build_db_candidate(task: MediaTask) -> dict:
         "title": task.title,
         "website_title": website_title,
         "year": result_data.get("year"),
-        "resolutions": existing_resolutions,
         "type": "tvshow" if is_tvshow else "movie",
     }
+    if not is_tvshow:
+        candidate["resolutions"] = existing_resolutions
 
     if is_tvshow:
         episodes = []

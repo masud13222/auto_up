@@ -81,8 +81,8 @@ You receive a JSON array of items. Each item has:
     → Episode 06 is missing 480p. This tells you EXACTLY which episodes have which resolutions.
 
 - `flixbd_results` (OPTIONAL — only present if {SITE_NAME} search returned rows):
-  Up to 2 results from the target site ({SITE_NAME}). Each entry: `{{id, title, release_date?, download_links, qualities}}`.
-  `qualities` is derived from `download_links.qualities` (movies) or `download_links.episodes_range` (series) when present.
+  Up to 2 results from the target site ({SITE_NAME}). Each entry: `{{id, title, release_date?, download_links}}`.
+  Resolutions are in `download_links.qualities` (movies) or `download_links.episodes_range` (series) when present.
   Use this to understand if the content already exists on the target site.
   NOTE: Even if {SITE_NAME} has it, we may still want to process to ADD new download links.
 

@@ -145,7 +145,7 @@ def main() -> int:
         flixbd = None
         if args.dup:
             db_candidates = [{"id": 1, "title": "Single Papa", "year": 2025, "resolutions": ["720p"], "type": "tvshow"}]
-            flixbd = [{"title": "Single Papa", "resolution_keys": ["720p"]}]
+            flixbd = [{"title": "Single Papa", "download_links": {"qualities": "720p"}}]
 
         system_prompt = get_combined_system_prompt(
             extra_below=False,

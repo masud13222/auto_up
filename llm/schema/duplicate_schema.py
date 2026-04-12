@@ -136,7 +136,7 @@ Step 4: resolution comparison
 - Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`
 - Ignore codec alone for `replace`
 - `Extracted` = normalized new tiers
-- `Existing` = matched candidate `resolutions`; if surrounding instructions include target-site rows, also use that row's `resolution_keys`
+- `Existing` = matched candidate movie `resolutions`, or tvshow tiers from `tv_items` / `episodes`; if target-site rows are present, parse tiers from each row's `download_links` (`qualities` / `episodes_range`)
 - Rejected candidates contribute nothing to `Existing`
 - `Missing` = tiers in `Extracted` but not in `Existing`
 - If no resolution is found -> `Extracted=[]` and default to `process` unless duplicate evidence is overwhelming
