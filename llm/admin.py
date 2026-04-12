@@ -105,6 +105,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
     list_filter = ('sdk', 'config_name', 'purpose', 'success', 'created_at')
     search_fields = (
         'response_text',
+        'outbound_request_json',
         'duplicate_check_json',
         'duplicate_context_json',
         'purpose',
@@ -124,6 +125,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'duration_ms',
         'created_at',
         'response_display',
+        'outbound_request_display',
         'duplicate_check_display',
         'duplicate_context_display',
     )
@@ -147,6 +149,16 @@ class LLMUsageAdmin(admin.ModelAdmin):
             },
         ),
         (
+            'Outbound request (to provider)',
+            {
+                'description': (
+                    'Exact system_prompt + user_message strings passed to the SDK for this call '
+                    '(same as the HTTP request body roles; not derived elsewhere).'
+                ),
+                'fields': ('outbound_request_display',),
+            },
+        ),
+        (
             'Full response',
             {
                 'description': 'Model output for this call (syntax-highlighted when valid JSON).',
@@ -158,7 +170,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
             {
                 'description': (
                     'extract+dup_check: parsed duplicate_check from the model. '
-                    'auto_filter: system_prompt + user_items (array), not a stringified user body.'
+                    'Full request: see Outbound request above.'
                 ),
                 'fields': ('duplicate_check_display',),
             },
@@ -175,6 +187,28 @@ class LLMUsageAdmin(admin.ModelAdmin):
         ),
     )
     date_hierarchy = 'created_at'
+
+    @admin.display(description='Outbound request (JSON)')
+    def outbound_request_display(self, obj):
+        if not obj or not (obj.outbound_request_json or '').strip():
+            return '—'
+        raw = obj.outbound_request_json.strip()
+        try:
+            parsed = json.loads(raw)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            inner = escape(raw)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                f'<pre class="llm-usage-response-pre">{inner}</pre>'
+                '</div>'
+            )
 
     @admin.display(description='Full response')
     def response_display(self, obj):

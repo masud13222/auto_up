@@ -671,6 +671,10 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
                 "title": item_title,
                 "resolution_keys": normalize_flixbd_resolution_keys(qualities),
             }
+            # Pass through API download_links (qualities / episodes_range) for LLM + duplicate_context_json
+            # parity with FlixBD search responses — same detail as auto_up flixbd_results.
+            if download_links:
+                row["download_links"] = dict(download_links)
             rd = item.get("release_date")
             if rd is not None and rd != "":
                 row["release_date"] = rd

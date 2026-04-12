@@ -1,5 +1,7 @@
-import time
+import json
 import logging
+import time
+
 from .models import LLMConfig, LLMUsage
 
 logger = logging.getLogger(__name__)
@@ -257,8 +259,11 @@ def _save_usage(
     success: bool = True,
     purpose: str = "",
     response_text: str = "",
+    *,
+    outbound_system_prompt: str = "",
+    outbound_user_message: str = "",
 ):
-    """Save token usage and completion text from LLM response to database."""
+    """Save token usage, completion text, and exact outbound system+user messages."""
     try:
         extractor = USAGE_EXTRACTORS.get(config.sdk)
         usage = extractor(response) if extractor else {}
@@ -273,6 +278,12 @@ def _save_usage(
         if not has_tokens and not body:
             return
 
+        outbound_payload = {
+            "system_prompt": outbound_system_prompt or "",
+            "user_message": outbound_user_message or "",
+        }
+        outbound_json = json.dumps(outbound_payload, indent=2, ensure_ascii=False)
+
         row = LLMUsage.objects.create(
             config=config,
             config_name=config.name,
@@ -285,6 +296,7 @@ def _save_usage(
             success=success,
             duration_ms=duration_ms,
             response_text=response_text or "",
+            outbound_request_json=outbound_json,
         )
         logger.debug(
             f"[{config.name}] Usage: {usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)}"
@@ -368,6 +380,8 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                 success=True,
                 purpose=purpose,
                 response_text=content,
+                outbound_system_prompt=system_prompt,
+                outbound_user_message=prompt,
             )
 
             logger.info(
@@ -408,6 +422,8 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
             success=False,
             purpose=purpose,
             response_text=str(last_error),
+            outbound_system_prompt=system_prompt,
+            outbound_user_message=prompt,
         )
     raise last_error
 

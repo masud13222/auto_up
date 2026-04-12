@@ -80,7 +80,7 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 **No DB Candidates (only {site} rows above):**
 - `matched_task_id` = **null** (no MediaTask row).
 - `{TARGET_SITE_ROW_ID_JSON_KEY}` = must be one of the `id` values **literally present** in the JSON block above, or null. Never invent an id.
-- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys`.
+- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing = that row's `resolution_keys` and, when present, `download_links` from the search API (episode lines / qualities).
 - Infer the {site} row type from its title: `Season` / `Episode` / `S01` / `E01` / `Series` / `Web Series` => tvshow, otherwise movie.
 - Never use a movie row for a tvshow, and never use a tvshow row for a movie.
 - Also inspect the matched row `title` for source tier.

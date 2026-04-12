@@ -80,12 +80,20 @@ class LLMUsage(models.Model):
         default="",
         help_text="Full model completion text for this call (shown read-only in admin).",
     )
+    outbound_request_json = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Exact outbound body sent to the provider: JSON with system_prompt and user_message "
+            "(user role / contents), same strings passed to the SDK for this call."
+        ),
+    )
     duplicate_check_json = models.TextField(
         blank=True,
         default="",
         help_text=(
-            "extract+dup_check: duplicate_check object from the model. "
-            "auto_filter: full outbound request (system_prompt + user_items array) for that call."
+            "extract+dup_check: duplicate_check object from the model output. "
+            "Other purposes: usually empty (full request is in outbound_request_json)."
         ),
     )
     duplicate_context_json = models.TextField(

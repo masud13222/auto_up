@@ -331,6 +331,9 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 drive_links.setdefault(resolution, []).append(src_entry)
                 entry_id = movie_download_entry_key(resolution, src_entry)
                 uploaded_entry_ids.add(entry_id)
+                # Pre-upload key uses source URL hash; post-upload uses Drive file id — both
+                # must count as "uploaded" so missing_targets does not false-flag partial.
+                uploaded_entry_ids.add(movie_download_entry_key(resolution, item["entry"]))
                 fresh_upload_entry_ids.add(entry_id)
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)

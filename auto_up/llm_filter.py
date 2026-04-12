@@ -126,8 +126,8 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             )
             decisions = []
 
-        # LLMUsage: duplicate_check_json = full request; duplicate_context_json = DB + FlixBD per URL
-        # (same db_results / flixbd_results the model saw — inline list comp, no extra helper).
+        # Full LLM request (system + user) is stored on LLMUsage.outbound_request_json by LLMService.
+        # Here we only attach duplicate_context_json (DB + FlixBD per URL) for admin.
         context_by_item = [
             {
                 "url": e.get("url"),
@@ -139,12 +139,7 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             if isinstance(e, dict)
         ]
         _save_duplicate_usage_snapshot_to_latest_usage(
-            dup_result={
-                "auto_filter_full_request": {
-                    "system_prompt": AUTO_FILTER_SYSTEM_PROMPT,
-                    "user_items": payload,
-                },
-            },
+            dup_result=None,
             db_match_candidates=None,
             flixbd_results=None,
             purpose="auto_filter",
