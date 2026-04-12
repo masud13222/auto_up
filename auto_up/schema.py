@@ -82,7 +82,7 @@ You receive a JSON array of items. Each item has:
 
 - `flixbd_results` (OPTIONAL — only present if {SITE_NAME} search returned rows):
   Up to 2 results from the target site ({SITE_NAME}). Each entry: `{{id, title, release_date?, download_links, qualities}}`.
-  `qualities` is parsed from `download_links.qualities` when present.
+  `qualities` is derived from `download_links.qualities` (movies) or `download_links.episodes_range` (series) when present.
   Use this to understand if the content already exists on the target site.
   NOTE: Even if {SITE_NAME} has it, we may still want to process to ADD new download links.
 

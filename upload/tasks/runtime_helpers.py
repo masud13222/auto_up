@@ -448,6 +448,31 @@ def refresh_site_sync_snapshot_from_api(media_task: MediaTask, content_type: str
     return fallback
 
 
+def flixbd_slim_qualities_from_download_links(download_links: dict | None) -> list[str]:
+    """
+    Build string fragments for :func:`normalize_flixbd_resolution_keys`.
+
+    Movies: ``download_links.qualities`` (comma-separated string or list).
+    Series (FlixBD API v1): ``download_links.episodes_range`` (list of lines like
+    ``S01: 1080p,480p,720p`` or ``S01 Episode 01-04: 1080p,480p,720p``).
+    """
+    dl = download_links if isinstance(download_links, dict) else {}
+    qualities: list[str] = []
+    qualities_raw = dl.get("qualities")
+    if isinstance(qualities_raw, str):
+        qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
+    elif isinstance(qualities_raw, list):
+        qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+    if qualities:
+        return qualities
+    ep_raw = dl.get("episodes_range")
+    if isinstance(ep_raw, list):
+        return [str(x).strip() for x in ep_raw if str(x).strip()]
+    if isinstance(ep_raw, str) and ep_raw.strip():
+        return [ep_raw.strip()]
+    return []
+
+
 def normalize_flixbd_resolution_keys(qualities: list) -> list[str]:
     """
     Map API strings like 'HD 720p, HD 1080p' to canonical keys ['720p', '1080p'] for LLM comparison
@@ -639,12 +664,7 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
                 logger.debug("FlixBD search: skipping hit without id: %r", item_title[:80])
                 continue
             download_links = item.get("download_links") or {}
-            qualities_raw = download_links.get("qualities")
-            qualities = []
-            if isinstance(qualities_raw, str):
-                qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
-            elif isinstance(qualities_raw, list):
-                qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+            qualities = flixbd_slim_qualities_from_download_links(download_links)
 
             row: dict = {
                 "id": fid,

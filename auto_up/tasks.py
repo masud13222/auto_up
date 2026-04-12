@@ -70,7 +70,11 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
     then up to ``max_results`` rows (same shape as before for auto_up LLM).
     """
     from upload.service import flixbd_client as fx
-    from upload.tasks.runtime_helpers import _flixbd_merge_two_phase_raw, _flixbd_title_fuzzy_score
+    from upload.tasks.runtime_helpers import (
+        _flixbd_merge_two_phase_raw,
+        _flixbd_title_fuzzy_score,
+        flixbd_slim_qualities_from_download_links,
+    )
 
     if max_results is None:
         max_results = AUTO_UP_FLIXBD_LLM_MAX_RESULTS
@@ -103,12 +107,7 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
             if fs < FLIXBD_FUZZY_THRESHOLD:
                 continue
             download_links = item.get("download_links") or {}
-            qualities_raw = download_links.get("qualities")
-            qualities = []
-            if isinstance(qualities_raw, str):
-                qualities = [q.strip() for q in qualities_raw.split(",") if q.strip()]
-            elif isinstance(qualities_raw, list):
-                qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+            qualities = flixbd_slim_qualities_from_download_links(download_links)
             entry: dict = {
                 "id": fid,
                 "title": item_title,
