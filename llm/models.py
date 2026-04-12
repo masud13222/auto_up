@@ -85,13 +85,16 @@ class LLMUsage(models.Model):
         default="",
         help_text=(
             "extract+dup_check: duplicate_check object from the model. "
-            "auto_filter: full outbound request (system_prompt + user_message JSON) for that call."
+            "auto_filter: full outbound request (system_prompt + user_items array) for that call."
         ),
     )
     duplicate_context_json = models.TextField(
         blank=True,
         default="",
-        help_text="When present: DB candidates + target-site search results snapshot sent to the combined duplicate check prompt.",
+        help_text=(
+            "extract+dup_check: DB candidates + target-site rows for that prompt. "
+            "auto_filter: per-URL local db_results + FlixBD rows (auto_filter_db_and_flixbd_by_item)."
+        ),
     )
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)

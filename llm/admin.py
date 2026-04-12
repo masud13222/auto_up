@@ -158,7 +158,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
             {
                 'description': (
                     'extract+dup_check: parsed duplicate_check from the model. '
-                    'auto_filter: full outbound request (system + user JSON) for that call.'
+                    'auto_filter: system_prompt + user_items (array), not a stringified user body.'
                 ),
                 'fields': ('duplicate_check_display',),
             },
@@ -168,7 +168,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
             {
                 'description': (
                     'extract+dup_check: DB candidates + target-site rows sent with the combined prompt. '
-                    'auto_filter: usually empty (request is under Duplicate check).'
+                    'auto_filter: per-URL db_results + flixbd_results (auto_filter_db_and_flixbd_by_item).'
                 ),
                 'fields': ('duplicate_context_display',),
             },

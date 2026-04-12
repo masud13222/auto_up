@@ -126,19 +126,30 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             )
             decisions = []
 
-        # LLMUsage "Duplicate check (JSON)": store full outbound request (not decisions — those are in Full response).
+        # LLMUsage: duplicate_check_json = full request; duplicate_context_json = DB + FlixBD per URL
+        # (same db_results / flixbd_results the model saw — inline list comp, no extra helper).
+        context_by_item = [
+            {
+                "url": e.get("url"),
+                "db_results": e.get("db_results")
+                or {"results": [], "has_matches": False},
+                "flixbd_results": list(e.get("flixbd_results") or []),
+            }
+            for e in payload
+            if isinstance(e, dict)
+        ]
         _save_duplicate_usage_snapshot_to_latest_usage(
             dup_result={
                 "auto_filter_full_request": {
                     "system_prompt": AUTO_FILTER_SYSTEM_PROMPT,
-                    "user_message": prompt,
+                    "user_items": payload,
                 },
             },
             db_match_candidates=None,
             flixbd_results=None,
             purpose="auto_filter",
             response_text=raw_response,
-            extra_context=None,
+            extra_context={"auto_filter_db_and_flixbd_by_item": context_by_item},
         )
 
         logger.info(f"LLM returned {len(decisions)} decisions")
