@@ -1,5 +1,5 @@
 """
-Project-wide tuning values (DB duplicate search, FlixBD search, LLM context caps).
+Project-wide tuning values (DB duplicate search, FlixBD, LLM caps, subtitle/remux).
 
 Import from the project root, e.g. ``from constant import FUZZY_THRESHOLD_DB``.
 """
@@ -47,3 +47,9 @@ FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS = _force_is_adult_root_domain_labels_fr
 FLIXBD_LLM_MAX_RESULTS = 3
 FLIXBD_SEARCH_PER_PAGE = 20
 FLIXBD_FUZZY_THRESHOLD = 80
+
+# --- Subtitle strip / FFmpeg remux (upload.utils.subtitle_remove) ---
+# First N subtitle cues (per stream) scanned for blocklisted names in dialogue text.
+SUBTITLE_CONTENT_SCAN_MAX_EVENTS = 30
+# Remux: first attempt + (value - 1) retries (transient IO, busy file, etc.).
+REMUX_MAX_ATTEMPTS = 2

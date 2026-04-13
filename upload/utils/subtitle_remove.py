@@ -16,12 +16,25 @@ import pysubs2
 
 from llm.schema.blocked_names import BLOCKED_SITE_NAMES, SITE_NAME
 
+from constant import REMUX_MAX_ATTEMPTS, SUBTITLE_CONTENT_SCAN_MAX_EVENTS
+
 from .ffmpeg_low_priority import low_priority_cmd
 
 logger = logging.getLogger(__name__)
 
-# First N subtitle events (per stream) scanned for blocklisted names in dialogue text.
-SUBTITLE_CONTENT_SCAN_MAX_EVENTS = 30
+
+def _ffmpeg_stderr_for_log(stderr: str | None, max_chars: int = 4000) -> str:
+    """
+    FFmpeg writes the build banner to stderr; failures are usually at the end.
+    Prefer the tail so logs show the actual error, not the first 500 chars of banner text.
+    """
+    s = (stderr or "").strip()
+    if not s:
+        return "(no stderr)"
+    if len(s) <= max_chars:
+        return s
+    return f"...[stderr truncated, last {max_chars} chars]...\n{s[-max_chars:]}"
+
 
 # Bitmap / image-based subs: FFmpeg cannot emit text for cheap scan; rely on metadata only.
 _SUBTITLE_CODECS_SKIP_TEXT_SCAN = frozenset(
@@ -377,6 +390,10 @@ def remove_subtitles(input_path: str) -> Optional[str]:
         cmd = low_priority_cmd(
             [
                 "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-loglevel",
+                "error",
                 "-i",
                 input_path,
                 "-map",
@@ -415,23 +432,63 @@ def remove_subtitles(input_path: str) -> Optional[str]:
             output_path
         ])
 
-        logger.info(
-            "Remuxing file: remove %s subtitle stream(s), metadata cleanup=%s",
-            len(streams_to_remove),
-            metadata_cleanup_needed,
-        )
-        result = subprocess.run(
-            cmd, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.PIPE, 
-            text=True, 
-            timeout=600
-        )
-
-        if result.returncode != 0:
-            logger.error(f"FFmpeg remux failed: {result.stderr[:500]}")
+        result: subprocess.CompletedProcess | None = None
+        for attempt in range(1, REMUX_MAX_ATTEMPTS + 1):
             if os.path.exists(output_path):
-                os.remove(output_path)
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+            logger.info(
+                "Remuxing file (attempt %s/%s): remove %s subtitle stream(s), metadata cleanup=%s",
+                attempt,
+                REMUX_MAX_ATTEMPTS,
+                len(streams_to_remove),
+                metadata_cleanup_needed,
+            )
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "FFmpeg remux timed out (attempt %s/%s)",
+                    attempt,
+                    REMUX_MAX_ATTEMPTS,
+                )
+                if attempt < REMUX_MAX_ATTEMPTS:
+                    logger.info("Retrying remux once...")
+                    continue
+                logger.error("FFmpeg remux timed out after %s attempts.", REMUX_MAX_ATTEMPTS)
+                return None
+
+            if result.returncode == 0:
+                break
+            if attempt < REMUX_MAX_ATTEMPTS:
+                logger.warning(
+                    "FFmpeg remux failed (attempt %s/%s, rc=%s): %s — retrying once",
+                    attempt,
+                    REMUX_MAX_ATTEMPTS,
+                    result.returncode,
+                    _ffmpeg_stderr_for_log(result.stderr, max_chars=2000),
+                )
+                continue
+
+            logger.error(
+                "FFmpeg remux failed after %s attempts (rc=%s): %s",
+                REMUX_MAX_ATTEMPTS,
+                result.returncode,
+                _ffmpeg_stderr_for_log(result.stderr),
+            )
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
             return None
 
         # Step 4: Replace original with cleaned version
