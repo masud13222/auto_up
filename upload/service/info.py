@@ -101,17 +101,6 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
         logger.warning("Could not save duplicate snapshot to LLMUsage: %s", e)
 
 
-def _find_matched_candidate(db_match_candidates: list, matched_id) -> dict | None:
-    """Find the DB candidate dict whose 'id' matches matched_task_id from dup check."""
-    if not db_match_candidates or matched_id is None:
-        return None
-    for c in db_match_candidates:
-        if isinstance(c, dict) and c.get("id") == matched_id:
-            return c
-    return None
-
-
-
 def get_structured_output(llm_response: str) -> dict:
     """
     Extracts and validates JSON from LLM response string.
@@ -250,54 +239,33 @@ def detect_and_extract(
         logger.info(f"Duplicate check: action={dup_result.get('action')}, reason={dup_result.get('reason', '')[:80]}")
 
     # ── Pass 2: Delta filtering for "update" actions ──
-    # Only runs when a DB candidate match exists (has real existing coverage data).
-    # FlixBD-only matches are handled later by the main pipeline via
-    # hydrate_existing_result_from_snapshot / donor_result_for_site_content + merge.
-    if (
-        isinstance(dup_result, dict)
-        and dup_result.get("action") == "update"
-        and db_match_candidates
-    ):
-        matched_id = dup_result.get("matched_task_id")
-        db_candidate = _find_matched_candidate(db_match_candidates, matched_id)
-        if db_candidate is not None:
-            logger.info(
-                "Pass-2: running delta filter (content_type=%s, matched_id=%s)",
-                content_type,
-                matched_id,
+    # Send Pass-1 response + search context to LLM → get back only missing data.
+    if isinstance(dup_result, dict) and dup_result.get("action") == "update":
+        search_context = {
+            "db_match_candidates": db_match_candidates or [],
+            "flixbd_results": flixbd_results or [],
+            "update_details": dup_result.get("update_details"),
+        }
+        logger.info("Pass-2: running delta filter (content_type=%s)", content_type)
+        delta = compute_update_delta(content_type, data, search_context)
+        if delta is not None:
+            is_empty = (
+                (content_type == "movie" and not delta.get("download_links"))
+                or (content_type == "tvshow" and not delta.get("seasons"))
             )
-            delta = compute_update_delta(
-                content_type,
-                data,
-                db_candidate,
-                update_details=dup_result.get("update_details"),
-            )
-            if delta is not None:
-                is_empty_delta = (
-                    (content_type == "movie" and not delta.get("download_links"))
-                    or (content_type == "tvshow" and not delta.get("seasons"))
-                )
-                if is_empty_delta:
-                    logger.info(
-                        "Pass-2 delta is empty — nothing to update. Changing action to 'skip'."
-                    )
-                    dup_result["action"] = "skip"
-                elif content_type == "movie" and "download_links" in delta:
-                    data["download_links"] = delta["download_links"]
-                    logger.info("Pass-2 applied: movie download_links replaced with delta (%d res).", len(delta["download_links"]))
-                elif content_type == "tvshow" and "seasons" in delta:
-                    data["seasons"] = delta["seasons"]
-                    logger.info("Pass-2 applied: tvshow seasons replaced with delta (%d seasons).", len(delta["seasons"]))
-                else:
-                    logger.warning("Pass-2 returned delta but no usable key for content_type=%s. Using full data.", content_type)
+            if is_empty:
+                logger.info("Pass-2 delta is empty — nothing to update. Changing action to 'skip'.")
+                dup_result["action"] = "skip"
+            elif content_type == "movie" and "download_links" in delta:
+                data["download_links"] = delta["download_links"]
+                logger.info("Pass-2 applied: movie download_links replaced with delta (%d res).", len(delta["download_links"]))
+            elif content_type == "tvshow" and "seasons" in delta:
+                data["seasons"] = delta["seasons"]
+                logger.info("Pass-2 applied: tvshow seasons replaced with delta (%d seasons).", len(delta["seasons"]))
             else:
-                logger.warning("Pass-2 delta filter returned None. Falling back to full Pass-1 data.")
+                logger.warning("Pass-2 returned delta but no usable key for content_type=%s. Using full data.", content_type)
         else:
-            logger.info(
-                "Pass-2 skipped: matched_task_id=%s not found in db_match_candidates. "
-                "Pipeline will handle delta via existing_result merge.",
-                matched_id,
-            )
+            logger.warning("Pass-2 delta filter returned None. Falling back to full Pass-1 data.")
 
     return content_type, data, dup_result
 
