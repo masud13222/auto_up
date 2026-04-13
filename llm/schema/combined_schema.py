@@ -120,15 +120,43 @@ Include: TitleCheck, YearCheck: new <N> vs candidate <M>, Extracted:[...], Exist
 {json.dumps(duplicate_schema, **_COMPACT)}
 ```
 
-### EXAMPLE — TV update (delta only):
-Existing DB candidate has: S05, Episode 41-48, resolutions: 1080p, 720p.
-Extracted page shows: S05, Episode 41-48, resolutions: 480p, 720p, 1080p.
-720p and 1080p already exist → omit them.
-Correct `data.seasons` output:
+### FEW-SHOT EXAMPLES (study these carefully):
+
+**EX-1: TV update — missing resolution (delta only)**
+Existing: S05, Episode 41-48, resolutions: 1080p, 720p.
+Page: S05, Episode 41-48, resolutions: 480p, 720p, 1080p.
+Analysis: 720p ✓ exists, 1080p ✓ exists, 480p ✗ missing.
+Action: `update`. `data.seasons` = only the missing 480p:
 ```json
-[{{"season_number":5,"download_items":[{{"type":"partial_combo","label":"Episode 41-48","episode_range":"41-48","resolutions":{{"480p":[{{"u":"https://example.com/dl","l":"Hindi","f":"Show.2024.S05E41-E48.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
+[{{"season_number":5,"download_items":[{{"type":"partial_combo","label":"Episode 41-48","episode_range":"41-48","resolutions":{{"480p":[{{"u":"https://example.com/s05e41-48-480p","l":"Hindi","f":"Show.2024.S05E41-E48.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
 ```
-Only the missing 480p is returned. This is correct delta behavior.
+WRONG output would include 720p and 1080p. Only 480p is correct.
+
+**EX-2: TV update — new episode range added**
+Existing: S02, Episode 01-06, resolutions: 1080p, 720p.
+Page: S02, Episode 01-06 (480p, 720p, 1080p) AND Episode 07-12 (720p, 1080p).
+Analysis: EP01-06 720p ✓, 1080p ✓, 480p ✗ missing. EP07-12 is entirely new.
+Action: `update`. `data.seasons` = missing 480p for 01-06 + full 07-12:
+```json
+[{{"season_number":2,"download_items":[{{"type":"partial_combo","label":"Episode 01-06","episode_range":"01-06","resolutions":{{"480p":[{{"u":"https://example.com/s02e01-06-480p","l":"Hindi","f":"Show.2024.S02E01-E06.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}},{{"type":"partial_combo","label":"Episode 07-12","episode_range":"07-12","resolutions":{{"720p":[{{"u":"https://example.com/s02e07-12-720p","l":"Hindi","f":"Show.2024.S02E07-E12.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}],"1080p":[{{"u":"https://example.com/s02e07-12-1080p","l":"Hindi","f":"Show.2024.S02E07-E12.1080p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
+```
+EP01-06 returns ONLY the missing 480p. EP07-12 is new so all resolutions included.
+
+**EX-3: TV skip — everything already exists**
+Existing: S01, Episode 01-10, resolutions: 480p, 720p, 1080p.
+Page: S01, Episode 01-10, resolutions: 720p, 1080p.
+Analysis: 720p ✓, 1080p ✓. Page has nothing new.
+Action: `skip`. `data.seasons` = full extraction (skip means no delta needed).
+
+**EX-4: Movie update — missing resolution only**
+Existing movie resolutions: 1080p, 720p.
+Page: 480p, 720p, 1080p, 2160p.
+Analysis: 720p ✓, 1080p ✓, 480p ✗ missing, 2160p ✗ missing (if above-1080p ON).
+Action: `update`. `data.download_links` = only 480p (and 2160p if policy allows):
+```json
+{{"480p":[{{"u":"https://example.com/movie-480p","l":"Hindi","f":"Movie.2024.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}
+```
+WRONG output would include 720p and 1080p. Only missing resolutions are correct.
 
 """
 
@@ -184,11 +212,27 @@ Filename pattern (dots not spaces): `Title.Year.<segment>.<lang>.<res>.<src>.WEB
 - Dual audio → use `Dual.Audio` in filename. Src: NF/AMZN/DSNP/JC/ZEE5 if clear, else omit. Default ext: .mkv.
 - `f` = basename only (no / \\ :). Do not return separate `download_filenames` object.
 
-### TV-SPECIFIC EXTRACTION:
-- Download type by scope: whole season→combo_pack, range→partial_combo, one ep→single_episode.
-- Priority: combo present → only combo. Partial covers range → no singles in that range.
-- `episode_range` required in every item. Whole-season combo with no range → `""`.
-- Multi-season: separate season objects sorted by season_number. Only seasons with download blocks.
+### TV DOWNLOAD ITEM CLASSIFICATION (critical — follow this decision tree):
+
+Step 1: Look at the Markdown section heading/label for each download block.
+Step 2: Classify STRICTLY by what the heading says:
+  - Heading says "Episode 01-08" or "EP01-EP08" or any RANGE of episodes → `partial_combo`, episode_range="01-08"
+  - Heading says "Complete Season" or entire season with no episode breakdown → `combo_pack`, episode_range=""
+  - Heading says exactly ONE episode like "Episode 05" or "EP05" → `single_episode`, episode_range="05"
+
+COMMON MISTAKE TO AVOID: If the heading says "Episode 41-48" that is a RANGE → `partial_combo`, NOT multiple single_episodes. Do NOT split "Episode 41-48" into 8 separate single_episode items. One heading = one download_item.
+
+Priority rule: If both combo_pack and partial_combo/single exist for same season, keep ONLY combo_pack. If partial_combo covers a range, do NOT also emit singles within that range.
+
+Few-shot classification examples:
+- "Episode 01-06 (480p, 720p, 1080p)" → ONE item: type=partial_combo, episode_range="01-06"
+- "Season 1 Complete" → ONE item: type=combo_pack, episode_range=""
+- "Episode 05" → ONE item: type=single_episode, episode_range="05"
+- "EP41-EP48 [720p] [1080p]" → ONE item: type=partial_combo, episode_range="41-48" (NOT 8 singles!)
+
+Other TV rules:
+- `episode_range` required in every item. Zero-pad: "01", "01-08".
+- Multi-season: separate season objects sorted by season_number. Only include seasons with download blocks.
 - If same logical file repeats (mirrors), emit only one entry.
 - poster_url: any absolute image URL is valid including third-party CDNs.
 

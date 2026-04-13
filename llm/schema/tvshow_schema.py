@@ -129,10 +129,12 @@ RULES (in priority order):
 TITLE: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
 Combo season → `Season NN Complete`. Source = WEB-DL/NF/AMZN etc (not resolution).
 
-DOWNLOAD TYPES (priority: combo > partial > single, never duplicate coverage):
-- combo_pack: full season bundle, episode_range=""
-- partial_combo: range of episodes, episode_range="01-08"
-- single_episode: one episode, episode_range="01"
+DOWNLOAD TYPE DECISION TREE (follow strictly):
+- Heading says a RANGE like "Episode 01-08" or "EP41-EP48" → partial_combo, episode_range="01-08" or "41-48"
+- Heading says "Complete Season" or full season → combo_pack, episode_range=""
+- Heading says exactly ONE episode → single_episode, episode_range="05"
+COMMON MISTAKE: "Episode 41-48" = ONE partial_combo, NOT 8 single_episodes!
+Priority: combo > partial > single. Never duplicate coverage.
 
 FILE ENTRY: `{{"u":"URL","l":"Hindi","f":"Title.Year.S01E05.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}`
 Dual audio: `{{"u":"URL","l":["Hindi","English"],"f":"Title.Year.S01.Complete.Dual.Audio.720p.{SITE_NAME}.mkv"}}`
