@@ -37,7 +37,14 @@ movie_schema = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "u": {"type": "string", "description": "Absolute download URL only; never watch/stream/player/watch-online URL"},
+                        "u": {
+                            "type": "string",
+                            "description": (
+                                "Absolute download URL only; never Watch Resualtion/watch/stream/player/watch-online URL. "
+                                "Copy the exact original Markdown href. Never shorten, decode, rebuild, sanitize, "
+                                "or alter the original URL or its path/query fragments."
+                            ),
+                        },
                         "l": {
                             "oneOf": [
                                 {"type": "string"},
