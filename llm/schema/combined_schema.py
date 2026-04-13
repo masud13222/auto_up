@@ -42,20 +42,18 @@ combined_schema = {
 
 
 def _build_resolution_note(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
-    parts = ["- Base: 480p, 720p, 1080p always included when present in the Markdown.\n"]
+    parts = ["Base: 480p, 720p, 1080p always included when present."]
     if extra_below:
-        parts.append("- Below 720p: enabled. Include 520p, 360p, 240p and similar if present.\n")
+        parts.append("Below 720p: ON (include 520p, 360p, 240p etc).")
     else:
-        parts.append("- Below 720p: disabled. Do not include extra tiers below 480p/720p base set.\n")
+        parts.append("Below 720p: OFF.")
     if extra_above:
-        parts.append("- Above 1080p: enabled. Include 2160p / 4K and similar if present.\n")
+        parts.append("Above 1080p: ON (include 2160p/4K).")
     else:
-        parts.append("- Above 1080p: disabled. Do not include tiers above 1080p.\n")
+        parts.append("Above 1080p: OFF.")
     if max_extra > 0:
-        parts.append(f"- Max Extra Resolutions: {max_extra}. This limits extra tiers beyond 480p/720p/1080p.\n")
-    else:
-        parts.append("- Max Extra Resolutions: 0 means unlimited extras beyond 480p/720p/1080p.\n")
-    return "".join(parts)
+        parts.append(f"Max extras beyond base: {max_extra}.")
+    return " ".join(parts)
 
 
 def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: list = None) -> str:
@@ -68,70 +66,69 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
         ctx_parts.append(f"### DB Candidates ({len(db_match_candidates)}):\n```json\n{json.dumps(db_match_candidates, separators=(',',':'), ensure_ascii=False)}\n```")
     if flixbd_results:
         ctx_parts.append(
-            f"### {site} (target site) search results (top {len(flixbd_results)}):\n"
+            f"### {site} search results (top {len(flixbd_results)}):\n"
             f"```json\n{json.dumps(flixbd_results, separators=(',',':'), ensure_ascii=False)}\n```\n"
-            f"(Each row `id` → use as **`{TARGET_SITE_ROW_ID_JSON_KEY}`** when that row matches; never as **matched_task_id**.)"
+            f"(Row `id` → use as `{TARGET_SITE_ROW_ID_JSON_KEY}`, never as `matched_task_id`.)"
         )
 
-    return f"""## Duplicate Check
+    return f"""
+---
+## DUPLICATE CHECK
 {chr(10).join(ctx_parts)}
-Rules:
-- Non-null `matched_task_id` = copy one id from DB Candidates only; otherwise null.
-- Non-null `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one id from {site} search JSON only; otherwise null.
-- Valid match requires all three: same detected type, exact year, and strong title match after trivial cleanup only.
-- Never match movie vs tvshow.
-- Use candidate `website_title` / matched {site} row title for season and source clues.
-- If title/year/type do not match, action=`process`.
 
-Normalize:
-- Resolution keys: `480p`, `720p`, `1080p`, `1440p`, `2160p` (`4K` -> `2160p`).
-- Ignore codec-only tokens such as `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
-- `Extracted` = keys from final `data`.
-- `Existing` = matched DB movie `resolutions`, matched DB TV `tv_items` / `episodes`, matched {site} row `download_links`.
-- `Missing` = resolutions present in `Extracted` but absent from `Existing`.
-- For TV, compare coverage per exact season + item/range. Never treat an aggregated season/show title that summarizes many episodes as proof that every range/resolution is new or missing.
-- For TV, compare resolutions inside the same exact range. Do not union all show resolutions across all ranges.
+MATCHING:
+- Match requires ALL THREE: same type + exact year + strong title match after trivial cleanup.
+- Movie ≠ tvshow. Never cross-match.
+- `matched_task_id` = copy one integer `id` from DB Candidates only, or null.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one integer `id` from {site} search results only, or null.
+- If title/year/type don't match any candidate → action=`process`.
 
-Action:
-- `skip`: same coverage, nothing new, no clear upgrade.
-- `update`: only new/missing part should be added.
-- `replace`: same coverage, clearly better source.
-- `replace_items`: TV only; explicit overlapping same-season replacement scope.
-- `process`: no confident match.
-- Source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`.
-- Higher source for same coverage -> `replace`. Never replace from codec alone.
+NORMALIZE:
+- Resolution keys: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs (x264/x265/HEVC/AAC).
+- `Extracted` = resolutions from your extracted `data`.
+- `Existing` = resolutions/items from the matched DB candidate.
+- `Missing` = in Extracted but not in Existing.
+- For TV: compare per exact season_number + episode_range + resolution. Never union resolutions across different ranges.
 
-Output shaping:
-- `process` or `replace`: `data` = full extracted page content.
-- Movie `update`: `data.download_links` must contain only missing/new files. Omit already-existing resolutions completely.
-- TV `update`: `data.seasons` must contain only the season/item/range/resolution that needs appending. Omit unchanged old items.
-- Hard TV delta filter:
-  - Compare every extracted TV item against Existing by exact `season_number` + item type + `episode_range`.
-  - If an extracted item is already fully covered, omit it completely.
-  - If an extracted item exists but only some resolutions are missing, keep only those missing resolutions under that exact item.
-  - Never return full season data in `update` mode just because the page title or page content shows the whole season.
-- TV `replace_items`: `data.seasons` must contain only the overlapping replacement scope. Omit untouched items.
-- If an existing TV item already exists and only one resolution is missing, return only that missing resolution under that item.
-- `updated_website_title` = better stored title only; otherwise `false`.
-- When the Duplicate Check section is present, include `duplicate_check` in the final JSON.
+ACTIONS:
+- `process`: no confident match → `data` = full extraction.
+- `skip`: same content, nothing new.
+- `replace`: same coverage, better source → `data` = full extraction.
+- `replace_items`: TV only, overlapping same-season replacement → `data.seasons` = replacement scope only.
+- `update` (CRITICAL — delta only):
+  * Movie: `data.download_links` = ONLY missing resolutions. Omit existing ones completely.
+  * TV: `data.seasons` = ONLY missing items/resolutions. Compare each extracted item against Existing by season_number + episode_range. If fully covered → omit. If partially covered → keep only missing resolutions under that item. Never return full season data.
 
-TV rules:
-- `has_new_episodes=true` only for explicit later/new episode labels or ranges.
-- New later range or new season -> `update`.
-- Same season + same range + extra missing resolutions only -> `update`, and return only those missing resolutions under that same range.
-- Same range with better pack/source -> `replace` or `replace_items`.
-- Different seasons are additive; do not replace another season.
-- Use `replace_items` only when no combo/full-season pack is involved; otherwise use `replace`.
-- Example: Existing `S05 Episode 41-48: 1080p,720p`; Extracted same range `480p,720p,1080p` -> `update` and return only `S05 Episode 41-48` with `480p`.
+SOURCE ORDER: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
+Higher source for same coverage → `replace`. Never replace from codec alone.
 
-Reason:
-- Single line only.
-- Must start with `Matched candidate id=` or `No candidate matches title+year+type.`
-- Must include `TitleCheck`, `YearCheck: new_year <N> vs candidate <M> -> ...`, `Extracted`, `Existing`, `Missing`, and `Action: ... because ...`.
+TV-SPECIFIC:
+- `has_new_episodes`=true only for explicit new episode labels/ranges.
+- New later range or new season → `update` (delta only).
+- Same range + missing resolutions only → `update`, return only those missing resolutions.
+- Same range + better source → `replace` or `replace_items`.
+- Different seasons are additive; never replace another season.
+- `replace_items` only when no combo/full-season pack is involved.
+- Never treat an aggregated title that summarizes many episodes as proof that every range/resolution is new.
+
+REASON: single line. Start with `Matched candidate id=X.` or `No candidate matches title+year+type.`
+Include: TitleCheck, YearCheck: new <N> vs candidate <M>, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
+
+`updated_website_title` = better stored title ending ` - {SITE_NAME}`, or `false`.
 
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}
 ```
+
+### EXAMPLE — TV update (delta only):
+Existing DB candidate has: S05, Episode 41-48, resolutions: 1080p, 720p.
+Extracted page shows: S05, Episode 41-48, resolutions: 480p, 720p, 1080p.
+720p and 1080p already exist → omit them.
+Correct `data.seasons` output:
+```json
+[{{"season_number":5,"download_items":[{{"type":"partial_combo","label":"Episode 41-48","episode_range":"41-48","resolutions":{{"480p":[{{"u":"https://example.com/dl","l":"Hindi","f":"Show.2024.S05E41-E48.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
+```
+Only the missing 480p is returned. This is correct delta behavior.
 
 """
 
@@ -147,100 +144,64 @@ def get_combined_system_prompt(
     has_dup = bool(db_match_candidates or flixbd_results)
     dup_section = _build_duplicate_section(db_match_candidates, flixbd_results) if has_dup else ""
 
-    return f"""You are an expert web scraping assistant. Detect content type AND extract structured data in one step.
+    return f"""You are a structured data extraction function. Detect content type AND extract data. Return ONLY valid JSON.
 
-**Input format:** The user message is **Markdown** (the article page was converted HTML→Markdown). Use headings, lists, link labels, and link URLs from that Markdown — not raw HTML.
+INPUT: Markdown (HTML→Markdown). Use headings, lists, link labels, and link URLs.
 
-## Step 1: Detect (from the Markdown)
-- TV show signs: Season, Episode, S01, E01, Complete Season, Web Series, episode listings → "tvshow"
-- Otherwise → "movie"
+## STEP 1 — DETECT
+TV signs: Season, Episode, S01, E01, Complete Season, Web Series → "tvshow". Otherwise → "movie".
 
-## Step 2: Extract (schema below)
+## STEP 2 — EXTRACT (rules below, then schema)
 
----
+### CORE RULES (follow strictly, in this order):
+1. Return ONLY valid JSON. No markdown fences, no extra text.
+2. Use only what is explicit in the Markdown. Never guess. Omit missing fields (no null, no empty strings).
+3. Download URLs: copy each URL exactly as written in the Markdown link target. Do not shorten, decode, rebuild, or alter in any way.
+4. Never use watch/stream/player/preview/embed links as download entries — only real download/gateway URLs.
+5. URL must be absolute with complete hostname. Relative → prepend page domain.
+6. Strip blocked site names from TEXT fields only (title, filenames): {_blocked_names_str}. URLs: copy as-is even if they contain a blocked name.
+7. One dual/multi-audio file = ONE entry with `l` as array. Do not split same file into separate language entries.
+8. If same resolution has both dual-audio and single-language files, keep only dual-audio.
+9. Prefer x264 when multiple codec options exist.
+10. Never invent season numbers, episode ranges, or resolution keys not shown on page.
 
-## Resolution Rules (applies to BOTH movie and tvshow):
-{res_note}
----
+### RESOLUTION: {res_note}
 
-## Common Rules:
-- Return ONLY valid JSON. No markdown, no extra text.
-- Use only what is explicit in the Markdown. If missing, omit. Never guess.
-- Omit missing fields (no null, no empty strings).
-- Remove blocked site names from every field: {_blocked_names_str}
-- Prefer x264 encodes when multiple options exist.
-- languages: array (e.g. ["Hindi","English"]). countries: array. cast / cast_info: comma-separated. Omit if absent.
-- Absolute URLs only; relative links → prepend the page domain.
-- `poster_url`: any absolute direct image URL is valid, including third-party hosts/CDNs.
-- Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8/Watch Resulation/Online Stream — omit that resolution.
-- Strict link rule: never use Watch Online, Watch Resolution, watch link, watch generate link, stream, player, preview, embed, or similar watch-only URLs as download entries.
-- Return only absolute direct download URLs. use each URL exactly as written in the Markdown link target (inside parentheses) without any modification.
-- Blocked site name rule applies to TEXT FIELDS ONLY (title, filenames, etc.). Download URLs must be copied exactly as-is — even if the URL contains a blocked domain name.
-- **Download / gateway URLs (strict):** Every movie `download_links.<resolution>[i].u` and TV `resolutions.<resolution>[i].u` value MUST be a valid absolute URL with a **complete hostname**.
+### TITLES:
+- Movie: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
+- TV: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`.
 
-## Title Format:
-- Movie: `Title Year Source Language - {SITE_NAME}` (no Season/EP). Source = WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution).
-- TV: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`. If one page contains multiple seasons, `website_tvshow_title` may summarize them as `Season 01-02 Complete`.
-Example movie: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
-Example TV: `Single Papa 2025 Season 01 EP01-06 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
+### SEO:
+- meta_title: 50-60 chars. meta_description: 140-160 chars, natural CTA. meta_keywords: 10-15 comma-separated.
 
-## SEO (required):
-- meta_title: 50-60 chars, main keyword early, vary structure
-- meta_description: 140-160 chars, natural CTA
-- meta_keywords: 10-15 comma-separated
+### FILE ENTRIES:
+Each resolution value = list of objects: `{{"u":"URL","l":"Hindi","f":"BASENAME"}}`
+Filename pattern (dots not spaces): `Title.Year.<segment>.<lang>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
+- Movie: Title.Year.Lang.Res.Src...
+- TV combo: Title.Year.S01.Complete.Lang.Res...
+- TV partial: Title.Year.S01E01-E08.Lang.Res...
+- TV single: Title.Year.S01E05.Lang.Res...
+- Dual audio → use `Dual.Audio` in filename. Src: NF/AMZN/DSNP/JC/ZEE5 if clear, else omit. Default ext: .mkv.
+- `f` = basename only (no / \\ :). Do not return separate `download_filenames` object.
 
-## File Download Entries (required):
-Movie `download_links` and TV item `resolutions` must use pure resolution keys only: `480p`, `720p`, `1080p`.
-Never invent season numbers, episode ranges, or resolution keys not clearly shown by the page.
-Each resolution value must be a list of per-file objects:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}}]`
-If one downloadable file contains multiple audio tracks, return ONE file object only:
-`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
-Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
-If the same resolution shows both a dual/multi-audio file and a separate single-language file, keep only the dual/multi-audio file.
-Only create separate entries when the page clearly provides separate downloadable files per language.
-Do not return a separate `download_filenames` object for movie or TV when these fields are already inside each file entry.
-`u`=url, `l`=language string or language array, `f`=filename. `f` is basename only — no `/` `\\` `:`.
-Pattern (dots not spaces): `Title.Year.<segment>.<language_or_audio_tag>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
-- Movie segment: (none — just Title.Year.Language.Res...)
-- TV combo: S01.Complete | partial: S01E01-E08 | single: S01E05
-- Use `Dual.Audio` / `Multi.Audio` in filename when one file contains multiple audio tracks.
-- src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 — if clearly in title; else omit extra src token
-- ext: .mkv default; archives → match ext
-Example movie:
-`"download_links":{{"720p":[{{"u":"https://...","l":["Hindi","English"],"f":"War.Machine.2026.Dual.Audio.720p.NF.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}`
+### TV-SPECIFIC EXTRACTION:
+- Download type by scope: whole season→combo_pack, range→partial_combo, one ep→single_episode.
+- Priority: combo present → only combo. Partial covers range → no singles in that range.
+- `episode_range` required in every item. Whole-season combo with no range → `""`.
+- Multi-season: separate season objects sorted by season_number. Only seasons with download blocks.
+- If same logical file repeats (mirrors), emit only one entry.
+- poster_url: any absolute image URL is valid including third-party CDNs.
 
 ---
-
-## IF movie — schema:
+### MOVIE SCHEMA:
 {json.dumps(movie_schema, **_COMPACT)}
 
----
-
-## IF tvshow — schema:
+### TV SCHEMA:
 {json.dumps(tvshow_schema, **_COMPACT)}
-
-### TV Download Item Types (classify by Markdown structure):
-- combo_pack: one section covers the entire season (no per-episode breakdown in that block)
-- partial_combo: section label shows an episode NUMBER RANGE (Ep X-Y). Set episode_range (zero-padded).
-- single_episode: section = exactly one episode. Set episode_range (zero-padded).
-Decision: whole season→combo | range→partial | one ep→single.
-Button count does NOT affect type. Never merge separate episodes into range. Never split range.
-Priority: combo present→only combo. Partial covers range→no singles in that range.
-- `episode_range` is required in every TV item.
-- Use `episode_range=""` only for a true whole-season `combo_pack` with no explicit range.
-Multi-season extraction rules:
-- If the page shows multiple explicit season headings/labels, output multiple objects in `data.seasons` with the real `season_number` for each one.
-- Create a season object only when that season has its own explicit download block/label/heading in the Markdown. Do not infer seasons from title text, metadata, or `total_seasons` alone.
-- Group each link under the nearest matching season block and use the real `season_number` for that block.
-- If only some seasons have downloadable blocks, return only those seasons.
-- Never mix links from different seasons in one season object. Keep `data.seasons` sorted by `season_number`.
-- `total_seasons` may reflect the show's real total only when clearly stated by the page/metadata. Omit if unclear.
-- If the same logical file repeats (same season, item/range, language, quality, and filename), treat it as mirror links for one file and emit only one entry with one preferred URL.
 {dup_section}
-## Output:
+## OUTPUT:
 {{"content_type":"movie" or "tvshow","data":{{...}}{',"duplicate_check":{{...}}' if has_dup else ''}}}
-Return ONLY the JSON. Nothing else."""
+Return ONLY the JSON."""
 
 
 # Backward compat — default: only standard resolutions

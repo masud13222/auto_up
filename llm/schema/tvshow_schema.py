@@ -14,7 +14,7 @@ tvshow_schema = {
     "properties": {
         "website_tvshow_title": {
             "type": "string",
-            "description": f"'Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}'. Combo → 'Season NN Complete'. Strip blocked names.",
+            "description": f"Formatted title ending with ' - {SITE_NAME}'",
         },
         "title": {"type": "string", "description": "Clean show name only"},
         "year": {"type": "integer"},
@@ -24,11 +24,11 @@ tvshow_schema = {
         "plot": {"type": "string"},
         "poster_url": {
             "type": "string",
-            "description": "Absolute poster/image URL; third-party image hosts/CDNs are allowed.",
+            "description": "Absolute poster/image URL",
         },
         "meta_title": {"type": "string", "description": "SEO title 50-60 chars"},
-        "meta_description": {"type": "string", "description": "Meta desc 140-160 chars with CTA"},
-        "meta_keywords": {"type": "string", "description": "10-15 comma-separated keywords"},
+        "meta_description": {"type": "string", "description": "Meta desc 140-160 chars"},
+        "meta_keywords": {"type": "string", "description": "10-15 comma-separated"},
         "total_seasons": {"type": "integer"},
         "cast_info": {"type": "string", "description": "Comma-separated actors"},
         "languages": {"type": "array", "items": {"type": "string"}},
@@ -37,45 +37,33 @@ tvshow_schema = {
         "tmdb_id": {"type": "string"},
         "is_adult": {
             "type": "boolean",
-            "description": "true only for explicit adult (18+/XXX). false for mainstream. If unsure false.",
+            "description": "true only for explicit 18+/XXX content",
         },
         "seasons": {
             "type": "array",
-            "description": (
-                "Process/replace: full extracted seasons. Update/replace_items: STRICT delta only. "
-                "Return only the exact season/item/resolution scope that should change now. "
-                "Never return full season data in update mode."
-            ),
+            "description": "Array of season objects with download items",
             "items": {
                 "type": "object",
                 "properties": {
                     "season_number": {
                         "type": "integer",
-                        "description": "Actual season number from the page block/heading.",
+                        "description": "Season number from page heading",
                     },
                     "download_items": {
                         "type": "array",
-                        "description": (
-                            "For TV update, include only the new/missing episode ranges or missing resolutions. "
-                            "Remove every unchanged old item. If an episode range already exists and only one "
-                            "resolution is missing, return only that missing resolution under that range."
-                        ),
+                        "description": "Download entries for this season",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "type": {
                                     "type": "string",
-                                    "enum": ["single_episode" , "partial_combo", "combo_pack"],
-                                    "description": (
-                                        "single_episode → one episode; episode_range is a single zero-padded number e.g. '01'. "
-                                        "partial_combo → a subset of episodes in the season; episode_range is a zero-padded span e.g. '01-04'."
-                                        "combo_pack → full season bundle (all episodes); if no explicit range exists, set episode_range to empty string ''."
-                                    ),
+                                    "enum": ["single_episode", "partial_combo", "combo_pack"],
+                                    "description": "single_episode=1 ep, partial_combo=range, combo_pack=full season",
                                 },
                                 "label": {"type": "string"},
                                 "episode_range": {
                                     "type": "string",
-                                    "description": "Always include. Use '01' or '01-08' when explicit. For true whole-season combo_pack with no explicit range, use empty string ''.",
+                                    "description": "Zero-padded: '01', '01-08', or '' for whole-season combo",
                                 },
                                 "resolutions": {
                                     "type": "object",
@@ -87,19 +75,14 @@ tvshow_schema = {
                                             "properties": {
                                                 "u": {
                                                     "type": "string",
-                                                     "description": (
-                                                        "Return only the absolute direct download URL; never return watch, stream, player, or preview links. "
-                                                        "Strictly exclude URLs containing patterns such as watch, watch-online, watch-stream, watch-resolution, or similar variants. "
-                                                        "Extract the URL exactly as written in the Markdown link target (the part inside parentheses), without any modification. "
-                                                        "Do not shorten, decode, encode, normalize, rebuild, sanitize, or alter the URL in any way."
-                                                    ),
+                                                    "description": "Absolute download URL exactly as in Markdown",
                                                 },
                                                 "l": {
                                                     "oneOf": [
                                                         {"type": "string"},
                                                         {"type": "array", "items": {"type": "string"}, "minItems": 1},
                                                     ],
-                                                    "description": "Language string for single-audio files, or an array like ['Hindi','English'] when one file is dual/multi audio",
+                                                    "description": "Language string or array for dual/multi audio",
                                                 },
                                                 "f": {"type": "string", "description": "Basename only"},
                                             },
@@ -109,13 +92,7 @@ tvshow_schema = {
                                         },
                                     },
                                     "additionalProperties": False,
-                                    "description": (
-                                        "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list "
-                                        "of compact file objects with u=url, l=language-or-language-array, f=filename. "
-                                        "Update mode is delta-only: omit every already-existing resolution. "
-                                        "If only one resolution under an existing item is missing, include only that "
-                                        "resolution."
-                                    ),
+                                    "description": "Resolution keys (480p, 720p, 1080p, etc.) -> file list",
                                 },
                             },
                             "required": ["type", "label", "episode_range", "resolutions"],
@@ -136,44 +113,28 @@ tvshow_schema = {
 # TV Show System Prompt (standalone — not used in combined)
 # ───────────────────────────────────────────────
 
-TVSHOW_SYSTEM_PROMPT = f"""Extract TV show data from Markdown. Return ONLY valid JSON matching the schema.
+TVSHOW_SYSTEM_PROMPT = f"""You are a TV show data extraction function. Return ONLY valid JSON.
 
-Rules:
-- Use only what is explicit in the Markdown. Never guess or invent values.
-- Omit missing optional fields entirely.
-- rating/year must be numeric.
-- Strip blocked names from all titles: {_blocked_names_str}
+INPUT: Markdown (converted from HTML). Extract from headings, lists, link labels, and URLs.
 
-website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
+RULES (in priority order):
+1. Use only what is explicit in the Markdown. Never guess or invent.
+2. Omit missing optional fields entirely (no null, no empty strings).
+3. Strip blocked names from text fields: {_blocked_names_str}
+4. Download URLs: copy exactly as written in Markdown link target. Never modify.
+5. Never use watch/stream/player/preview/embed links as download entries.
+6. Prefer x264 when multiple codec options exist.
+7. One dual/multi-audio file = ONE entry with language array. Do not split.
+
+TITLE: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
 Combo season → `Season NN Complete`. Source = WEB-DL/NF/AMZN etc (not resolution).
 
-poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
+DOWNLOAD TYPES (priority: combo > partial > single, never duplicate coverage):
+- combo_pack: full season bundle, episode_range=""
+- partial_combo: range of episodes, episode_range="01-08"
+- single_episode: one episode, episode_range="01"
 
-Download type priority (never duplicate coverage): combo_pack > partial_combo > single_episode (never duplicate coverage).
-Classify each download section by scope:
-- Full season bundled → combo_pack
-- Multiple episodes (range) → partial_combo  
-- Exactly one episode → single_episode
-Never emit the same episode in more than one download_item.
-- Always include `episode_range` in every download_item.
-- For a true whole-season combo with no explicit range, set `episode_range` to empty string `""`.
-
-Never invent a season number, episode range, or resolution key that is not clearly shown by the page.
-Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
-
-Example multi-season shape:
-`"seasons":[{{"season_number":1,"download_items":[...] }},{{"season_number":2,"download_items":[...]}}]`
-
-Each `resolutions` value must be a list like:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"BASENAME_ONLY"}}]`
-If one downloadable file contains multiple audio tracks, return ONE file object only:
-`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.S01E05.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
-Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
-Only create separate entries when the page clearly provides separate downloadable files per language.
-Do not return a separate `download_filenames` object.
-- combo: `Title.Year.Hindi.S01.Complete.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
-- partial: `Title.Year.Hindi.S01E01-E08.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
-- single: `Title.Year.Hindi.S01E05.Res.Src.WEB-DL.x264.{SITE_NAME}.mkv`
-Src: NF/AMZN/DSNP/JC/ZEE5 from title, else omit. Archives → match ext. Default .mkv.
+FILE ENTRY: `{{"u":"URL","l":"Hindi","f":"Title.Year.S01E05.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}`
+Dual audio: `{{"u":"URL","l":["Hindi","English"],"f":"Title.Year.S01.Complete.Dual.Audio.720p.{SITE_NAME}.mkv"}}`
 
 Schema: {json.dumps(tvshow_schema, **_COMPACT)}"""

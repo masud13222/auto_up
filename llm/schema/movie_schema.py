@@ -14,7 +14,7 @@ movie_schema = {
     "properties": {
         "website_movie_title": {
             "type": "string",
-            "description": f"'Title Year Source Language - {SITE_NAME}'. Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS (not resolution). Strip blocked names.",
+            "description": f"Formatted title ending with ' - {SITE_NAME}'",
         },
         "title": {"type": "string", "description": "Clean movie name only (no year/quality/language)"},
         "year": {"type": "integer"},
@@ -24,11 +24,11 @@ movie_schema = {
         "plot": {"type": "string"},
         "poster_url": {
             "type": "string",
-            "description": "Absolute poster/image URL; third-party image hosts/CDNs are allowed.",
+            "description": "Absolute poster/image URL",
         },
         "meta_title": {"type": "string", "description": "SEO title 50-60 chars"},
-        "meta_description": {"type": "string", "description": "Meta desc 140-160 chars with CTA"},
-        "meta_keywords": {"type": "string", "description": "10-15 comma-separated keywords"},
+        "meta_description": {"type": "string", "description": "Meta desc 140-160 chars"},
+        "meta_keywords": {"type": "string", "description": "10-15 comma-separated"},
         "download_links": {
             "type": "object",
             "patternProperties": {
@@ -39,19 +39,14 @@ movie_schema = {
                     "properties": {
                         "u": {
                             "type": "string",
-                            "description": (
-                                "Return only the absolute direct download URL; never return watch, stream, player, or preview links. "
-                                "Strictly exclude URLs containing patterns such as watch, watch-online, watch-stream, watch-resolution, or similar variants. "
-                                "Extract the URL exactly as written in the Markdown link target (the part inside parentheses), without any modification. "
-                                "Do not shorten, decode, encode, normalize, rebuild, sanitize, or alter the URL in any way."
-                            ),
+                            "description": "Absolute download URL exactly as in Markdown",
                         },
                         "l": {
                             "oneOf": [
                                 {"type": "string"},
                                 {"type": "array", "items": {"type": "string"}, "minItems": 1},
                             ],
-                            "description": "Language string for single-audio files, or an array like ['Hindi','English'] when one file is dual/multi audio",
+                            "description": "Language string or array for dual/multi audio",
                         },
                         "f": {"type": "string", "description": "Basename only"},
                     },
@@ -61,11 +56,7 @@ movie_schema = {
                 },
             },
             "additionalProperties": False,
-            "description": (
-                "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact "
-                "file objects with u=url, l=language-or-language-array, f=filename. If duplicate_check.action "
-                "is update, include only the missing/new movie files that should be downloaded now."
-            ),
+            "description": "Resolution keys (480p, 720p, 1080p, etc.) -> file list",
         },
         "cast": {"type": "string", "description": "Comma-separated actors"},
         "languages": {"type": "array", "items": {"type": "string"}},
@@ -74,7 +65,7 @@ movie_schema = {
         "tmdb_id": {"type": "string"},
         "is_adult": {
             "type": "boolean",
-            "description": "true if Tagalog in title (any case) OR explicit adult content (18+/XXX/erotic/hot/Adults only). false otherwise.",
+            "description": "true if Tagalog in title OR explicit adult (18+/XXX/erotic). false otherwise.",
         },
     },
     "required": ["website_movie_title", "title", "year", "is_adult", "download_links"],
@@ -83,32 +74,22 @@ movie_schema = {
 
 
 # Standalone movie prompt — used only when NOT calling combined.
-# Combined prompt (get_combined_system_prompt) is the production path.
-MOVIE_SYSTEM_PROMPT = f"""Extract movie info from Markdown. Return ONLY valid JSON.
+MOVIE_SYSTEM_PROMPT = f"""You are a movie data extraction function. Return ONLY valid JSON.
 
-Rules:
-- Use only what is explicit in the Markdown. If missing, omit. Never guess.
-- Omit missing fields (no null/empty).
-- rating/year must be numeric.
-- `title` = clean movie name only (no year/quality/language).
-- Strip blocked names: {_blocked_names_str}
+INPUT: Markdown (converted from HTML). Extract from headings, lists, link labels, and URLs.
 
-website_movie_title: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
-is_adult: true if Tagalog in title/heading (any case). Else true only if explicit adult indicators found in title OR description OR genres (18+/XXX/erotic/hot/Adults only). false for mainstream.
+RULES (in priority order):
+1. Use only what is explicit in the Markdown. Never guess or invent.
+2. Omit missing optional fields entirely (no null, no empty strings).
+3. Strip blocked names from text fields: {_blocked_names_str}
+4. Download URLs: copy exactly as written in Markdown link target. Never modify.
+5. Never use watch/stream/player/preview/embed links as download entries.
+6. Prefer x264 when multiple codec options exist.
+7. One dual/multi-audio file = ONE entry with language array. Do not split.
 
-SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars natural CTA. meta_keywords 10-15 relevant.
-poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
+TITLE: `Title Year Source Language - {SITE_NAME}` (Source = WEB-DL/CAMRip/HDRip/BluRay, not resolution).
 
-download_links: keys must be pure resolutions only, for example `480p`, `720p`, `1080p`.
-Never invent a resolution key that is not clearly shown by the page.
-Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
-Each resolution value must be a list like:
-`[{{"u":"ABSOLUTE_URL","l":"Hindi","f":"Title.Year.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
-If one downloadable file contains multiple audio tracks, return ONE file object only:
-`[{{"u":"ABSOLUTE_URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]`
-Do not split one dual/multi-audio file into separate Hindi/English entries when the URL/file is the same.
-Only create separate entries when the page clearly provides separate downloadable files per language.
-`u`=url, `l`=language string or language array, `f`=filename basename only (no / \\ :). Do not return a separate `download_filenames` object.
-Src: NF(Netflix) / AMZN(Amazon) / DSNP(Hotstar) / JC(Jio) / ZEE5 / else omit extra src. Ext .mkv default.
+FILE ENTRY: `{{"u":"URL","l":"Hindi","f":"Title.Year.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}`
+Dual audio: `{{"u":"URL","l":["Hindi","English"],"f":"Title.Year.Dual.Audio.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}`
 
 Schema: {json.dumps(movie_schema, **_COMPACT)}"""
