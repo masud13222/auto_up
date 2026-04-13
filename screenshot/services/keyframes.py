@@ -3,13 +3,12 @@ Extract N JPEG screenshots from a video (random times in the middle of the timel
 
 Practices aligned with FFmpeg / community guidance:
 
-- **Hybrid seek** (fast + accurate): ``-ss T1 -i input -ss T2`` with ``T2 = t - T1`` and
-  ``T1`` a few seconds before ``t`` jumps near a keyframe, then decodes only a short span
-  to the exact frame — same accuracy as ``-i``-then-``-ss`` on long files, much faster
-  (widely recommended on Stack Overflow / encoding guides; FFmpeg wiki on seeking is the
-  conceptual reference).
-- **``-ss`` before ``-i`` alone** is fast; **after ``-i``** is slow but robust when hybrid
-  or fast seek fails (e.g. some HEVC/MKV edge cases on Reddit / Super User).
+- **Hybrid seek**: ``-ss T1 -noaccurate_seek -i input -ss T2`` with ``T2 = t - T1`` and
+  ``T1`` a few seconds before ``t``. ``-noaccurate_seek`` keeps the first jump on a **nearby
+  keyframe** (fast); we never use **decode-to-exact-timestamp** seeks (``-i`` then ``-ss``) —
+  screenshots do not need the mathematically exact frame.
+- **Fast seek**: ``-ss t -noaccurate_seek -i`` — same keyframe-near behaviour when hybrid is
+  not used (e.g. very early ``t``).
 - **``-fflags +genpts``** helps missing/broken timestamps (common HEVC/mkv symptom).
 - **``-nostdin``** avoids blocking on stdin when run under subprocess (FFmpeg docs).
 - **``format=yuv420p``** in ``-vf`` before mjpeg avoids “non full-range YUV” encoder errors.
@@ -261,7 +260,7 @@ def _lead(hwaccel: str | None, sw_threads: bool) -> list[str]:
     return low_priority_cmd(cmd)
 
 
-SeekMode = Literal["hybrid", "fast", "accurate"]
+SeekMode = Literal["hybrid", "fast"]
 
 
 def _seek_input_args(
@@ -271,12 +270,18 @@ def _seek_input_args(
     hybrid: tuple[float, float] | None,
 ) -> list[str]:
     if mode == "fast":
-        return ["-ss", f"{t_sec:.3f}", "-i", video_path]
-    if mode == "accurate":
-        return ["-i", video_path, "-ss", f"{t_sec:.3f}"]
+        return ["-ss", f"{t_sec:.3f}", "-noaccurate_seek", "-i", video_path]
     if mode == "hybrid" and hybrid is not None:
         t_fast, t_rem = hybrid
-        return ["-ss", f"{t_fast:.3f}", "-i", video_path, "-ss", f"{t_rem:.3f}"]
+        return [
+            "-ss",
+            f"{t_fast:.3f}",
+            "-noaccurate_seek",
+            "-i",
+            video_path,
+            "-ss",
+            f"{t_rem:.3f}",
+        ]
     raise ValueError(f"hybrid mode requires pair, got {hybrid!r}")
 
 
@@ -381,10 +386,11 @@ def _run_ffmpeg_png_fallback(
 
 
 def _jpeg_seek_modes(duration: float, t_sec: float) -> list[SeekMode]:
+    """Keyframe-near seeks only: hybrid (preferred) then plain fast jump."""
     modes: list[SeekMode] = []
     if _hybrid_seek_pair(t_sec, duration) is not None:
         modes.append("hybrid")
-    modes.extend(["fast", "accurate"])
+    modes.append("fast")
     return modes
 
 
