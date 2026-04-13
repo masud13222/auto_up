@@ -1,4 +1,7 @@
+from django.core.exceptions import ValidationError
 from django.db import models
+
+from auto_up.url_match import canonical_skip_url
 
 
 class ScrapeRun(models.Model):
@@ -16,6 +19,10 @@ class ScrapeRun(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
     total_scraped = models.PositiveIntegerField(default=0, help_text="Total entries found on homepage")
     url_skipped = models.PositiveIntegerField(default=0, help_text="Skipped because URL already in MediaTask")
+    skip_list_skipped = models.PositiveIntegerField(
+        default=0,
+        help_text="Skipped because URL is in the manual auto-up skip list",
+    )
     daily_limit_skipped = models.PositiveIntegerField(default=0, help_text="Skipped because already processed today")
     llm_approved = models.PositiveIntegerField(default=0, help_text="Approved by LLM for processing")
     llm_skipped = models.PositiveIntegerField(default=0, help_text="Skipped by LLM decision")
@@ -49,6 +56,7 @@ class ScrapeItem(models.Model):
         ('skip_llm', 'Skipped — LLM decision'),
         ('skip_race', 'Skipped — Race condition'),
         ('skip_no_title', 'Skipped — No title extracted'),
+        ('skip_skip_list', 'Skipped — URL in manual skip list'),
     ]
 
     run = models.ForeignKey(ScrapeRun, on_delete=models.CASCADE, related_name='items')
@@ -72,3 +80,44 @@ class ScrapeItem(models.Model):
 
     def __str__(self):
         return f"[{self.action}] {self.raw_title[:60]}"
+
+
+class AutoUpSkipUrl(models.Model):
+    """
+    URLs the auto-scrape pipeline must never queue (manual blocklist).
+    Compared using a canonical form so minor formatting differences still match.
+    """
+
+    url = models.URLField(max_length=500, help_text="Full page URL to skip during auto-up scrapes")
+    normalized_url = models.CharField(
+        max_length=600,
+        unique=True,
+        db_index=True,
+        editable=False,
+        help_text="Canonical form used for matching (set automatically)",
+    )
+    note = models.CharField(max_length=300, blank=True, default="", help_text="Optional note (why this URL is skipped)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Auto-up skip URL"
+        verbose_name_plural = "Auto-up skip URLs"
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return self.normalized_url[:80] or str(self.pk)
+
+    def clean(self):
+        super().clean()
+        # Set early so ``validate_unique`` (full_clean) sees the real key, not an empty string.
+        self.normalized_url = canonical_skip_url(self.url or "")
+        if not self.normalized_url:
+            raise ValidationError({"url": "Enter a valid URL."})
+
+    def save(self, *args, **kwargs):
+        self.normalized_url = canonical_skip_url(self.url or "")
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = list(set(update_fields) | {"normalized_url"})
+        super().save(*args, **kwargs)

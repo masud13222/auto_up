@@ -13,6 +13,7 @@ urlpatterns = [
     path('', views.dashboard, name='dashboard'),
     path('process/', views.process, name='process'),
     path('queue/', views.queue, name='queue'),
+    path('auto-up/skip-urls/', views.auto_up_skip_urls, name='auto_up_skip_urls'),
     path('settings/', views.settings_view, name='settings'),
     path('google-accounts/', views.google_accounts, name='google_accounts'),
     path('llm/', views.llm_settings, name='llm_settings'),

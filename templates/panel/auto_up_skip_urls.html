@@ -1,0 +1,140 @@
+{% extends 'panel/base.html' %}
+{% block title %}Auto-up skip URLs — FlixBD{% endblock %}
+{% block page_title %}Auto-up skip URLs{% endblock %}
+{% block nav_auto_up_skip %}active{% endblock %}
+
+{% block content %}
+<div class="space-y-5 max-w-5xl">
+    <p class="text-sm text-[#666] leading-relaxed">
+        URLs listed here are ignored by the scheduled auto-up scrape: matching homepage links are skipped before LLM filtering, so they are never queued automatically. You can still process them manually from Process Movie.
+    </p>
+
+    {% if messages %}
+    <div class="space-y-1.5">
+        {% for message in messages %}
+        <div class="text-sm px-3 py-2 rounded-lg border {% if 'error' in message.tags %}border-red-500/30 text-red-300 bg-red-500/5{% elif 'success' in message.tags %}border-emerald-500/30 text-emerald-300 bg-emerald-500/5{% elif 'warning' in message.tags %}border-amber-500/30 text-amber-200 bg-amber-500/5{% else %}border-[#333] text-[#bbb] bg-[#161616]{% endif %}">
+            {{ message|escape }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Search -->
+    <form method="get" action="{% url 'panel:auto_up_skip_urls' %}" class="flex flex-col sm:flex-row gap-2 sm:items-end">
+        <div class="flex-1 min-w-0">
+            <label for="q" class="block text-[10px] font-semibold uppercase tracking-wider text-[#555] mb-1">Search</label>
+            <input type="search" id="q" name="q" value="{{ search_q|escape }}" placeholder="URL or note..."
+                   class="w-full px-3 py-2 rounded-lg bg-[#161616] border border-[#2a2a2a] text-sm text-[#e5e5e5] placeholder:text-[#444]">
+        </div>
+        <button type="submit" class="btn-primary px-4 py-2 rounded-lg text-sm shrink-0">Search</button>
+        {% if search_q %}
+        <a href="{% url 'panel:auto_up_skip_urls' %}" class="px-4 py-2 rounded-lg text-sm text-[#666] hover:text-white border border-[#2a2a2a] shrink-0">Clear</a>
+        {% endif %}
+    </form>
+
+    <!-- Add / Edit -->
+    <div class="card p-4 sm:p-5 space-y-4">
+        {% if edit_obj %}
+        <h3 class="text-xs font-semibold text-[#888] uppercase tracking-wider">Edit entry</h3>
+        <form method="post" action="{% url 'panel:auto_up_skip_urls' %}" class="space-y-3">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="edit">
+            <input type="hidden" name="pk" value="{{ edit_obj.pk }}">
+            <input type="hidden" name="_q" value="{{ search_q|escape }}">
+            <input type="hidden" name="_page" value="{{ page_obj.number|default:1 }}">
+            <div>
+                <label for="edit-url" class="block text-[10px] font-semibold uppercase tracking-wider text-[#555] mb-1">URL</label>
+                <input type="url" id="edit-url" name="url" required value="{{ edit_obj.url|escape }}"
+                       class="w-full px-3 py-2 rounded-lg bg-[#0e0e0e] border border-[#2a2a2a] text-sm text-[#e5e5e5] font-mono">
+            </div>
+            <div>
+                <label for="edit-note" class="block text-[10px] font-semibold uppercase tracking-wider text-[#555] mb-1">Note (optional)</label>
+                <input type="text" id="edit-note" name="note" maxlength="300" value="{{ edit_obj.note|escape }}"
+                       class="w-full px-3 py-2 rounded-lg bg-[#0e0e0e] border border-[#2a2a2a] text-sm text-[#e5e5e5]">
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button type="submit" class="btn-primary px-4 py-2 rounded-lg text-sm">Save changes</button>
+                <a href="{% url 'panel:auto_up_skip_urls' %}{% if search_q or page_obj.number > 1 %}?{% if search_q %}q={{ search_q|urlencode }}{% endif %}{% if search_q and page_obj.number > 1 %}&amp;{% endif %}{% if page_obj.number > 1 %}page={{ page_obj.number }}{% endif %}{% endif %}" class="px-4 py-2 rounded-lg text-sm text-[#888] hover:text-white border border-[#2a2a2a]">Cancel</a>
+            </div>
+        </form>
+        {% else %}
+        <h3 class="text-xs font-semibold text-[#888] uppercase tracking-wider">Add URL</h3>
+        <form method="post" action="{% url 'panel:auto_up_skip_urls' %}" class="space-y-3">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add">
+            <input type="hidden" name="_q" value="{{ search_q|escape }}">
+            <input type="hidden" name="_page" value="{{ page_obj.number|default:1 }}">
+            <div>
+                <label for="add-url" class="block text-[10px] font-semibold uppercase tracking-wider text-[#555] mb-1">URL</label>
+                <input type="url" id="add-url" name="url" required value=""
+                       class="w-full px-3 py-2 rounded-lg bg-[#0e0e0e] border border-[#2a2a2a] text-sm text-[#e5e5e5] font-mono"
+                       placeholder="https://example.com/page/">
+            </div>
+            <div>
+                <label for="add-note" class="block text-[10px] font-semibold uppercase tracking-wider text-[#555] mb-1">Note (optional)</label>
+                <input type="text" id="add-note" name="note" maxlength="300" value=""
+                       class="w-full px-3 py-2 rounded-lg bg-[#0e0e0e] border border-[#2a2a2a] text-sm text-[#e5e5e5]">
+            </div>
+            <button type="submit" class="btn-primary px-4 py-2 rounded-lg text-sm">Add to skip list</button>
+        </form>
+        {% endif %}
+    </div>
+
+    <!-- Table -->
+    <div class="card overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-[#222] text-left">
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider">URL</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider hidden md:table-cell">Note</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider hidden lg:table-cell">Canonical</th>
+                    <th class="px-4 py-3 text-[10px] font-semibold text-[#444] uppercase tracking-wider hidden sm:table-cell">Updated</th>
+                    <th class="px-4 py-3 w-28"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-[#222]">
+                {% for row in page_obj %}
+                <tr class="hover:bg-[#1a1a1a] transition-colors {% if edit_obj and edit_obj.pk == row.pk %}bg-[#1a1a1a]/80{% endif %}">
+                    <td class="px-4 py-3">
+                        <p class="text-[#ccc] font-medium break-all text-xs font-mono">{{ row.url }}</p>
+                    </td>
+                    <td class="px-4 py-3 hidden md:table-cell text-[#888] text-xs max-w-[200px]">{{ row.note|default:"—" }}</td>
+                    <td class="px-4 py-3 hidden lg:table-cell text-[#555] text-[11px] font-mono break-all max-w-xs">{{ row.normalized_url }}</td>
+                    <td class="px-4 py-3 hidden sm:table-cell text-[11px] text-[#555]">{{ row.updated_at|date:"Y-m-d H:i" }}</td>
+                    <td class="px-4 py-3">
+                        <div class="flex gap-1 flex-wrap">
+                            <a href="{% url 'panel:auto_up_skip_urls' %}?edit={{ row.pk }}{% if search_q %}&q={{ search_q|urlencode }}{% endif %}{% if page_obj.number > 1 %}&page={{ page_obj.number }}{% endif %}"
+                               class="text-[#444] hover:text-[#f97316] text-xs font-medium px-1.5 py-1">Edit</a>
+                            <form method="post" action="{% url 'panel:auto_up_skip_urls' %}" class="inline" onsubmit="return confirm('Remove this URL from the skip list?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="pk" value="{{ row.pk }}">
+                                <input type="hidden" name="_q" value="{{ search_q|escape }}">
+                                <input type="hidden" name="_page" value="{{ page_obj.number }}">
+                                <button type="submit" class="text-red-500/60 hover:text-red-400 text-xs font-medium px-1.5 py-1">Delete</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="px-4 py-12 text-center text-[#444] text-sm">No skip URLs yet. Add one above.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if page_obj.has_other_pages %}
+        <div class="px-4 py-3 border-t border-[#222] flex justify-between items-center text-xs text-[#555]">
+            <span>Page {{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+            <div class="flex gap-3">
+                {% if page_obj.has_previous %}
+                <a href="?page={{ page_obj.previous_page_number }}{% if search_q %}&q={{ search_q|urlencode }}{% endif %}{% if edit_obj %}&edit={{ edit_obj.pk }}{% endif %}" class="hover:text-white">Previous</a>
+                {% endif %}
+                {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}{% if search_q %}&q={{ search_q|urlencode }}{% endif %}{% if edit_obj %}&edit={{ edit_obj.pk }}{% endif %}" class="hover:text-white">Next</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

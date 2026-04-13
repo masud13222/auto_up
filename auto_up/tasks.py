@@ -10,6 +10,7 @@ Main entry point: auto_scrape_and_queue()
 - Sends everything to LLM for filtering
 - Queues approved items via process_media_task
 - Logs everything to ScrapeRun + ScrapeItem models
+- Skips URLs listed in ``AutoUpSkipUrl`` (manual blocklist) before LLM and again before queue
 - Auto-cleans logs older than LOG_RETENTION_DAYS (see below)
 """
 
@@ -23,7 +24,8 @@ from django_q.tasks import async_task
 from auto_up.scraper import CineFreakScraper
 from auto_up.db_search import search_existing
 from auto_up.llm_filter import filter_items_with_llm
-from auto_up.models import ScrapeRun, ScrapeItem
+from auto_up.models import AutoUpSkipUrl, ScrapeItem, ScrapeRun
+from auto_up.url_match import canonical_skip_url
 from constant import (
     AUTO_UP_FLIXBD_LLM_MAX_RESULTS,
     FLIXBD_FUZZY_THRESHOLD,
@@ -162,11 +164,11 @@ def auto_scrape_and_queue() -> str:
     1. Cleanup old logs (older than ``LOG_RETENTION_DAYS``)
     2. Scrape CineFreak homepage
     3. Daily limit check: max 2 process per URL per day (skipped 22:00–01:00 Asia/Dhaka)
-    4. For each remaining entry: extract clean name + year
-    5. Search DB for existing matches (fuzzy matching)
-    6. Send all items + DB results to LLM for filtering
-    7. Queue approved items for processing
-    8. Log everything to ScrapeRun + ScrapeItem
+    4. Skip URLs in the manual ``AutoUpSkipUrl`` list (canonical match)
+    5. For each remaining entry: extract clean name + year
+    6. Search DB for existing matches (fuzzy matching)
+    7. Send all items + DB results to LLM for filtering
+    8. Queue approved items (skip list re-checked); log to ScrapeRun + ScrapeItem
 
     Returns:
         Summary string of what happened.
@@ -231,12 +233,43 @@ def auto_scrape_and_queue() -> str:
             _finish_run(scrape_run, run_start, "All entries hit daily limit")
             return "All entries hit daily process limit."
 
+        # ── Step 2a: Manual skip list (URLs never auto-queued) ──
+        skip_normalized = frozenset(
+            AutoUpSkipUrl.objects.exclude(normalized_url="").values_list("normalized_url", flat=True)
+        )
+        skip_list_filtered = []
+        skip_list_skipped = 0
+
+        for entry in daily_filtered:
+            canon = canonical_skip_url(entry["url"])
+            if canon and canon in skip_normalized:
+                skip_list_skipped += 1
+                ScrapeItem.objects.create(
+                    run=scrape_run,
+                    raw_title=entry["raw_title"],
+                    url=entry["url"],
+                    action="skip_skip_list",
+                    reason="URL is in the manual auto-up skip list",
+                )
+                logger.debug("Skip list: %s", entry["raw_title"][:50])
+                continue
+            skip_list_filtered.append(entry)
+
+        scrape_run.skip_list_skipped = skip_list_skipped
+
+        if skip_list_skipped:
+            logger.info("Skipped %s entries (manual auto-up skip list)", skip_list_skipped)
+
+        if not skip_list_filtered:
+            _finish_run(scrape_run, run_start, "All entries matched the manual skip list")
+            return "All entries are in the manual skip list."
+
         # ── Step 2b: Skip URLs currently pending/processing in MediaTask DB ──
         # This prevents wasting LLM tokens on URLs already queued/processing
         url_filtered = []
         url_exists_skipped = 0
 
-        for entry in daily_filtered:
+        for entry in skip_list_filtered:
             # Check both primary url and extra_urls for this entry
             url_val = entry["url"]
             already_queued = (
@@ -257,6 +290,7 @@ def auto_scrape_and_queue() -> str:
                 continue
             url_filtered.append(entry)
 
+        scrape_run.url_skipped = url_exists_skipped
 
         if url_exists_skipped:
             logger.info(f"Skipped {url_exists_skipped} entries (URL already in DB)")
@@ -336,12 +370,27 @@ def auto_scrape_and_queue() -> str:
             return "LLM skipped everything."
 
         # ── Step 5: Queue approved items ──
+        skip_normalized = frozenset(
+            AutoUpSkipUrl.objects.exclude(normalized_url="").values_list("normalized_url", flat=True)
+        )
         queued_count = 0
 
         for item in to_process:
             url = item["url"]
             raw_title = item.get("raw_title", url[:50])
             priority = item.get("priority", "normal")
+
+            late_canon = canonical_skip_url(url)
+            if late_canon and late_canon in skip_normalized:
+                logger.info("Skip list (late check): not queueing %s", url[:80])
+                ScrapeItem.objects.create(
+                    run=scrape_run,
+                    raw_title=raw_title,
+                    url=url,
+                    action="skip_skip_list",
+                    reason="URL was added to the manual skip list before queueing",
+                )
+                continue
 
             # Race condition guard — only block if pending/processing
             # Check both primary url and extra_urls
@@ -447,6 +496,8 @@ def _finish_run(scrape_run: ScrapeRun, run_start, message: str = None) -> str:
     summary = (
         f"Auto-scrape #{scrape_run.pk} done in {scrape_run.duration_seconds:.1f}s: "
         f"scraped={scrape_run.total_scraped}, "
+        f"skip_list_skip={scrape_run.skip_list_skipped}, "
+        f"url_exists_skip={scrape_run.url_skipped}, "
         f"daily_limit_skip={scrape_run.daily_limit_skipped}, "
         f"llm_approved={scrape_run.llm_approved}, "
         f"llm_skip={scrape_run.llm_skipped}, "

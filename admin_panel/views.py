@@ -1,6 +1,10 @@
 from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import logout
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
+from django.db.models import Q
 from django.http import JsonResponse
 from django.core.paginator import Paginator
 from django.urls import reverse
@@ -403,3 +407,123 @@ def llm_chat_api(request):
 def logout_view(request):
     logout(request)
     return redirect('panel:login')
+
+
+def _redirect_auto_up_skip_list(request, clear_edit: bool = False, force_edit_pk: int | None = None):
+    from urllib.parse import urlencode
+
+    if request.method == 'POST':
+        q = (request.POST.get('_q') or '').strip()
+        page = (request.POST.get('_page') or '').strip()
+        edit = '' if clear_edit else (request.POST.get('_edit') or '').strip()
+    else:
+        q = (request.GET.get('q') or '').strip()
+        page = (request.GET.get('page') or '').strip()
+        edit = (request.GET.get('edit') or '').strip()
+
+    params = {}
+    if q:
+        params['q'] = q
+    if page.isdigit() and int(page) > 1:
+        params['page'] = page
+    if force_edit_pk is not None:
+        params['edit'] = str(force_edit_pk)
+    elif not clear_edit and edit.isdigit():
+        params['edit'] = edit
+
+    base = reverse('panel:auto_up_skip_urls')
+    if params:
+        return redirect(f'{base}?{urlencode(params)}')
+    return redirect('panel:auto_up_skip_urls')
+
+
+@login_required
+def auto_up_skip_urls(request):
+    from auto_up.models import AutoUpSkipUrl
+
+    if request.method == 'POST':
+        action = (request.POST.get('action') or '').strip().lower()
+
+        if action == 'add':
+            url = (request.POST.get('url') or '').strip()
+            note = (request.POST.get('note') or '').strip()[:300]
+            row = AutoUpSkipUrl(url=url, note=note)
+            try:
+                row.full_clean()
+                row.save()
+                messages.success(request, 'Skip URL added.')
+            except ValidationError as exc:
+                if hasattr(exc, 'error_dict'):
+                    for errs in exc.error_dict.values():
+                        for err in errs:
+                            messages.error(request, str(err))
+                else:
+                    for msg in getattr(exc, 'messages', []) or [str(exc)]:
+                        messages.error(request, str(msg))
+            except IntegrityError:
+                messages.error(request, 'This URL is already in the skip list (same canonical URL).')
+            return _redirect_auto_up_skip_list(request, clear_edit=True)
+
+        if action == 'edit':
+            pk = _coerce_int(request.POST.get('pk'))
+            if pk is None:
+                messages.error(request, 'Invalid record.')
+                return _redirect_auto_up_skip_list(request, clear_edit=True)
+            row = get_object_or_404(AutoUpSkipUrl, pk=pk)
+            url = (request.POST.get('url') or '').strip()
+            note = (request.POST.get('note') or '').strip()[:300]
+            row.url = url
+            row.note = note
+            try:
+                row.full_clean()
+                row.save()
+                messages.success(request, 'Skip URL updated.')
+            except ValidationError as exc:
+                if hasattr(exc, 'error_dict'):
+                    for errs in exc.error_dict.values():
+                        for err in errs:
+                            messages.error(request, str(err))
+                else:
+                    for msg in getattr(exc, 'messages', []) or [str(exc)]:
+                        messages.error(request, str(msg))
+                return _redirect_auto_up_skip_list(request, force_edit_pk=pk)
+            except IntegrityError:
+                messages.error(request, 'Another row already uses this canonical URL.')
+                return _redirect_auto_up_skip_list(request, force_edit_pk=pk)
+            return _redirect_auto_up_skip_list(request, clear_edit=True)
+
+        if action == 'delete':
+            pk = _coerce_int(request.POST.get('pk'))
+            if pk is not None:
+                deleted, _ = AutoUpSkipUrl.objects.filter(pk=pk).delete()
+                if deleted:
+                    messages.success(request, 'Skip URL removed.')
+                else:
+                    messages.warning(request, 'That entry was not found (it may have been deleted already).')
+            else:
+                messages.error(request, 'Invalid delete request.')
+            return _redirect_auto_up_skip_list(request, clear_edit=True)
+
+        return _redirect_auto_up_skip_list(request, clear_edit=True)
+
+    qs = AutoUpSkipUrl.objects.all()
+    q = (request.GET.get('q') or '').strip()
+    if q:
+        qs = qs.filter(Q(url__icontains=q) | Q(normalized_url__icontains=q) | Q(note__icontains=q))
+    qs = qs.order_by('-updated_at')
+
+    paginator = Paginator(qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page', 1))
+
+    edit_pk = _coerce_int(request.GET.get('edit'))
+    edit_obj = AutoUpSkipUrl.objects.filter(pk=edit_pk).first() if edit_pk else None
+
+    return render(
+        request,
+        'panel/auto_up_skip_urls.html',
+        {
+            'page_obj': page_obj,
+            'search_q': q,
+            'edit_obj': edit_obj,
+        },
+    )
