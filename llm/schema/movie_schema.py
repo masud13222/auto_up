@@ -62,7 +62,7 @@ movie_schema = {
         "tmdb_id": {"type": "string"},
         "is_adult": {
             "type": "boolean",
-            "description": "true if Tagalog in title (any case) OR explicit adult (18+/XXX). false otherwise.",
+            "description": "true if Tagalog in title (any case) OR explicit adult (18+/XXX/erotic). false otherwise.",
         },
     },
     "required": ["website_movie_title", "title", "year", "is_adult", "download_links"],

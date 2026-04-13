@@ -21,6 +21,7 @@ from llm.schema.blocked_names import (
     TARGET_SITE_ROW_ID_JSON_KEY,
 )
 from upload.utils.resolution_policy import apply_upload_resolution_policy
+from upload.utils.force_is_adult_source_domain import apply_force_is_adult_from_source_urls
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ def get_content_info(
         db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
     )
+    apply_force_is_adult_from_source_urls(data, [url])
 
     # Save immediately after LLM extraction (before URL resolution)
     if on_progress:

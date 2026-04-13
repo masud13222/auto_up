@@ -638,6 +638,10 @@ def process_media_task(task_pk: int) -> str:
 
         data = normalize_result_download_languages(data)
 
+        from upload.utils.force_is_adult_source_domain import apply_force_is_adult_from_source_urls
+
+        apply_force_is_adult_from_source_urls(data, media_task.all_urls())
+
         from upload.service.flixbd_api_content import movie_website_title, series_website_title
 
         web_title = (
