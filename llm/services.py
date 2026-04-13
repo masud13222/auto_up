@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 
 from .models import LLMConfig, LLMUsage
@@ -119,6 +120,31 @@ def _chat_completions_assistant_text(response) -> str:
     return str(raw)
 
 
+def _optional_gemini_thinking_config(types_mod) -> object | None:
+    """
+    Only when env sets optional Gemini thinking knobs; otherwise omit (legacy behavior).
+    GEMINI_THINKING_LEVEL: MINIMAL|LOW|... (ThinkingLevel). Takes precedence over budget if both set.
+    GEMINI_THINKING_BUDGET: integer string (e.g. 0, -1). Invalid values are skipped with a warning.
+    """
+    level_raw = os.environ.get("GEMINI_THINKING_LEVEL", "").strip()
+    if level_raw:
+        label = level_raw.upper()
+        tl = getattr(types_mod.ThinkingLevel, label, None)
+        if tl is None:
+            logger.warning("Unknown GEMINI_THINKING_LEVEL=%r; omitting thinking_config.", level_raw)
+            return None
+        return types_mod.ThinkingConfig(thinking_level=tl)
+    budget_raw = os.environ.get("GEMINI_THINKING_BUDGET", "").strip()
+    if not budget_raw:
+        return None
+    try:
+        b = int(budget_raw)
+    except ValueError:
+        logger.warning("Invalid GEMINI_THINKING_BUDGET=%r; omitting thinking_config.", budget_raw)
+        return None
+    return types_mod.ThinkingConfig(thinking_budget=b)
+
+
 def _call_openai(
     config: LLMConfig,
     prompt: str,
@@ -141,6 +167,10 @@ def _call_openai(
     )
     if max_completion_tokens is not None:
         kwargs["max_tokens"] = max_completion_tokens
+    effort = os.environ.get("OPENAI_REASONING_EFFORT", "").strip()
+    if effort:
+        # API expects lowercase literals (none, minimal, low, ...); see OpenAI chat completion params.
+        kwargs["reasoning_effort"] = effort.lower()
     response = client.chat.completions.create(**kwargs)
     return _chat_completions_assistant_text(response), response
 
@@ -175,6 +205,9 @@ def _call_google(
     )
     if max_completion_tokens is not None:
         gen_kwargs["max_output_tokens"] = max_completion_tokens
+    thinking = _optional_gemini_thinking_config(types)
+    if thinking is not None:
+        gen_kwargs["thinking_config"] = thinking
     response = client.models.generate_content(
         model=config.model_name,
         contents=prompt,
