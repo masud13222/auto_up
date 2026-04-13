@@ -55,7 +55,12 @@ tvshow_schema = {
                             "properties": {
                                 "type": {
                                     "type": "string",
-                                    "enum": ["combo_pack", "partial_combo", "single_episode"],
+                                    "enum": ["single_episode" , "partial_combo", "combo_pack"],
+                                    "description": (
+                                        "single_episode → one episode; episode_range is a single zero-padded number e.g. '01'. "
+                                        "partial_combo → a subset of episodes in the season; episode_range is a zero-padded span e.g. '01-04'."
+                                        "combo_pack → full season bundle (all episodes); omit or null episode_range."
+                                    ),
                                 },
                                 "label": {"type": "string"},
                                 "episode_range": {
@@ -107,26 +112,27 @@ tvshow_schema = {
 # TV Show System Prompt (standalone — not used in combined)
 # ───────────────────────────────────────────────
 
-TVSHOW_SYSTEM_PROMPT = f"""Extract TV show data from Markdown. Return ONLY valid JSON.
+TVSHOW_SYSTEM_PROMPT = f"""Extract TV show data from Markdown. Return ONLY valid JSON matching the schema.
 
 Rules:
-- Use only what is explicit in the Markdown. If missing, omit. Never guess.
-- Omit missing fields.
+- Use only what is explicit in the Markdown. Never guess or invent values.
+- Omit missing optional fields entirely.
 - rating/year must be numeric.
-- `title` = clean show name only.
-- Strip blocked names: {_blocked_names_str}
+- Strip blocked names from all titles: {_blocked_names_str}
 
-website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`. Source=WEB-DL/etc (not resolution).
-is_adult: true only for explicit adult (18+/XXX). false for mainstream.
+website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
+Combo season → `Season NN Complete`. Source = WEB-DL/NF/AMZN etc (not resolution).
+is_adult: true only for explicit adult (18+/XXX/erotic). false for mainstream.
 
-SEO: meta_title 50-60 chars. meta_description 140-160 chars CTA. meta_keywords 10-15.
 poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
 
-Download item types (classify by Markdown section structure — headings, labels, episode blocks):
-- combo_pack: heading covers entire season, no episode breakdown
-- partial_combo: heading has episode RANGE (Ep X-Y). Set `episode_range` (zero-padded).
-- single_episode: heading = exactly one episode. Set `episode_range` (zero-padded, e.g. `05`).
-Priority: combo > partial > single (never duplicate coverage).
+Download type priority (never duplicate coverage): combo_pack > partial_combo > single_episode (never duplicate coverage).
+Classify each download section by scope:
+- Full season bundled → combo_pack
+- Multiple episodes (range) → partial_combo  
+- Exactly one episode → single_episode
+Never emit the same episode in more than one download_item.
+
 Never invent a season number, episode range, or resolution key that is not clearly shown by the page.
 Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.
 
