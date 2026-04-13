@@ -40,9 +40,10 @@ movie_schema = {
                         "u": {
                             "type": "string",
                             "description": (
-                                "Absolute download URL only; never Watch Resualtion/watch/stream/player/watch-online URL. "
-                                "Copy the exact original Markdown href. Never shorten, decode, rebuild, sanitize, "
-                                "or alter the original URL or its path/query fragments."
+                                "Return only the absolute direct download URL; never return watch, stream, player, or preview links. "
+                                "Strictly exclude URLs containing patterns such as watch, watch-online, watch-stream, watch-resolution, or similar variants. "
+                                "Extract the URL exactly as written in the Markdown link target (the part inside parentheses), without any modification. "
+                                "Do not shorten, decode, encode, normalize, rebuild, sanitize, or alter the URL in any way."
                             ),
                         },
                         "l": {

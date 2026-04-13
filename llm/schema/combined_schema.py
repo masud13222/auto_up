@@ -163,9 +163,9 @@ def get_combined_system_prompt(
 - languages: array (e.g. ["Hindi","English"]). countries: array. cast / cast_info: comma-separated. Omit if absent.
 - Absolute URLs only; relative links → prepend the page domain.
 - `poster_url`: any absolute direct image URL is valid, including third-party hosts/CDNs.
-- Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8 — omit that resolution.
+- Download URLs only (generate.php gateways, real Download links). Never watch/stream/player/.m3u8/Watch Resulation/Online Stream — omit that resolution.
 - Strict link rule: never use Watch Online, Watch Resolution, watch link, watch generate link, stream, player, preview, embed, or similar watch-only URLs as download entries.
-- Copy every accepted download URL exactly as it appears in the Markdown link target. Do not shorten, sanitize, normalize, rebuild, decode, re-encode, partially copy, or alter its path/query fragments.
+- Return only absolute direct download URLs. use each URL exactly as written in the Markdown link target (inside parentheses) without any modification.
 - Blocked site name rule applies to TEXT FIELDS ONLY (title, filenames, etc.). Download URLs must be copied exactly as-is — even if the URL contains a blocked domain name.
 - **Download / gateway URLs (strict):** Every movie `download_links.<resolution>[i].u` and TV `resolutions.<resolution>[i].u` value MUST be a valid absolute URL with a **complete hostname**.
 
