@@ -239,31 +239,45 @@ def detect_and_extract(
         logger.info(f"Duplicate check: action={dup_result.get('action')}, reason={dup_result.get('reason', '')[:80]}")
 
     # ── Pass 2: Delta filtering for "update" actions ──
-    # Send Pass-1 response + search context to LLM → get back only missing data.
+    # Pass-1 already gave us dup_result. Send data + search context to LLM.
+    # LLM returns: filtered data (only missing downloads) + action ("update" or "skip").
     if isinstance(dup_result, dict) and dup_result.get("action") == "update":
         search_context = {
             "db_match_candidates": db_match_candidates or [],
             "flixbd_results": flixbd_results or [],
-            "update_details": dup_result.get("update_details"),
         }
         logger.info("Pass-2: running delta filter (content_type=%s)", content_type)
-        delta = compute_update_delta(content_type, data, search_context)
-        if delta is not None:
-            is_empty = (
-                (content_type == "movie" and not delta.get("download_links"))
-                or (content_type == "tvshow" and not delta.get("seasons"))
-            )
-            if is_empty:
-                logger.info("Pass-2 delta is empty — nothing to update. Changing action to 'skip'.")
+        pass2 = compute_update_delta(content_type, data, search_context)
+        if pass2 is not None:
+            p2_action = pass2.get("action")
+            p2_data = pass2.get("data")
+
+            p2_reason = pass2.get("reason", "")
+
+            if p2_action == "skip":
+                logger.info("Pass-2 decided: nothing to update → action=skip. reason=%s", p2_reason)
                 dup_result["action"] = "skip"
-            elif content_type == "movie" and "download_links" in delta:
-                data["download_links"] = delta["download_links"]
-                logger.info("Pass-2 applied: movie download_links replaced with delta (%d res).", len(delta["download_links"]))
-            elif content_type == "tvshow" and "seasons" in delta:
-                data["seasons"] = delta["seasons"]
-                logger.info("Pass-2 applied: tvshow seasons replaced with delta (%d seasons).", len(delta["seasons"]))
+                if p2_reason:
+                    dup_result["reason"] = f"[Pass-2] {p2_reason}"
+            elif isinstance(p2_data, dict):
+                is_empty_delta = (
+                    (content_type == "movie" and not p2_data.get("download_links"))
+                    or (content_type == "tvshow" and not p2_data.get("seasons"))
+                )
+                if is_empty_delta:
+                    logger.info("Pass-2 said update but delta is empty → forcing skip. reason=%s", p2_reason)
+                    dup_result["action"] = "skip"
+                    dup_result["reason"] = f"[Pass-2] {p2_reason or 'empty delta'}"
+                elif content_type == "movie" and isinstance(p2_data.get("download_links"), dict):
+                    data["download_links"] = p2_data["download_links"]
+                    logger.info("Pass-2 applied: movie download_links replaced with delta (%d res).", len(p2_data["download_links"]))
+                elif content_type == "tvshow" and isinstance(p2_data.get("seasons"), list):
+                    data["seasons"] = p2_data["seasons"]
+                    logger.info("Pass-2 applied: tvshow seasons replaced with delta (%d seasons).", len(p2_data["seasons"]))
+                else:
+                    logger.warning("Pass-2 returned data but no usable key for content_type=%s. Using full data.", content_type)
             else:
-                logger.warning("Pass-2 returned delta but no usable key for content_type=%s. Using full data.", content_type)
+                logger.warning("Pass-2 returned unexpected structure. Using full data.")
         else:
             logger.warning("Pass-2 delta filter returned None. Falling back to full Pass-1 data.")
 

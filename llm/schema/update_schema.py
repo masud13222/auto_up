@@ -10,63 +10,64 @@ _COMPACT = {"separators": (",", ":")}
 def get_update_system_prompt(content_type: str) -> str:
     """Build the Pass-2 delta-filter system prompt.
 
-    Uses the same movie/tvshow schema as Pass-1 — output structure is identical,
-    but only the missing/new data should be returned.
+    Follows research best practices:
+    - Role first (primacy bias)
+    - Max ~10 core rules
+    - Concrete few-shot examples
+    - Single concern (delta filtering only)
     """
     if content_type == "movie":
         schema_json = json.dumps(movie_schema, **_COMPACT)
-        type_rules = """MOVIE COMPARISON:
-- Compare by resolution key (480p, 720p, 1080p, etc.).
-- If a resolution exists in SEARCH CONTEXT → omit it entirely from output.
-- Only return resolutions that are NOT in SEARCH CONTEXT."""
-        example = f"""EXAMPLE:
-SEARCH CONTEXT has: 720p, 1080p
-PASS-1 RESPONSE has: 480p, 720p, 1080p
-CORRECT OUTPUT: {{"content_type":"movie","data":{{"download_links":{{"480p":[{{"u":"https://x.com/480","l":"Hindi","f":"Movie.480p.{SITE_NAME}.mkv"}}]}}}}}}
-720p and 1080p exist → omitted. Only 480p returned.
-WRONG: returning 720p or 1080p that already exist."""
+        comparison = """COMPARE BY: resolution key (480p, 720p, 1080p, etc.).
+- Resolution in SEARCH CONTEXT → remove from output.
+- Resolution NOT in SEARCH CONTEXT → keep in output."""
+        examples = f"""### EXAMPLE 1 — missing resolution:
+INPUT: PASS-1 DATA has 480p, 720p, 1080p. SEARCH CONTEXT has 720p, 1080p.
+OUTPUT: {{"action":"update","reason":"Missing 480p resolution","data":{{"download_links":{{"480p":[{{"u":"https://x.com/480","l":"Hindi","f":"Movie.480p.{SITE_NAME}.mkv"}}]}}}}}}
+
+### EXAMPLE 2 — nothing missing:
+INPUT: PASS-1 DATA has 720p, 1080p. SEARCH CONTEXT has 720p, 1080p.
+OUTPUT: {{"action":"skip","reason":"All resolutions already exist in search context","data":{{"download_links":{{}}}}}}"""
     else:
         schema_json = json.dumps(tvshow_schema, **_COMPACT)
-        type_rules = """TV COMPARISON:
-- Compare by season_number + episode_range + resolution key.
-- Same season + same episode_range + same resolution in SEARCH CONTEXT → omit that resolution.
-- Same season + same episode_range but some resolutions missing → keep ONLY missing resolutions under that item.
-- Entirely new episode_range (not in SEARCH CONTEXT at all) → include with all its resolutions.
-- If a whole season is fully covered → omit entire season from output.
-- If nothing is missing → return empty seasons array."""
-        example = f"""EXAMPLE 1 — missing resolution:
-SEARCH CONTEXT: S05 Episode 41-48 has 720p, 1080p
-PASS-1 RESPONSE: S05 Episode 41-48 has 480p, 720p, 1080p
-CORRECT OUTPUT: data.seasons has S05 EP41-48 with ONLY 480p (720p/1080p exist → omitted).
+        comparison = """COMPARE BY: season_number + episode_range + resolution key.
+- Same season + same range + same resolution in SEARCH CONTEXT → remove.
+- Same season + same range + missing resolution → keep ONLY missing resolutions.
+- Entirely new episode_range → keep with ALL its resolutions.
+- Whole season fully covered → omit entire season."""
+        examples = f"""### EXAMPLE 1 — missing resolution:
+INPUT: PASS-1 DATA S05 EP41-48 has 480p, 720p, 1080p. SEARCH CONTEXT S05 EP41-48 has 720p, 1080p.
+OUTPUT: {{"action":"update","reason":"S05 EP41-48: missing 480p","data":{{"seasons":[{{"season_number":5,"download_items":[{{"type":"partial_combo","label":"Episode 41-48","episode_range":"41-48","resolutions":{{"480p":[{{"u":"https://x.com/480","l":"Bengali","f":"S05.EP41-48.480p.{SITE_NAME}.mkv"}}]}}}}]}}]}}}}
+720p/1080p exist → removed. Only 480p kept.
 
-EXAMPLE 2 — new episode range:
-SEARCH CONTEXT: S02 Episode 01-06 has 720p, 1080p
-PASS-1 RESPONSE: S02 EP01-06 (480p, 720p, 1080p) + EP07-12 (720p, 1080p)
-CORRECT OUTPUT: data.seasons has EP01-06 with ONLY 480p + EP07-12 with ALL resolutions (entirely new range).
+### EXAMPLE 2 — new episode range:
+INPUT: PASS-1 DATA has S02 EP01-06 (480p,720p,1080p) + EP07-12 (720p,1080p). SEARCH CONTEXT has S02 EP01-06 (720p,1080p).
+OUTPUT: {{"action":"update","reason":"S02 EP01-06: missing 480p; EP07-12: entirely new range","data":{{"seasons":[{{"season_number":2,"download_items":[{{"type":"partial_combo","label":"Episode 01-06","episode_range":"01-06","resolutions":{{"480p":[...]}}}},{{"type":"partial_combo","label":"Episode 07-12","episode_range":"07-12","resolutions":{{"720p":[...],"1080p":[...]}}}}]}}]}}}}
+EP01-06: only 480p (720p/1080p exist). EP07-12: all resolutions (new range).
 
-EXAMPLE 3 — nothing missing:
-SEARCH CONTEXT has all resolutions for all episode ranges in PASS-1 RESPONSE.
-CORRECT OUTPUT: {{"content_type":"tvshow","data":{{"seasons":[]}}}}"""
+### EXAMPLE 3 — nothing missing:
+INPUT: SEARCH CONTEXT covers everything in PASS-1 DATA.
+OUTPUT: {{"action":"skip","reason":"All episode ranges and resolutions already covered","data":{{"seasons":[]}}}}"""
 
-    return f"""You are a delta filter. Your ONLY job: compare PASS-1 RESPONSE with SEARCH CONTEXT and return ONLY what is missing.
-
-The output uses the SAME schema as PASS-1 — but include ONLY the missing/new items.
+    return f"""You are a delta filter. One job: compare PASS-1 DATA against SEARCH CONTEXT, return only what is missing.
 
 RULES:
-1. Return ONLY valid JSON. No markdown fences, no extra text.
-2. Never modify URLs, filenames, or language values from PASS-1 RESPONSE. Copy exactly.
-3. If something exists in SEARCH CONTEXT, it MUST NOT appear in your output.
-4. If nothing is missing, return empty (movie: empty download_links, tvshow: empty seasons array).
-5. If you determine the UPDATE HINT is wrong and actually nothing needs updating, return empty. This overrides the hint — you are the final judge.
-6. Keep all metadata fields (title, year, genre, poster_url, etc.) from PASS-1 RESPONSE as-is. Only filter download_links (movie) or seasons (tvshow).
+1. Return ONLY valid JSON. No markdown, no extra text.
+2. Copy URLs, filenames, language values EXACTLY from PASS-1 DATA. Never modify.
+3. Remove anything that already exists in SEARCH CONTEXT.
+4. Keep all metadata (title, year, genre, poster_url, etc.) from PASS-1 DATA as-is.
+5. Only modify download_links (movie) or seasons (tvshow).
+6. Set "action": "update" if there IS missing data.
+7. Set "action": "skip" if NOTHING is missing — you are the final judge, override any hints.
+8. Always include "reason": a single line explaining what is missing or why skipping.
 
-{type_rules}
+{comparison}
 
-{example}
+{examples}
 
-Output schema (same as extraction):
+Data schema:
 ```json
 {schema_json}
 ```
 
-Return ONLY: {{"content_type":"{content_type}","data":{{...}}}}"""
+Return: {{"action":"update" or "skip","reason":"...","data":{{...}}}}"""

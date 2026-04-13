@@ -2,8 +2,8 @@
 Pass-2: Delta-only update filtering.
 
 Called when Pass-1 returns action="update".
-Sends the Pass-1 response + search context to a focused LLM prompt.
-LLM returns the same structure as Pass-1 but with only the missing/new data.
+Sends Pass-1 data + search context → LLM returns filtered data (only missing
+downloads) and action ("update" or "skip").
 """
 
 import json
@@ -28,28 +28,25 @@ def compute_update_delta(
     pass1_data: dict,
     dup_search_context: dict,
 ) -> dict | None:
-    """Run Pass-2 LLM call: take Pass-1 data + search context,
-    return only the delta (missing parts).
+    """Run Pass-2 LLM call.
 
     Args:
         content_type: "movie" or "tvshow"
-        pass1_data: Full data dict from Pass-1 extraction.
-        dup_search_context: The search context (db_match_candidates +
-                            flixbd_results + update_details).
+        pass1_data: The `data` dict from Pass-1 (seasons/download_links + metadata).
+        dup_search_context: Search context (db_match_candidates + flixbd_results).
 
     Returns:
-        The delta data dict (same structure as pass1_data but only missing parts),
-        or None if the LLM call fails (caller should fall back to full data).
+        {"action": "update"|"skip", "data": {...}} or None on failure.
     """
     try:
         system_prompt = get_update_system_prompt(content_type)
 
         user_prompt = (
-            f"PASS-1 RESPONSE (full extracted data):\n"
+            f"PASS-1 DATA:\n"
             f"```json\n{json.dumps(pass1_data, **_COMPACT, ensure_ascii=False)}\n```\n\n"
             f"SEARCH CONTEXT (what already exists):\n"
             f"```json\n{json.dumps(dup_search_context, **_COMPACT, ensure_ascii=False)}\n```\n\n"
-            f"Return ONLY the delta — items/resolutions in PASS-1 RESPONSE but NOT in SEARCH CONTEXT."
+            f"Return filtered data with only missing downloads. Set action to skip if nothing is missing."
         )
 
         logger.info("Pass-2 delta filter: content_type=%s", content_type)
@@ -78,28 +75,35 @@ def compute_update_delta(
                     )
 
         if result is None:
-            logger.error("Pass-2 delta filter: all JSON parse attempts failed: %s", last_err)
+            logger.error("Pass-2: all JSON parse attempts failed: %s", last_err)
             return None
 
+        if not isinstance(result, dict):
+            logger.error("Pass-2: result is not a dict: %s", type(result))
+            return None
+
+        action = result.get("action", "update")
+        reason = result.get("reason", "")
         data = result.get("data", result)
+
+        if action == "skip":
+            logger.info("Pass-2 decided: action=skip, reason=%s", reason)
+            return {"action": "skip", "reason": reason, "data": data if isinstance(data, dict) else {}}
+
         if not isinstance(data, dict):
-            logger.error("Pass-2 delta filter: 'data' is not a dict: %s", type(data))
+            logger.error("Pass-2: 'data' is not a dict: %s", type(data))
             return None
 
         if content_type == "movie":
             links = data.get("download_links", {})
-            if not isinstance(links, dict) or not links:
-                logger.info("Pass-2 result: empty movie delta.")
-                return {"download_links": {}}
-            logger.info("Pass-2 result: %d missing movie resolution(s): %s", len(links), list(links.keys()))
-            return {"download_links": links}
+            count = len(links) if isinstance(links, dict) else 0
+            logger.info("Pass-2 result: %d movie resolution(s), reason=%s", count, reason)
+        else:
+            seasons = data.get("seasons", [])
+            items = sum(len(s.get("download_items", [])) for s in seasons if isinstance(s, dict))
+            logger.info("Pass-2 result: %d season(s), %d item(s), reason=%s", len(seasons), items, reason)
 
-        seasons = data.get("seasons", [])
-        if not isinstance(seasons, list):
-            seasons = []
-        item_count = sum(len(s.get("download_items", [])) for s in seasons if isinstance(s, dict))
-        logger.info("Pass-2 result: %d season(s), %d download item(s) in delta.", len(seasons), item_count)
-        return {"seasons": seasons}
+        return {"action": "update", "reason": reason, "data": data}
 
     except Exception as e:
         logger.error("Pass-2 delta filter failed: %s", e, exc_info=True)
