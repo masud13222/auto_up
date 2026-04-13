@@ -20,6 +20,7 @@ from llm.schema.blocked_names import (
     LEGACY_SITE_ROW_ID_JSON_KEY,
     TARGET_SITE_ROW_ID_JSON_KEY,
 )
+from llm.update_pass import compute_update_delta
 from upload.utils.resolution_policy import apply_upload_resolution_policy
 from upload.utils.force_is_adult_source_domain import apply_force_is_adult_from_source_urls
 
@@ -98,6 +99,16 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
             row.save(update_fields=update_fields)
     except Exception as e:
         logger.warning("Could not save duplicate snapshot to LLMUsage: %s", e)
+
+
+def _find_matched_candidate(db_match_candidates: list, matched_id) -> dict | None:
+    """Find the DB candidate dict whose 'id' matches matched_task_id from dup check."""
+    if not db_match_candidates or matched_id is None:
+        return None
+    for c in db_match_candidates:
+        if isinstance(c, dict) and c.get("id") == matched_id:
+            return c
+    return None
 
 
 def get_structured_output(llm_response: str) -> dict:
@@ -236,6 +247,57 @@ def detect_and_extract(
     logger.info(f"Detected: {content_type} — Title: {title}")
     if dup_result:
         logger.info(f"Duplicate check: action={dup_result.get('action')}, reason={dup_result.get('reason', '')[:80]}")
+
+    # ── Pass 2: Delta filtering for "update" actions ──
+    if (
+        isinstance(dup_result, dict)
+        and dup_result.get("action") == "update"
+        and db_match_candidates
+    ):
+        matched_id = dup_result.get("matched_task_id")
+        db_candidate = _find_matched_candidate(db_match_candidates, matched_id)
+        if db_candidate is not None:
+            logger.info(
+                "Pass-2: running delta filter (content_type=%s, matched_id=%s)",
+                content_type,
+                matched_id,
+            )
+            delta = compute_update_delta(
+                content_type,
+                data,
+                db_candidate,
+                update_details=dup_result.get("update_details"),
+                dup_search_context={
+                    "db_match_candidates": db_match_candidates,
+                    "flixbd_results": flixbd_results,
+                },
+            )
+            if delta is not None:
+                is_empty_delta = (
+                    (content_type == "movie" and not delta.get("download_links"))
+                    or (content_type == "tvshow" and not delta.get("seasons"))
+                )
+                if is_empty_delta:
+                    logger.info(
+                        "Pass-2 delta is empty — nothing to update. Changing action to 'skip'."
+                    )
+                    dup_result["action"] = "skip"
+                elif content_type == "movie" and "download_links" in delta:
+                    data["download_links"] = delta["download_links"]
+                    logger.info("Pass-2 applied: movie download_links replaced with delta (%d res).", len(delta["download_links"]))
+                elif content_type == "tvshow" and "seasons" in delta:
+                    data["seasons"] = delta["seasons"]
+                    logger.info("Pass-2 applied: tvshow seasons replaced with delta (%d seasons).", len(delta["seasons"]))
+                else:
+                    logger.warning("Pass-2 returned delta but no usable key for content_type=%s. Using full data.", content_type)
+            else:
+                logger.warning("Pass-2 delta filter returned None. Falling back to full Pass-1 data.")
+        else:
+            logger.warning(
+                "Pass-2 skipped: matched_task_id=%s not found in db_match_candidates.",
+                matched_id,
+            )
+
     return content_type, data, dup_result
 
 

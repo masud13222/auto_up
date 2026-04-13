@@ -42,6 +42,34 @@ _dup_props = {
             "type": "boolean",
         "description": "TV update only: true if new episodes/ranges found",
     },
+        "update_details": {
+            "type": "object",
+            "description": "Only when action=update: structured breakdown of what to update",
+            "properties": {
+                "missing_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "season_number": {"type": "integer"},
+                            "episode_range": {"type": "string"},
+                            "missing_resolutions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "is_new_range": {"type": "boolean"},
+                        },
+                        "required": ["missing_resolutions"],
+                    },
+                    "description": "Each entry = one download group with its missing resolution keys",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-line human-readable: e.g. 'S05 EP41-48: need 480p; EP49-56: new range (720p,1080p)'",
+                },
+            },
+            "required": ["missing_items", "summary"],
+        },
         "updated_website_title": {
             "oneOf": [
                 {"type": "string"},

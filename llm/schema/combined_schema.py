@@ -94,18 +94,16 @@ ACTIONS:
 - `process`: no confident match → `data` = full extraction.
 - `skip`: same content, nothing new.
 - `replace`: same coverage, better source → `data` = full extraction.
-- `replace_items`: TV only, overlapping same-season replacement → `data.seasons` = replacement scope only.
-- `update` (CRITICAL — delta only):
-  * Movie: `data.download_links` = ONLY missing resolutions. Omit existing ones completely.
-  * TV: `data.seasons` = ONLY missing items/resolutions. Compare each extracted item against Existing by season_number + episode_range. If fully covered → omit. If partially covered → keep only missing resolutions under that item. Never return full season data.
+- `replace_items`: TV only, overlapping same-season replacement → `data` = full extraction (replacement scope decided later).
+- `update`: new resolutions or episodes exist → `data` = full extraction. Also fill `update_details` (see below).
 
 SOURCE ORDER: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
 Higher source for same coverage → `replace`. Never replace from codec alone.
 
 TV-SPECIFIC:
 - `has_new_episodes`=true only for explicit new episode labels/ranges.
-- New later range or new season → `update` (delta only).
-- Same range + missing resolutions only → `update`, return only those missing resolutions.
+- New later range or new season → `update`.
+- Same range + missing resolutions only → `update`.
 - Same range + better source → `replace` or `replace_items`.
 - Different seasons are additive; never replace another season.
 - `replace_items` only when no combo/full-season pack is involved.
@@ -116,47 +114,39 @@ Include: TitleCheck, YearCheck: new <N> vs candidate <M>, Extracted:[...], Exist
 
 `updated_website_title` = better stored title ending ` - {SITE_NAME}`, or `false`.
 
+`update_details` (ONLY when action=update):
+Provide a structured breakdown so a downstream delta filter knows exactly what to look for.
+- `missing_items`: array — one entry per download group that has something missing.
+  - Movie: one entry with `missing_resolutions` = list of resolution keys (e.g. ["480p","2160p"]).
+  - TV: one entry per season+episode_range that has missing resolutions or is entirely new.
+    - `season_number`: integer.
+    - `episode_range`: same value as in the extracted download_item.
+    - `missing_resolutions`: resolution keys missing for that range.
+    - `is_new_range`: true if this episode_range does not exist at all in the candidate.
+- `summary`: one-line human-readable description. E.g. "S05 EP41-48: need 480p; EP49-56: new range (720p,1080p)".
+
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}
 ```
 
-### FEW-SHOT EXAMPLES (study these carefully):
+### FEW-SHOT EXAMPLES (action selection):
 
-**EX-1: TV update — missing resolution (delta only)**
+**EX-1: update — missing resolution**
 Existing: S05, Episode 41-48, resolutions: 1080p, 720p.
 Page: S05, Episode 41-48, resolutions: 480p, 720p, 1080p.
-Analysis: 720p ✓ exists, 1080p ✓ exists, 480p ✗ missing.
-Action: `update`. `data.seasons` = only the missing 480p:
-```json
-[{{"season_number":5,"download_items":[{{"type":"partial_combo","label":"Episode 41-48","episode_range":"41-48","resolutions":{{"480p":[{{"u":"https://example.com/s05e41-48-480p","l":"Hindi","f":"Show.2024.S05E41-E48.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
-```
-WRONG output would include 720p and 1080p. Only 480p is correct.
+Action: `update`. `update_details`: {{"missing_items":[{{"season_number":5,"episode_range":"41-48","missing_resolutions":["480p"],"is_new_range":false}}],"summary":"S05 EP41-48: need 480p"}}
+`data` = full extraction.
 
-**EX-2: TV update — new episode range added**
+**EX-2: update — new episode range + missing resolution**
 Existing: S02, Episode 01-06, resolutions: 1080p, 720p.
 Page: S02, Episode 01-06 (480p, 720p, 1080p) AND Episode 07-12 (720p, 1080p).
-Analysis: EP01-06 720p ✓, 1080p ✓, 480p ✗ missing. EP07-12 is entirely new.
-Action: `update`. `data.seasons` = missing 480p for 01-06 + full 07-12:
-```json
-[{{"season_number":2,"download_items":[{{"type":"partial_combo","label":"Episode 01-06","episode_range":"01-06","resolutions":{{"480p":[{{"u":"https://example.com/s02e01-06-480p","l":"Hindi","f":"Show.2024.S02E01-E06.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}},{{"type":"partial_combo","label":"Episode 07-12","episode_range":"07-12","resolutions":{{"720p":[{{"u":"https://example.com/s02e07-12-720p","l":"Hindi","f":"Show.2024.S02E07-E12.720p.WEB-DL.x264.{SITE_NAME}.mkv"}}],"1080p":[{{"u":"https://example.com/s02e07-12-1080p","l":"Hindi","f":"Show.2024.S02E07-E12.1080p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}}}]}}]
-```
-EP01-06 returns ONLY the missing 480p. EP07-12 is new so all resolutions included.
+Action: `update`, has_new_episodes=true. `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-06","missing_resolutions":["480p"],"is_new_range":false}},{{"season_number":2,"episode_range":"07-12","missing_resolutions":["720p","1080p"],"is_new_range":true}}],"summary":"S02 EP01-06: need 480p; EP07-12: new range (720p,1080p)"}}
+`data` = full extraction.
 
-**EX-3: TV skip — everything already exists**
+**EX-3: skip — everything exists**
 Existing: S01, Episode 01-10, resolutions: 480p, 720p, 1080p.
 Page: S01, Episode 01-10, resolutions: 720p, 1080p.
-Analysis: 720p ✓, 1080p ✓. Page has nothing new.
-Action: `skip`. `data.seasons` = full extraction (skip means no delta needed).
-
-**EX-4: Movie update — missing resolution only**
-Existing movie resolutions: 1080p, 720p.
-Page: 480p, 720p, 1080p, 2160p.
-Analysis: 720p ✓, 1080p ✓, 480p ✗ missing, 2160p ✗ missing (if above-1080p ON).
-Action: `update`. `data.download_links` = only 480p (and 2160p if policy allows):
-```json
-{{"480p":[{{"u":"https://example.com/movie-480p","l":"Hindi","f":"Movie.2024.Hindi.480p.WEB-DL.x264.{SITE_NAME}.mkv"}}]}}
-```
-WRONG output would include 720p and 1080p. Only missing resolutions are correct.
+Analysis: nothing new → action=`skip`. No `update_details` needed.
 
 """
 
