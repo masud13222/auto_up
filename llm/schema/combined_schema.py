@@ -222,10 +222,6 @@ def get_combined_system_prompt(
 Example movie: `Inception 2010 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
 Example TV: `Single Papa 2025 Season 01 EP01-06 WEB-DL Dual Audio [Hindi ORG. + English] - {SITE_NAME}`
 
-## is_adult:
-Movie: true if Tagalog in title/heading (any case) OR explicit adult (18+/XXX/Adults only). false otherwise.
-TV: true only for explicit adult. false for mainstream.
-
 ## SEO (required):
 - meta_title: 50-60 chars, main keyword early, vary structure
 - meta_description: 140-160 chars, natural CTA

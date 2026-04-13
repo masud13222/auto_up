@@ -62,7 +62,7 @@ movie_schema = {
         "tmdb_id": {"type": "string"},
         "is_adult": {
             "type": "boolean",
-            "description": "true if Tagalog in title (any case) OR explicit adult (18+/XXX/erotic). false otherwise.",
+            "description": "true if Tagalog in title (any case) OR explicit adult content (18+/XXX/erotic/hot/Adults only). false otherwise.",
         },
     },
     "required": ["website_movie_title", "title", "year", "is_adult", "download_links"],
@@ -82,7 +82,7 @@ Rules:
 - Strip blocked names: {_blocked_names_str}
 
 website_movie_title: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
-is_adult: true if Tagalog in title/heading (any case). Else true only for explicit adult (18+/XXX/Adults only). false for mainstream.
+is_adult: true if Tagalog in title/heading (any case). Else true only if explicit adult indicators found in title OR description OR genres (18+/XXX/erotic/hot/Adults only). false for mainstream.
 
 SEO: meta_title 50-60 chars (vary structure). meta_description 140-160 chars natural CTA. meta_keywords 10-15 relevant.
 poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.

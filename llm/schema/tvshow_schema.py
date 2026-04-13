@@ -122,7 +122,6 @@ Rules:
 
 website_tvshow_title: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`
 Combo season → `Season NN Complete`. Source = WEB-DL/NF/AMZN etc (not resolution).
-is_adult: true only for explicit adult (18+/XXX/erotic). false for mainstream.
 
 poster_url: any absolute direct image URL is valid, including third-party hosts/CDNs.
 
