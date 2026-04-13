@@ -94,7 +94,7 @@ class PriorityORM(ORM):
             data = SignedPackage.loads(task)
             priority = int(data.get("q_priority", 0))
         except Exception:
-            pass
+            log.warning("PriorityORM.enqueue: could not read q_priority from signed task; defaulting to 0", exc_info=True)
         row = self.get_connection().create(
             key=self.list_key or Conf.CLUSTER_NAME,
             payload=task,

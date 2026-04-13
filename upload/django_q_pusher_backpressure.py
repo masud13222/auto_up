@@ -79,7 +79,7 @@ def priority_aware_pusher(task_queue: Queue, event: Event, broker: Broker = None
         except Exception:
             logger.exception("Failed to pull task from broker")
             sleep(10)
-            break
+            continue
         if task_set:
             for task in task_set:
                 ack_id = task[0]
