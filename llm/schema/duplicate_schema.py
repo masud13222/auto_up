@@ -28,7 +28,8 @@ _dup_props = {
             "type": "string",
         "enum": ["skip", "update", "replace", "replace_items", "process"],
         "description": (
-            "skip=identical, update=delta add only, replace=full replacement, "
+            "skip=identical, update=delta add only. For TV update, `data.seasons` must contain only missing "
+            "episode ranges or missing resolutions, never the full season payload. replace=full replacement, "
             "replace_items=TV overlapping-scope replacement only, process=new content"
         ),
         },
@@ -58,7 +59,9 @@ _dup_props = {
             "type": "boolean",
         "description": (
             "TV update only. True if the new URL has new episode labels/ranges. "
-            "When true, `data.seasons` should include only the new items to append."
+            "When true, `data.seasons` should include only the new items to append. "
+            "If the episode range already exists and only some resolutions are missing, keep only those "
+            "missing resolutions under that exact range."
         ),
     },
         "updated_website_title": {

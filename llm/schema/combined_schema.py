@@ -89,6 +89,8 @@ Normalize:
 - `Extracted` = keys from final `data`.
 - `Existing` = matched DB movie `resolutions`, matched DB TV `tv_items` / `episodes`, matched {site} row `download_links`.
 - `Missing` = resolutions present in `Extracted` but absent from `Existing`.
+- For TV, compare coverage per exact season + item/range. Never treat an aggregated season/show title that summarizes many episodes as proof that every range/resolution is new or missing.
+- For TV, compare resolutions inside the same exact range. Do not union all show resolutions across all ranges.
 
 Action:
 - `skip`: same coverage, nothing new, no clear upgrade.
@@ -103,6 +105,11 @@ Output shaping:
 - `process` or `replace`: `data` = full extracted page content.
 - Movie `update`: `data.download_links` must contain only missing/new files. Omit already-existing resolutions completely.
 - TV `update`: `data.seasons` must contain only the season/item/range/resolution that needs appending. Omit unchanged old items.
+- Hard TV delta filter:
+  - Compare every extracted TV item against Existing by exact `season_number` + item type + `episode_range`.
+  - If an extracted item is already fully covered, omit it completely.
+  - If an extracted item exists but only some resolutions are missing, keep only those missing resolutions under that exact item.
+  - Never return full season data in `update` mode just because the page title or page content shows the whole season.
 - TV `replace_items`: `data.seasons` must contain only the overlapping replacement scope. Omit untouched items.
 - If an existing TV item already exists and only one resolution is missing, return only that missing resolution under that item.
 - `updated_website_title` = better stored title only; otherwise `false`.
@@ -111,9 +118,11 @@ Output shaping:
 TV rules:
 - `has_new_episodes=true` only for explicit later/new episode labels or ranges.
 - New later range or new season -> `update`.
+- Same season + same range + extra missing resolutions only -> `update`, and return only those missing resolutions under that same range.
 - Same range with better pack/source -> `replace` or `replace_items`.
 - Different seasons are additive; do not replace another season.
 - Use `replace_items` only when no combo/full-season pack is involved; otherwise use `replace`.
+- Example: Existing `S05 Episode 41-48: 1080p,720p`; Extracted same range `480p,720p,1080p` -> `update` and return only `S05 Episode 41-48` with `480p`.
 
 Reason:
 - Single line only.

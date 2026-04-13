@@ -42,8 +42,9 @@ tvshow_schema = {
         "seasons": {
             "type": "array",
             "description": (
-                "Process/replace: full extracted seasons. Update/replace_items: only the season/item/resolution "
-                "scope that should change now."
+                "Process/replace: full extracted seasons. Update/replace_items: STRICT delta only. "
+                "Return only the exact season/item/resolution scope that should change now. "
+                "Never return full season data in update mode."
             ),
             "items": {
                 "type": "object",
@@ -56,7 +57,8 @@ tvshow_schema = {
                         "type": "array",
                         "description": (
                             "For TV update, include only the new/missing episode ranges or missing resolutions. "
-                            "Do not repeat unchanged old items."
+                            "Remove every unchanged old item. If an episode range already exists and only one "
+                            "resolution is missing, return only that missing resolution under that range."
                         ),
                         "items": {
                             "type": "object",
@@ -110,6 +112,7 @@ tvshow_schema = {
                                     "description": (
                                         "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list "
                                         "of compact file objects with u=url, l=language-or-language-array, f=filename. "
+                                        "Update mode is delta-only: omit every already-existing resolution. "
                                         "If only one resolution under an existing item is missing, include only that "
                                         "resolution."
                                     ),
