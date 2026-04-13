@@ -4,6 +4,8 @@ Project-wide tuning values (DB duplicate search, FlixBD search, LLM context caps
 Import from the project root, e.g. ``from constant import FUZZY_THRESHOLD_DB``.
 """
 
+import os
+
 # --- MediaTask / DB fuzzy duplicate search ---
 FUZZY_THRESHOLD_DB = 80
 
@@ -22,9 +24,23 @@ DB_SEARCH_QUERY_SLICE_AUTO_UP = 15
 # ICANN registrable *domain* label (before public suffix), case-insensitive. Matches that
 # name on any TLD (primehub.me, primehub.to, www.primehub.com) via ``tldextract`` + PSL.
 # Do not use bare multi-tenant suffixes as a "label" (e.g. avoid listing ``appspot`` alone).
-FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS = [
-    "primehub",
-]
+#
+# Override with env (comma-separated, case-insensitive). Unset = use default below.
+# Example: FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS=primehub,othersite
+# Set to empty string to disable forcing (no labels).
+_FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS_ENV = "FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS"
+_DEFAULT_FORCE_IS_ADULT_ROOT_LABELS: tuple[str, ...] = ("primehub",)
+
+
+def _force_is_adult_root_domain_labels_from_env() -> list[str]:
+    raw = os.environ.get(_FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS_ENV)
+    if raw is None:
+        return list(_DEFAULT_FORCE_IS_ADULT_ROOT_LABELS)
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return parts
+
+
+FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS = _force_is_adult_root_domain_labels_from_env()
 
 # --- FlixBD search (merged phases, fuzzy trim, LLM slim rows) ---
 # Upload ``process_media_task`` combined LLM: max slim FlixBD rows after fuzzy.
