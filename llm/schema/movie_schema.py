@@ -53,7 +53,11 @@ movie_schema = {
                 },
             },
             "additionalProperties": False,
-            "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
+            "description": (
+                "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact "
+                "file objects with u=url, l=language-or-language-array, f=filename. If duplicate_check.action "
+                "is update, include only the missing/new movie files that should be downloaded now."
+            ),
         },
         "cast": {"type": "string", "description": "Comma-separated actors"},
         "languages": {"type": "array", "items": {"type": "string"}},

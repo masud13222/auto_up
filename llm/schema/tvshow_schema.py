@@ -41,6 +41,10 @@ tvshow_schema = {
         },
         "seasons": {
             "type": "array",
+            "description": (
+                "Process/replace: full extracted seasons. Update/replace_items: only the season/item/resolution "
+                "scope that should change now."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -50,6 +54,10 @@ tvshow_schema = {
                     },
                     "download_items": {
                         "type": "array",
+                        "description": (
+                            "For TV update, include only the new/missing episode ranges or missing resolutions. "
+                            "Do not repeat unchanged old items."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -59,13 +67,13 @@ tvshow_schema = {
                                     "description": (
                                         "single_episode → one episode; episode_range is a single zero-padded number e.g. '01'. "
                                         "partial_combo → a subset of episodes in the season; episode_range is a zero-padded span e.g. '01-04'."
-                                        "combo_pack → full season bundle (all episodes); omit or null episode_range."
+                                        "combo_pack → full season bundle (all episodes); if no explicit range exists, set episode_range to empty string ''."
                                     ),
                                 },
                                 "label": {"type": "string"},
                                 "episode_range": {
                                     "type": "string",
-                                    "description": "Always set. Zero-padded span: '01', '01-08'. single_episode/partial_combo. Omit for combo_pack.",
+                                    "description": "Always include. Use '01' or '01-08' when explicit. For true whole-season combo_pack with no explicit range, use empty string ''.",
                                 },
                                 "resolutions": {
                                     "type": "object",
@@ -91,7 +99,12 @@ tvshow_schema = {
                                         },
                                     },
                                     "additionalProperties": False,
-                                    "description": "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list of compact file objects with u=url, l=language-or-language-array, f=filename.",
+                                    "description": (
+                                        "Pure resolution keys only (480p, 720p, 1080p, etc.). Each value is a list "
+                                        "of compact file objects with u=url, l=language-or-language-array, f=filename. "
+                                        "If only one resolution under an existing item is missing, include only that "
+                                        "resolution."
+                                    ),
                                 },
                             },
                             "required": ["type", "label", "episode_range", "resolutions"],
@@ -131,6 +144,8 @@ Classify each download section by scope:
 - Multiple episodes (range) → partial_combo  
 - Exactly one episode → single_episode
 Never emit the same episode in more than one download_item.
+- Always include `episode_range` in every download_item.
+- For a true whole-season combo with no explicit range, set `episode_range` to empty string `""`.
 
 Never invent a season number, episode range, or resolution key that is not clearly shown by the page.
 Strict link rule: use only real download/direct-download/gateway URLs. Never use Watch Online, watch link, watch generate link, stream, player, preview, or embed links as `u`.

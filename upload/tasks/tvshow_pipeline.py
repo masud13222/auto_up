@@ -652,7 +652,7 @@ def _publish_to_flixbd_series(
                 fx.patch_series_title(content_id, tvshow_data)
             else:
                 fx.patch_series_title(content_id, tvshow_data)
-            if publish_entry_ids:
+            if publish_entry_ids and not (dup_info and dup_info.get("action") == "update"):
                 allowed_entry_ids = set(publish_entry_ids)
         else:
             logger.warning(

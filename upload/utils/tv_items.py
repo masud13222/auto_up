@@ -1,17 +1,43 @@
 import re
 
 
+def _normalize_episode_range(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "-" in text or "–" in text:
+        parts = re.split(r"[-–]", text, maxsplit=1)
+        if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+            a = int(parts[0].strip())
+            b = int(parts[1].strip())
+            if a <= b:
+                return f"{a:02d}-{b:02d}"
+        return text
+    if text.isdigit():
+        return f"{int(text):02d}"
+    return text
+
+
+def _coerce_season_number(value):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    return value
+
+
 def tv_item_key(item: dict) -> tuple[str, str | None, str]:
     """
     Stable TV item key for merge/skip logic.
     Uses explicit episode_range when present; no label parsing/inference.
     """
     item_type = str(item.get("type") or "").strip()
-    episode_range = item.get("episode_range")
-    if isinstance(episode_range, str):
-        episode_range = episode_range.strip() or None
-    else:
-        episode_range = None
+    episode_range = _normalize_episode_range(item.get("episode_range"))
     # Combo packs for the same season should key by coverage, not by display label.
     return (item_type, episode_range, "")
 
@@ -60,7 +86,7 @@ def split_tv_replace_scope(existing_result: dict, incoming_data: dict) -> tuple[
     the runtime cannot preserve unaffected ranges inside a whole-season pack.
     """
     incoming_by_season = {
-        s.get("season_number"): list(s.get("download_items", []))
+        _coerce_season_number(s.get("season_number")): list(s.get("download_items", []))
         for s in incoming_data.get("seasons", [])
     }
 
@@ -71,7 +97,7 @@ def split_tv_replace_scope(existing_result: dict, incoming_data: dict) -> tuple[
     requires_full_replace = False
 
     for season in existing_result.get("seasons", []):
-        snum = season.get("season_number")
+        snum = _coerce_season_number(season.get("season_number"))
         incoming_items = incoming_by_season.get(snum, [])
         removed_items = []
         kept_items = []

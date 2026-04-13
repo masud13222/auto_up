@@ -90,6 +90,19 @@ def _entry_size(entry: dict) -> str:
     return str((entry or {}).get("s") or "").strip()
 
 
+def _tv_download_item_has_any_drive_link(item: dict) -> bool:
+    res = item.get("resolutions")
+    if not isinstance(res, dict):
+        return False
+    for entries in res.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and is_drive_link(_entry_link(entry)):
+                return True
+    return False
+
+
 def _same_snapshot_entry(existing: dict, incoming: dict) -> bool:
     if _entry_language_key(existing) != _entry_language_key(incoming):
         return False
@@ -410,42 +423,27 @@ def save_publish_state_with_snapshot(
     return snapshot
 
 
-def refresh_site_sync_snapshot_from_api(media_task: MediaTask, content_type: str) -> dict:
-    site_content_id = getattr(media_task, "site_content_id", None)
-    base = extract_site_sync_snapshot_result(getattr(media_task, "site_sync_snapshot", None))
-    if not base and isinstance(media_task.result, dict):
-        base = _json_clone(media_task.result)
-    if not site_content_id:
-        return _published_site_view(base)
-    try:
-        from upload.service import flixbd_client as fx
+def hydrate_existing_result_from_snapshot(media_task: MediaTask, content_type: str) -> dict:
+    """
+    Build the current published view using only local MediaTask state.
 
-        if content_type == "movie":
-            live = {"download_links": fx.fetch_movie_drive_links_by_quality(int(site_content_id))}
-        else:
-            live = {"seasons": fx.fetch_series_drive_links_tree(int(site_content_id))}
-        merged = overlay_site_sync_snapshot(base, live, content_type)
-        snapshot = build_site_sync_snapshot(
-            content_type,
-            merged,
-            website_title=getattr(media_task, "website_title", ""),
-            site_content_id=site_content_id,
-        )
-        media_task.site_sync_snapshot = snapshot
-        media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
-        return merged
-    except Exception as e:
-        logger.warning("%s snapshot refresh id=%s: %s", SITE_NAME, site_content_id, e)
-    fallback = _published_site_view(base)
+    No live target-site/API fetch is performed here. The source of truth is the
+    task's stored ``result`` plus ``site_sync_snapshot``.
+    """
+    site_content_id = getattr(media_task, "site_content_id", None)
+    snapshot_data = extract_site_sync_snapshot_result(getattr(media_task, "site_sync_snapshot", None))
+    base_result = _json_clone(media_task.result) if isinstance(media_task.result, dict) else {}
+    merged = overlay_site_sync_snapshot(base_result, snapshot_data, content_type)
+    hydrated = _published_site_view(merged or snapshot_data or base_result)
     snapshot = build_site_sync_snapshot(
         content_type,
-        fallback,
+        hydrated,
         website_title=getattr(media_task, "website_title", ""),
         site_content_id=site_content_id,
     )
     media_task.site_sync_snapshot = snapshot
     media_task.save(update_fields=["site_sync_snapshot", "updated_at"])
-    return fallback
+    return hydrated
 
 
 def flixbd_slim_qualities_from_download_links(download_links: dict | None) -> list[str]:
@@ -809,6 +807,13 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
     if old_dl and new_dl:
         for res, old_entries in old_dl.items():
             if res not in new_dl:
+                carried = [
+                    _json_clone(entry)
+                    for entry in (old_entries if isinstance(old_entries, list) else [])
+                    if is_drive_link(_entry_link(entry))
+                ]
+                if carried:
+                    new_dl[res] = carried
                 continue
             existing_by_file = {
                 (_entry_language_key(entry), _entry_filename(entry)): entry
@@ -827,6 +832,21 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
         new_data["download_links"] = new_dl
 
     old_seasons = {s.get("season_number"): s for s in old_result.get("seasons", [])}
+    new_seasons = {s.get("season_number"): s for s in new_data.get("seasons", [])}
+
+    for snum, old_season in old_seasons.items():
+        if snum not in new_seasons:
+            carried_items = []
+            for item in old_season.get("download_items", []):
+                if not isinstance(item, dict):
+                    continue
+                if _tv_download_item_has_any_drive_link(item):
+                    carried_items.append(_json_clone(item))
+            if carried_items:
+                new_data.setdefault("seasons", []).append(
+                    {"season_number": snum, "download_items": carried_items}
+                )
+
     for new_season in new_data.get("seasons", []):
         snum = new_season.get("season_number")
         old_season = old_seasons.get(snum)
@@ -834,9 +854,22 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
             continue
 
         old_items = {}
+        old_items_full = {}
         for item in old_season.get("download_items", []):
             key = tv_item_key(item)
             old_items[key] = item.get("resolutions", {})
+            old_items_full[key] = item
+
+        new_item_keys = {
+            tv_item_key(item)
+            for item in new_season.get("download_items", [])
+            if isinstance(item, dict)
+        }
+        for old_key, old_item in old_items_full.items():
+            if old_key in new_item_keys:
+                continue
+            if _tv_download_item_has_any_drive_link(old_item):
+                new_season.setdefault("download_items", []).append(_json_clone(old_item))
 
         for new_item in new_season.get("download_items", []):
             label = new_item.get("label", "")
@@ -846,6 +879,13 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
 
             for res, old_entries in old_res.items():
                 if res not in new_res:
+                    carried = [
+                        _json_clone(entry)
+                        for entry in (old_entries if isinstance(old_entries, list) else [])
+                        if is_drive_link(_entry_link(entry))
+                    ]
+                    if carried:
+                        new_res[res] = carried
                     continue
                 existing_by_file = {
                     (_entry_language_key(entry), _entry_filename(entry)): entry
@@ -877,6 +917,9 @@ def merge_drive_links(old_result: dict, new_data: dict) -> dict:
         cur = new_data.get("screen_shots_url")
         if not isinstance(cur, list) or not cur:
             new_data["screen_shots_url"] = list(old_ss)
+
+    if isinstance(new_data.get("seasons"), list):
+        new_data["seasons"].sort(key=lambda s: s.get("season_number") or 0)
 
     return new_data
 
@@ -1058,7 +1101,7 @@ def donor_result_for_site_content(
     exclude_pk: int | None,
     content_type: str,
 ) -> dict:
-    """Drive metadata from another MediaTask row or FlixBD API."""
+    """Drive metadata from another completed MediaTask row only."""
     query = MediaTask.objects.filter(site_content_id=site_content_id, status="completed")
     if exclude_pk is not None:
         query = query.exclude(pk=exclude_pk)
@@ -1083,29 +1126,4 @@ def donor_result_for_site_content(
             site_content_id,
         )
         return dict(donor.result)
-    try:
-        from upload.service import flixbd_client as fx
-
-        if content_type != "tvshow":
-            movie_links = fx.fetch_movie_drive_links_by_quality(int(site_content_id))
-            if movie_links:
-                logger.info(
-                    "Hydrated %s drive link(s) from %s API for movie id=%s",
-                    len(movie_links),
-                    SITE_NAME,
-                    site_content_id,
-                )
-                return {"download_links": movie_links}
-        else:
-            seasons = fx.fetch_series_drive_links_tree(int(site_content_id))
-            if seasons:
-                logger.info(
-                    "Hydrated %s season block(s) from %s API for series id=%s",
-                    len(seasons),
-                    SITE_NAME,
-                    site_content_id,
-                )
-                return {"seasons": seasons}
-    except Exception as e:
-        logger.warning("%s hydrate drive links id=%s: %s", SITE_NAME, site_content_id, e)
     return {}

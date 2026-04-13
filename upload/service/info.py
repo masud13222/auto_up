@@ -204,6 +204,12 @@ def detect_and_extract(
             )
         if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
             dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
+        if "missing_resolutions" not in dup_result or not isinstance(
+            dup_result.get("missing_resolutions"), list
+        ):
+            dup_result["missing_resolutions"] = []
+        if "has_new_episodes" not in dup_result:
+            dup_result["has_new_episodes"] = False
 
     # Same tiers as system prompt; strip disallowed qualities before DB snapshot + pipeline.
     if not isinstance(data, dict):

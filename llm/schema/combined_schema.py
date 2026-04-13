@@ -73,99 +73,52 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
             f"(Each row `id` → use as **`{TARGET_SITE_ROW_ID_JSON_KEY}`** when that row matches; never as **matched_task_id**.)"
         )
 
-    has_db = bool(db_match_candidates)
-    no_db_rules = ""
-    if not has_db and flixbd_results:
-        no_db_rules = f"""
-**No DB Candidates (only {site} rows above):**
-- `matched_task_id` = **null** (no MediaTask row).
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = must be one of the `id` values **literally present** in the JSON block above, or null. Never invent an id.
-- Extracted = pure resolution keys from movie `data.download_links` or TV `resolutions`. Existing for {site} rows = parse tiers from that row's `download_links` (`qualities` / `episodes_range` strings only; no separate summary field).
-- Infer the {site} row type from its title: `Season` / `Episode` / `S01` / `E01` / `Series` / `Web Series` => tvshow, otherwise movie.
-- Never use a movie row for a tvshow, and never use a tvshow row for a movie.
-- Also inspect the matched row `title` for source tier.
-- If the matched row clearly shows lower source (example: old `HDTC`, new `WEB-DL`), prefer **replace** even when `Existing` is empty or `Missing` is non-empty.
-- Use **update** only for genuine add-missing-resolutions cases, not for clear low-source -> high-source upgrades.
-- No title+year+type match → **process**.
-
-"""
-    db_rules = ""
-    if has_db:
-        db_rules = f"""
-**DB Candidates present:**
-- `matched_task_id` = must be **exactly** one of the `id` integers in the ### DB Candidates JSON above (copy from that list only). If none match → null. Never output an id that does not appear in that JSON.
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = a {site} row `id` only when it appears in the ### {site} search JSON above **and** title+year+type match; else null. Never invent.
-- Never swap the two id spaces.
-- DB candidate `type` must exactly match the detected new `content_type`.
-- Never match movie ↔ tvshow even when title/year are the same.
-- Candidate `website_title` is the raw stored site title; use it for season/source/subtitle clues, not just plain `title`.
-- A valid match requires ALL 3: same type, exact year, strong title match.
-- Strong title match = same title after trivial cleanup only: punctuation, spaces, case, apostrophes, `&` vs `and`, roman numeral vs digit, or an obvious alias clearly supported by context.
-- INVALID title matches: single shared word, prefix-only, substring-only, or "only candidate" pressure.
-- Hard negatives: `The Witch` != `The Kitchen`; `Hum` != `Hum Hain Kamaal Ke`; `Nagin` != `Nache Nagin Gali Gali`.
-- If either side has extra meaningful words not explained by formatting or alias evidence, use **process**.
-- Never use resolution/source clues to override a failed title/year/type check.
-
-"""
-
     return f"""## Duplicate Check
 {chr(10).join(ctx_parts)}
-{no_db_rules}{db_rules}
-**IDs (no guessing):**
-- Non-null `matched_task_id` ONLY if that exact integer is an `id` in ### DB Candidates above; else null.
-- Non-null `{TARGET_SITE_ROW_ID_JSON_KEY}` ONLY if that exact integer is an `id` in ### {site} search JSON above; else null.
-- Never infer ids from show logic, episode counts, or memory — copy from JSON or use null.
+Rules:
+- Non-null `matched_task_id` = copy one id from DB Candidates only; otherwise null.
+- Non-null `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one id from {site} search JSON only; otherwise null.
+- Valid match requires all three: same detected type, exact year, and strong title match after trivial cleanup only.
+- Never match movie vs tvshow.
+- Use candidate `website_title` / matched {site} row title for season and source clues.
+- If title/year/type do not match, action=`process`.
 
-**Resolutions (strict):**
-- Extract only normalized resolution tiers: `480p`, `720p`, `1080p`, `1440p`, `2160p` (`4K` -> `2160p`).
-- If a clear tier appears without `p` (e.g. `720`), normalize to `720p`.
-- Ignore codec tags: `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
-- Extracted = normalized keys from extracted `data` links.
-- Existing = matched DB movie `resolutions`; matched DB tvshow tiers from `tv_items` / `episodes` strings; matched {site} tiers parsed from `download_links` only.
-- Rejected candidates/site rows contribute nothing to `Existing`.
-- If Extracted is empty -> default `action=process` unless duplicate evidence is overwhelming.
-- Unknown resolution/quality token: treat as distinct; if unsure, include it in Missing.
+Normalize:
+- Resolution keys: `480p`, `720p`, `1080p`, `1440p`, `2160p` (`4K` -> `2160p`).
+- Ignore codec-only tokens such as `x264`, `x265`, `HEVC`, `AAC`, `AVC`, `10bit`.
+- `Extracted` = keys from final `data`.
+- `Existing` = matched DB movie `resolutions`, matched DB TV `tv_items` / `episodes`, matched {site} row `download_links`.
+- `Missing` = resolutions present in `Extracted` but absent from `Existing`.
 
-**Source upgrade (replace only):**
-- Run whenever title+year+type match and source tiers are visible, even if Missing is non-empty.
-- Use source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`
-- Same resolutions but clearly higher source -> `replace`
-- Lower old source in matched site row title -> higher new source also -> `replace`
-- Same/lower/unclear source -> do not force `replace`; keep using Missing/coverage rules
-- Never replace from codec alone.
+Action:
+- `skip`: same coverage, nothing new, no clear upgrade.
+- `update`: only new/missing part should be added.
+- `replace`: same coverage, clearly better source.
+- `replace_items`: TV only; explicit overlapping same-season replacement scope.
+- `process`: no confident match.
+- Source order: `CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX`.
+- Higher source for same coverage -> `replace`. Never replace from codec alone.
 
-Steps:
-1. Detect new type first: movie or tvshow.
-2. Discard every candidate whose `year` is not equal to extracted `data.year` before any title comparison.
-3. Match title+exact-year+same-type to remaining DB candidate (if any) and/or {site} row (if any).
-4. If titles are not exact, allow a match only for trivial formatting differences or clear alias evidence. Reject shared-word / prefix / subset matches. A short title that is only a leading substring of a longer candidate title (or vice-versa) is a prefix match → reject.
-5. If type mismatches, year mismatches, or either title has extra meaningful words not explained by formatting, it is NOT a match.
-6. Set **matched_task_id** and **`{TARGET_SITE_ROW_ID_JSON_KEY}`** per the two-field rules above.
-7. If matched site row/title clearly shows lower source and new source is clearly higher -> **replace**.
-8. **updated_website_title:** On **update**, compare candidate `website_title` with the new extract; if a clearer, polished **{site}** listing helps (movie: tags/source; TV: merged `Season NN-MM`, sensible series **year**), compose the full string ending ` - {site}`; otherwise `false` when the stored title is already good.
-9. Otherwise Missing non-empty -> **update**. Missing empty -> source-upgrade rule for **skip/replace**. No valid match -> **process**.
+Output shaping:
+- `process` or `replace`: `data` = full extracted page content.
+- Movie `update`: `data.download_links` must contain only missing/new files. Omit already-existing resolutions completely.
+- TV `update`: `data.seasons` must contain only the season/item/range/resolution that needs appending. Omit unchanged old items.
+- TV `replace_items`: `data.seasons` must contain only the overlapping replacement scope. Omit untouched items.
+- If an existing TV item already exists and only one resolution is missing, return only that missing resolution under that item.
+- `updated_website_title` = better stored title only; otherwise `false`.
+- When the Duplicate Check section is present, include `duplicate_check` in the final JSON.
 
-TV shows:
-- `has_new_episodes=true` only when explicit higher episode numbers are visible.
-- If episode numbers are unclear, set `has_new_episodes=false`.
-- Compare explicit `season_number` before making any replace decision.
-- Different seasons are the same show but DIFFERENT coverage.
-- If the incoming season does not overlap any existing candidate season, do NOT use **`replace`** or **`replace_items`** against another season.
-- Same show + new/missing season => prefer **`update`** so the new season is appended.
-- TV **update**: when season coverage widens, prefer a thoughtful merged `updated_website_title` (`... - {site}`) if the old line no longer describes the bundle well.
-- Use explicit `episode_range` when available:
-  - genuinely NEW later episode range -> **update**
-  - same covered range in a better pack form (single -> partial, partial -> combo, same range better source) -> **replace**
-  - do not guess missing ranges from loose label text
-- if only the overlapping incoming TV items/range in the SAME season should replace old ones while the rest of the show stays untouched, use **`replace_items`** (TV only) instead of full **`replace`**
-- use **`replace_items`** only when the replace scope is explicit, overlaps the SAME season, and no whole-season combo pack is involved; otherwise prefer full **`replace`**
-- Do not use show-wide aggregated tiers alone (e.g. every pack union) to replace one season with another; use per-season / per-item coverage from `tv_items` and explicit ranges.
+TV rules:
+- `has_new_episodes=true` only for explicit later/new episode labels or ranges.
+- New later range or new season -> `update`.
+- Same range with better pack/source -> `replace` or `replace_items`.
+- Different seasons are additive; do not replace another season.
+- Use `replace_items` only when no combo/full-season pack is involved; otherwise use `replace`.
 
-Reason format:
+Reason:
 - Single line only.
 - Must start with `Matched candidate id=` or `No candidate matches title+year+type.`
-- Must include `TitleCheck: ...` and `YearCheck: new_year <N> vs candidate <M> -> match/mismatch` (always write both year integers)
-- Must include `Extracted`, `Existing`, `Missing` lists even when empty, then `Action: ... because ...`
+- Must include `TitleCheck`, `YearCheck: new_year <N> vs candidate <M> -> ...`, `Extracted`, `Existing`, `Missing`, and `Action: ... because ...`.
 
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}
@@ -265,6 +218,8 @@ Example movie:
 Decision: whole season→combo | range→partial | one ep→single.
 Button count does NOT affect type. Never merge separate episodes into range. Never split range.
 Priority: combo present→only combo. Partial covers range→no singles in that range.
+- `episode_range` is required in every TV item.
+- Use `episode_range=""` only for a true whole-season `combo_pack` with no explicit range.
 Multi-season extraction rules:
 - If the page shows multiple explicit season headings/labels, output multiple objects in `data.seasons` with the real `season_number` for each one.
 - Create a season object only when that season has its own explicit download block/label/heading in the Markdown. Do not infer seasons from title text, metadata, or `total_seasons` alone.
