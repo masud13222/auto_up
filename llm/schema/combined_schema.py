@@ -79,8 +79,9 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
 MATCHING:
 - Match requires ALL THREE: same type + exact year + strong title match after trivial cleanup.
 - Movie ≠ tvshow. Never cross-match.
-- `matched_task_id` = copy one integer `id` from DB Candidates only, or null.
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one integer `id` from {site} search results only, or null.
+- `matched_task_id` = copy one integer `id` from DB Candidates ONLY, or null. NEVER use a {site} search result id here.
+- `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one integer `id` from {site} search results ONLY, or null. NEVER use a DB Candidate id here.
+- These two id namespaces are SEPARATE. If DB Candidates is empty, `matched_task_id` MUST be null.
 - If title/year/type don't match any candidate → action=`process`.
 
 NORMALIZE:
@@ -147,6 +148,11 @@ Action: `update`, has_new_episodes=true. `update_details`: {{"missing_items":[{{
 Existing: S01, Episode 01-10, resolutions: 480p, 720p, 1080p.
 Page: S01, Episode 01-10, resolutions: 720p, 1080p.
 Analysis: nothing new → action=`skip`. No `update_details` needed.
+
+**EX-4: id namespace — DB Candidates empty, only search results**
+DB Candidates: [] (empty). Search results: [{{"id":218,"title":"Show S05 EP01-80",...}}]
+Action: `update`. `matched_task_id`: null (DB Candidates is empty — MUST be null). `{TARGET_SITE_ROW_ID_JSON_KEY}`: 218 (from search results).
+WRONG: setting `matched_task_id` to 218 — that id belongs to search results, not DB Candidates.
 
 """
 

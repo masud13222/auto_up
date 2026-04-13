@@ -176,6 +176,7 @@ RULES:
 2. Never modify URLs, filenames, or language values from EXTRACTED. Copy exactly.
 3. If something exists in EXISTING, it MUST NOT appear in your output.
 4. If nothing is missing, return empty (movie: empty download_links, tvshow: empty seasons array).
+5. If you determine the UPDATE HINT is wrong and actually nothing needs updating, return empty delta. This overrides the hint — you are the final judge.
 
 {type_rules}
 

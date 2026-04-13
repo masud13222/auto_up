@@ -111,6 +111,7 @@ def _find_matched_candidate(db_match_candidates: list, matched_id) -> dict | Non
     return None
 
 
+
 def get_structured_output(llm_response: str) -> dict:
     """
     Extracts and validates JSON from LLM response string.
@@ -249,6 +250,9 @@ def detect_and_extract(
         logger.info(f"Duplicate check: action={dup_result.get('action')}, reason={dup_result.get('reason', '')[:80]}")
 
     # ── Pass 2: Delta filtering for "update" actions ──
+    # Only runs when a DB candidate match exists (has real existing coverage data).
+    # FlixBD-only matches are handled later by the main pipeline via
+    # hydrate_existing_result_from_snapshot / donor_result_for_site_content + merge.
     if (
         isinstance(dup_result, dict)
         and dup_result.get("action") == "update"
@@ -267,10 +271,6 @@ def detect_and_extract(
                 data,
                 db_candidate,
                 update_details=dup_result.get("update_details"),
-                dup_search_context={
-                    "db_match_candidates": db_match_candidates,
-                    "flixbd_results": flixbd_results,
-                },
             )
             if delta is not None:
                 is_empty_delta = (
@@ -293,8 +293,9 @@ def detect_and_extract(
             else:
                 logger.warning("Pass-2 delta filter returned None. Falling back to full Pass-1 data.")
         else:
-            logger.warning(
-                "Pass-2 skipped: matched_task_id=%s not found in db_match_candidates.",
+            logger.info(
+                "Pass-2 skipped: matched_task_id=%s not found in db_match_candidates. "
+                "Pipeline will handle delta via existing_result merge.",
                 matched_id,
             )
 

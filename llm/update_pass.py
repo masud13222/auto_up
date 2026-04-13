@@ -113,12 +113,21 @@ def _build_user_prompt(
     existing_summary: dict,
     extracted_data: dict,
     update_details: dict | None = None,
+    db_candidate: dict | None = None,
 ) -> str:
     extracted_summary = _build_extracted_summary(content_type, extracted_data)
-    parts = [
-        f"EXISTING (what the DB already has):\n"
-        f"```json\n{json.dumps(existing_summary, **_COMPACT, ensure_ascii=False)}\n```",
-    ]
+    parts = []
+
+    if db_candidate:
+        parts.append(
+            f"DB CANDIDATE (matched entry from our database):\n"
+            f"```json\n{json.dumps(db_candidate, **_COMPACT, ensure_ascii=False)}\n```"
+        )
+
+    parts.append(
+        f"EXISTING (structured coverage from DB — what already exists):\n"
+        f"```json\n{json.dumps(existing_summary, **_COMPACT, ensure_ascii=False)}\n```"
+    )
     if isinstance(update_details, dict):
         parts.append(
             f"\nUPDATE HINT (from analysis step — what is expected to be missing):\n"
@@ -142,18 +151,15 @@ def compute_update_delta(
     db_candidate: dict,
     *,
     update_details: dict | None = None,
-    dup_search_context: dict | None = None,
 ) -> dict | None:
     """Run Pass-2 LLM call to filter extracted_data down to only the missing delta.
 
     Args:
         content_type: "movie" or "tvshow"
         extracted_data: Full data from Pass-1 extraction.
-        db_candidate: The matched DB candidate dict (must contain download_links or seasons).
+        db_candidate: The matched DB candidate dict (from build_db_candidate).
         update_details: Optional structured breakdown from Pass-1 duplicate_check
                         describing exactly what needs updating.
-        dup_search_context: Optional extra context (DB candidates list + FlixBD results)
-                            passed alongside for richer existing coverage.
 
     Returns:
         The delta dict (with download_links or seasons containing only missing parts),
@@ -171,7 +177,9 @@ def compute_update_delta(
             return None
 
         system_prompt = get_update_system_prompt(content_type)
-        user_prompt = _build_user_prompt(content_type, existing_summary, extracted_data, update_details)
+        user_prompt = _build_user_prompt(
+            content_type, existing_summary, extracted_data, update_details, db_candidate
+        )
 
         logger.info(
             "Pass-2 delta filter: content_type=%s, existing_keys=%s",
