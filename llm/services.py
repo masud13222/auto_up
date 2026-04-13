@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 
 from .models import LLMConfig, LLMUsage
@@ -374,6 +375,17 @@ def _get_ordered_configs():
     return configs
 
 
+_MD_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?", re.MULTILINE)
+_MD_FENCE_TAIL_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Remove ```json ... ``` wrappers that LLMs sometimes add despite being told not to."""
+    stripped = _MD_FENCE_RE.sub("", text.strip())
+    stripped = _MD_FENCE_TAIL_RE.sub("", stripped.strip())
+    return stripped.strip()
+
+
 def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1, purpose: str = '') -> str:
     """
     Try a single config with retries.
@@ -395,8 +407,9 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                 )
             duration_ms = int((time.time() - llm_start) * 1000)
 
-            # Check for empty response
-            if not content or not content.strip():
+            content = _strip_markdown_fences(content)
+
+            if not content:
                 logger.warning(
                     f"[{config.name}] Empty response (attempt {attempt + 1}/{MAX_RETRIES + 1})"
                 )
@@ -405,7 +418,6 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                     continue
                 raise Exception("LLM returned empty response after all retries")
 
-            # Save usage on success
             _save_usage(
                 config,
                 response,
