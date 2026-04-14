@@ -782,16 +782,38 @@ def merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
             logger.info("Episode merge: added new season %s", snum)
             continue
 
-        existing_keys = {
-            tv_item_key(item) for item in merged_seasons[snum]["download_items"]
-        }
+        existing_items_by_key = {}
+        for item in merged_seasons[snum]["download_items"]:
+            existing_items_by_key[tv_item_key(item)] = item
+        existing_keys = set(existing_items_by_key.keys())
+
         added = []
+        merged_res_labels = []
         for new_item in new_items:
             key = tv_item_key(new_item)
             if key not in existing_keys:
                 merged_seasons[snum]["download_items"].append(new_item)
                 existing_keys.add(key)
                 added.append(new_item.get("label", ""))
+            else:
+                ex_item = existing_items_by_key[key]
+                ex_res = ex_item.get("resolutions") or {}
+                new_res = new_item.get("resolutions") or {}
+                changed = False
+                for quality, new_entries in new_res.items():
+                    if quality not in ex_res:
+                        ex_res[quality] = list(new_entries)
+                        changed = True
+                    else:
+                        has_drive = any(
+                            is_drive_link(_entry_link(e)) for e in ex_res[quality]
+                        )
+                        if not has_drive:
+                            ex_res[quality] = list(new_entries)
+                            changed = True
+                if changed:
+                    ex_item["resolutions"] = ex_res
+                    merged_res_labels.append(new_item.get("label", ""))
 
         if added:
             logger.info(
@@ -800,8 +822,15 @@ def merge_new_episodes(existing_result: dict, new_data: dict) -> dict:
                 snum,
                 added,
             )
-        else:
-            logger.info("Episode merge: no new episodes to add for S%s", snum)
+        if merged_res_labels:
+            logger.info(
+                "Episode merge: merged new resolutions into %s existing S%s item(s): %s",
+                len(merged_res_labels),
+                snum,
+                merged_res_labels,
+            )
+        if not added and not merged_res_labels:
+            logger.info("Episode merge: no new episodes or resolutions to add for S%s", snum)
 
     result = dict(existing_result)
     for key, value in new_data.items():

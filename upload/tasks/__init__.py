@@ -584,14 +584,13 @@ def process_media_task(task_pk: int) -> str:
 
         if action in ("update", "replace_items") and existing_result:
             is_tvshow = content_type == "tvshow" or bool(existing_result.get("seasons"))
-            has_new_eps = dup_result.get("has_new_episodes", False) if dup_result else False
 
-            if action == "update" and is_tvshow and has_new_eps:
+            if is_tvshow:
                 data = merge_new_episodes(existing_result, data)
-                logger.info("Merged new episodes into existing TV show seasons")
-            elif action == "replace_items" and is_tvshow:
-                data = merge_new_episodes(existing_result, data)
-                logger.info("Merged preserved TV items with incoming replace_items scope")
+                if action == "replace_items":
+                    logger.info("Merged preserved TV items with incoming replace_items scope")
+                else:
+                    logger.info("Merged TV show seasons (existing Drive links + new data)")
             else:
                 data = merge_drive_links(existing_result, data)
                 logger.info("Merged existing drive links into new extraction data")
