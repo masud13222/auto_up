@@ -21,7 +21,7 @@ STOP_WORDS = [
     "Dubbed","Dual","ORG","ESub","HardSub","SoftSub",
     "REPACK","PROPER","UNRATED","THEATRICAL","DIRECTORS.CUT","V2","V3",
     "GDrive","CineFreak","TorrentCounter","Filmywap","MoviesBaba","Filmyzilla",
-    "GB","MB", "18+", "[18+]", "Copy"
+    "GB","MB", "Copy"
 ]
 
 STOP_WORDS_SET: set = {w.lower() for w in STOP_WORDS}
@@ -83,6 +83,16 @@ ANIME_PATTERNS  = [re.compile(p, re.I) for p in (r'\bOVA\b', r'\bONA\b', r'\bOAD
 KDRAMA_PATTERNS = [re.compile(p, re.I) for p in (r'\bK-?Drama\b', r'\bKDrama\b')]
 
 LANG_TAG_PATTERN = re.compile(r'\[[A-Za-z]{2,8}-[A-Za-z]{2,8}\]', re.I)
+
+# Leading age/adult markers on site titles. STOP_PATTERN cannot remove "[18+]" because
+# \b does not treat "[" / "+" as word boundaries, and edition-bracket logic keeps unknown [].
+_AGE_RATING_LEAD = re.compile(
+    r'^(?:'
+    r'\s*\[(?:18\+|21\+|R-?18|NC-17|MA|TV-MA)\]\s*'
+    r')+'
+    r'|^(?:\s*(?:18\+|21\+)\s+)',
+    re.I,
+)
 
 # Common acronyms to restore dots after dot→space conversion
 ACRONYMS = {'swat', 'fbi', 'cia', 'nsa', 'usa', 'uk', 'us', 'nypd', 'lapd',
@@ -374,6 +384,18 @@ def _remove_lang_tags(text: str) -> str:
     return LANG_TAG_PATTERN.sub('', text)
 
 
+def _strip_age_rating_prefixes(text: str) -> str:
+    """
+    Remove leading [18+], 18+, [21+], etc. so DB/FlixBD search uses a clean title
+    (e.g. \"Krista 2024\" not \"[18+] Krista 2024\").
+    """
+    if not text:
+        return text
+    s = text.strip()
+    s = _AGE_RATING_LEAD.sub("", s)
+    return s.strip()
+
+
 def _remove_edition_brackets(text: str) -> str:
     """
     Remove [] brackets that contain edition keywords (Final Cut, Extended, etc.).
@@ -431,6 +453,7 @@ def _dot_format_extract(text: str) -> Optional[TitleInfo]:
 
 def extract_title_info(text: str) -> TitleInfo:
     original = text
+    text = _strip_age_rating_prefixes(text or "")
 
     # 1. Dot-format fast path
     result = _dot_format_extract(text)
