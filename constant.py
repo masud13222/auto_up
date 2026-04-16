@@ -7,7 +7,7 @@ Import from the project root, e.g. ``from constant import FUZZY_THRESHOLD_DB``.
 import os
 
 # --- MediaTask / DB fuzzy duplicate search ---
-FUZZY_THRESHOLD_DB = 70
+FUZZY_THRESHOLD_DB = 75
 
 # Max DB candidate rows after fuzzy sort (upload combined LLM duplicate section).
 DB_DUPLICATE_LLM_MAX_CANDIDATES = 5
@@ -46,7 +46,7 @@ FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS = _force_is_adult_root_domain_labels_fr
 # Upload ``process_media_task`` combined LLM: max slim FlixBD rows after fuzzy.
 FLIXBD_LLM_MAX_RESULTS = 3
 FLIXBD_SEARCH_PER_PAGE = 20
-FLIXBD_FUZZY_THRESHOLD = 70
+FLIXBD_FUZZY_THRESHOLD = 80
 
 # --- Subtitle strip / FFmpeg remux (upload.utils.subtitle_remove) ---
 # First N subtitle cues (per stream) scanned for blocklisted names in dialogue text.
