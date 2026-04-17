@@ -1,0 +1,108 @@
+{% extends 'panel/base.html' %}
+{% block title %}LLM dataset export — FlixBD{% endblock %}
+{% block page_title %}LLM dataset{% endblock %}
+{% block nav_llm_dataset %}active{% endblock %}
+
+{% block content %}
+<div class="space-y-6 max-w-4xl">
+    <div>
+        <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#666]">Training data</p>
+        <h1 class="mt-1 text-lg font-semibold text-white">Export LLM usage as CSV</h1>
+        <p class="mt-2 text-xs text-[#888] leading-relaxed">
+            Rows come from <span class="text-slate-400">LLM usage</span> logs: each record stores the outbound
+            <code class="text-[11px] text-orange-300/90">system_prompt</code> and
+            <code class="text-[11px] text-orange-300/90">user_message</code> plus the model
+            <code class="text-[11px] text-orange-300/90">response_text</code>.
+            Alpaca-style CSV uses <code class="text-[11px]">instruction</code> / <code class="text-[11px]">input</code> / <code class="text-[11px]">output</code>
+            (common on Hugging Face). The chat JSON format stores OpenAI-style <code class="text-[11px]">messages</code> for pipelines that apply a chat template at train time.
+        </p>
+    </div>
+
+    <section class="card p-5 sm:p-6 space-y-5">
+        <form method="get" class="space-y-5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label class="block">
+                    <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">Row limit</span>
+                    <input type="number" name="limit" min="1" value="{{ limit }}"
+                           class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm font-mono {% if export_all %}opacity-60{% endif %}"
+                           {% if export_all %}readonly{% endif %}>
+                    <span class="mt-1 block text-[10px] text-slate-600">Ignored when &quot;Export all matching rows&quot; is checked.</span>
+                </label>
+                <label class="block">
+                    <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">Sort order</span>
+                    <select name="order" class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm">
+                        <option value="newest" {% if order == 'newest' %}selected{% endif %}>Newest first</option>
+                        <option value="oldest" {% if order == 'oldest' %}selected{% endif %}>Oldest first</option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label class="block">
+                    <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">Purpose filter</span>
+                    <select name="purpose" class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm">
+                        <option value="">All purposes</option>
+                        {% for p in purpose_values %}
+                        <option value="{{ p }}" {% if purpose_filter == p %}selected{% endif %}>{{ p }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">CSV format</span>
+                    <select name="format" class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm">
+                        <option value="flat" {% if format == 'flat' %}selected{% endif %}>Flat — metadata + system / user / assistant</option>
+                        <option value="alpaca" {% if format == 'alpaca' %}selected{% endif %}>Alpaca — instruction, input, output</option>
+                        <option value="messages_json" {% if format == 'messages_json' %}selected{% endif %}>Chat — messages JSON column</option>
+                    </select>
+                </label>
+            </div>
+
+            <label class="flex items-center gap-3 cursor-pointer select-none">
+                <input type="hidden" name="export_all" value="0">
+                <input type="checkbox" name="export_all" value="1" class="rounded border-[#333] bg-[#0e0e0e] text-orange-500 focus:ring-orange-500/40"
+                       {% if export_all %}checked{% endif %}>
+                <span class="text-sm text-slate-300">Export all matching rows (full dataset for current filters; no row cap)</span>
+            </label>
+
+            <label class="flex items-center gap-3 cursor-pointer select-none">
+                <input type="hidden" name="success_only" value="0">
+                <input type="checkbox" name="success_only" value="1" class="rounded border-[#333] bg-[#0e0e0e] text-orange-500 focus:ring-orange-500/40"
+                       {% if success_only %}checked{% endif %}>
+                <span class="text-sm text-slate-300">Only successful calls</span>
+            </label>
+
+            <div class="flex flex-wrap gap-2 pt-1">
+                <button type="submit" class="rounded-2xl border border-[#1e1e1e] px-5 py-3 text-sm text-slate-200 hover:bg-[#1a1a1a]">
+                    Apply filters
+                </button>
+                <button type="submit" name="download" value="1" class="btn-primary rounded-2xl px-5 py-3 text-sm font-semibold inline-flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download CSV
+                </button>
+            </div>
+        </form>
+
+        <div class="border-t border-[#1e1e1e] pt-5">
+            <p class="text-xs text-slate-500">
+                Matching rows (after filters, non-empty request + response): <span class="text-slate-200 font-mono">{{ matching_count }}</span>
+            </p>
+            <p class="text-xs text-slate-500 mt-1">
+                {% if export_all %}
+                With &quot;Export all matching rows&quot; enabled, the CSV includes every matching row (<span class="text-orange-300/90 font-mono">{{ matching_count }}</span>).
+                {% else %}
+                This download includes at most <span class="text-orange-300/90 font-mono">{{ export_rows_cap }}</span> rows (limit vs. matches).
+                {% endif %}
+            </p>
+        </div>
+    </section>
+
+    <section class="card p-5 border border-dashed border-[#2a2a2a]">
+        <p class="text-[10px] font-semibold uppercase tracking-[0.25em] text-[#555] mb-2">Column reference</p>
+        <ul class="text-xs text-slate-500 space-y-2 list-disc list-inside">
+            <li><span class="text-slate-400">Alpaca:</span> instruction = system prompt, input = user message, output = assistant completion.</li>
+            <li><span class="text-slate-400">Flat:</span> adds id, timestamps, purpose, model, tokens, and separate system / user / assistant text columns.</li>
+            <li><span class="text-slate-400">Chat JSON:</span> one <code class="text-[11px]">messages</code> field with role/content pairs; omit empty system blocks.</li>
+        </ul>
+    </section>
+</div>
+{% endblock %}

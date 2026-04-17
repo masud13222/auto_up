@@ -5,11 +5,13 @@ from django.contrib.auth import logout
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.core.paginator import Paginator
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 from django.utils.safestring import mark_safe
+from django.utils import timezone
+import csv
 import json
 import time
 
@@ -19,6 +21,34 @@ from settings.models import GoogleConfig, UploadSettings
 
 _LLM_CHAT_HISTORY_LIMIT = 10
 _LLM_CHAT_SELECTED_CONFIG_SESSION_KEY = "panel_llm_chat_selected_config_id"
+
+_LLM_DATASET_DEFAULT_LIMIT = 1000
+
+
+class _CsvBuffer:
+    """An object that implements just the write method for csv.writer streaming."""
+
+    @staticmethod
+    def write(value):
+        return value
+
+
+def _parse_llm_outbound_json(raw: str) -> tuple[str, str]:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    system_prompt = data.get("system_prompt") or ""
+    user_message = data.get("user_message") or ""
+    return str(system_prompt), str(user_message)
+
+
+def _llm_dataset_streaming_csv(filename: str, row_generator):
+    response = StreamingHttpResponse(row_generator, content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 def _sanitize_llm_max_output_tokens(raw) -> str:
@@ -402,6 +432,157 @@ def llm_chat_api(request):
         "duration_ms": duration_ms,
         "message_length": len(assistant_message or ""),
     })
+
+
+def _llm_usage_dataset_queryset(request):
+    """Build filtered LLMUsage queryset for dataset export (newest or oldest first)."""
+    from llm.models import LLMUsage
+
+    order = (request.GET.get("order") or "newest").strip().lower()
+    oldest_first = order == "oldest"
+    purpose_filter = (request.GET.get("purpose") or "").strip()
+    success_only = (request.GET.get("success_only") or "1").strip() != "0"
+
+    qs = LLMUsage.objects.all()
+    if success_only:
+        qs = qs.filter(success=True)
+    qs = qs.exclude(response_text__exact="").exclude(outbound_request_json__exact="")
+    if purpose_filter:
+        qs = qs.filter(purpose=purpose_filter)
+
+    if oldest_first:
+        return qs.order_by("created_at", "pk")
+    return qs.order_by("-created_at", "-pk")
+
+
+def _llm_dataset_csv_iterator(qs, fmt: str):
+    writer = csv.writer(_CsvBuffer())
+    yield "\ufeff"
+    if fmt == "alpaca":
+        yield writer.writerow(["instruction", "input", "output"])
+        for row in qs.iterator(chunk_size=500):
+            sys_p, user_m = _parse_llm_outbound_json(row.outbound_request_json)
+            assistant = (row.response_text or "").strip()
+            if not assistant:
+                continue
+            yield writer.writerow([sys_p, user_m, assistant])
+    elif fmt == "messages_json":
+        yield writer.writerow(["id", "created_at", "purpose", "model_name", "messages"])
+        for row in qs.iterator(chunk_size=500):
+            sys_p, user_m = _parse_llm_outbound_json(row.outbound_request_json)
+            assistant = (row.response_text or "").strip()
+            if not assistant:
+                continue
+            messages = []
+            if (sys_p or "").strip():
+                messages.append({"role": "system", "content": sys_p})
+            messages.append({"role": "user", "content": user_m})
+            messages.append({"role": "assistant", "content": assistant})
+            payload = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+            yield writer.writerow(
+                [
+                    row.pk,
+                    timezone.localtime(row.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                    row.purpose,
+                    row.model_name,
+                    payload,
+                ]
+            )
+    else:
+        yield writer.writerow(
+            [
+                "id",
+                "created_at",
+                "purpose",
+                "config_name",
+                "model_name",
+                "sdk",
+                "success",
+                "prompt_tokens",
+                "completion_tokens",
+                "system",
+                "user",
+                "assistant",
+            ]
+        )
+        for row in qs.iterator(chunk_size=500):
+            sys_p, user_m = _parse_llm_outbound_json(row.outbound_request_json)
+            assistant = (row.response_text or "").strip()
+            if not assistant:
+                continue
+            yield writer.writerow(
+                [
+                    row.pk,
+                    timezone.localtime(row.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                    row.purpose,
+                    row.config_name,
+                    row.model_name,
+                    row.sdk,
+                    row.success,
+                    row.prompt_tokens,
+                    row.completion_tokens,
+                    sys_p,
+                    user_m,
+                    assistant,
+                ]
+            )
+
+
+@login_required
+def llm_dataset_export(request):
+    """
+    Export LLM usage rows as training-friendly CSV (Alpaca, flat columns, or chat messages JSON).
+    """
+    from llm.models import LLMUsage
+
+    export_all = (request.GET.get("export_all") or "").strip() == "1"
+    raw_limit = _coerce_int(request.GET.get("limit"))
+    if raw_limit is None:
+        limit = _LLM_DATASET_DEFAULT_LIMIT
+    else:
+        limit = max(1, raw_limit)
+
+    fmt = (request.GET.get("format") or "flat").strip().lower()
+    if fmt not in {"flat", "alpaca", "messages_json"}:
+        fmt = "flat"
+
+    base_qs = _llm_usage_dataset_queryset(request)
+
+    if request.GET.get("download") == "1":
+        export_qs = base_qs if export_all else base_qs[:limit]
+        ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"llm_usage_dataset_{ts}.csv"
+        return _llm_dataset_streaming_csv(filename, _llm_dataset_csv_iterator(export_qs, fmt))
+
+    purpose_values = list(
+        LLMUsage.objects.exclude(purpose="")
+        .values_list("purpose", flat=True)
+        .distinct()
+        .order_by("purpose")[:500]
+    )
+    matching_count = base_qs.count()
+
+    if export_all:
+        export_rows_cap = matching_count
+    else:
+        export_rows_cap = min(limit, matching_count)
+
+    return render(
+        request,
+        "panel/llm_dataset.html",
+        {
+            "purpose_values": purpose_values,
+            "matching_count": matching_count,
+            "limit": limit,
+            "default_limit": _LLM_DATASET_DEFAULT_LIMIT,
+            "export_all": export_all,
+            "format": fmt,
+            "order": (request.GET.get("order") or "newest").strip().lower(),
+            "purpose_filter": (request.GET.get("purpose") or "").strip(),
+            "success_only": (request.GET.get("success_only") or "1").strip() != "0",
+            "export_rows_cap": export_rows_cap,
+        },
+    )
 
 
 def logout_view(request):

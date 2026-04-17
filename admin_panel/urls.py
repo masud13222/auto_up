@@ -19,6 +19,7 @@ urlpatterns = [
     path('llm/', views.llm_settings, name='llm_settings'),
     path('llm/chatbot/', views.llm_chat, name='llm_chat'),
     path('llm/chat/', views.llm_chat_api, name='llm_chat_api'),
+    path('llm/dataset/', views.llm_dataset_export, name='llm_dataset_export'),
 
     # Task actions
     path('task/<int:pk>/', views.task_detail, name='task_detail'),
