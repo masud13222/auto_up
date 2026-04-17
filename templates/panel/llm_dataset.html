@@ -50,9 +50,9 @@
                 <label class="block">
                     <span class="block text-[10px] font-medium text-slate-500 uppercase tracking-[0.2em] mb-1.5">CSV format</span>
                     <select name="format" class="w-full bg-[#0e0e0e] border border-[#1e1e1e] text-white rounded-2xl px-4 py-3 text-sm">
-                        <option value="flat" {% if format == 'flat' %}selected{% endif %}>Flat — metadata + system / user / assistant</option>
+                        <option value="flat" {% if format == 'flat' %}selected{% endif %}>Flat — system, user, assistant</option>
                         <option value="alpaca" {% if format == 'alpaca' %}selected{% endif %}>Alpaca — instruction, input, output</option>
-                        <option value="messages_json" {% if format == 'messages_json' %}selected{% endif %}>Chat — messages JSON column</option>
+                        <option value="messages_json" {% if format == 'messages_json' %}selected{% endif %}>Chat — single messages JSON column</option>
                     </select>
                 </label>
             </div>
@@ -100,8 +100,8 @@
         <p class="text-[10px] font-semibold uppercase tracking-[0.25em] text-[#555] mb-2">Column reference</p>
         <ul class="text-xs text-slate-500 space-y-2 list-disc list-inside">
             <li><span class="text-slate-400">Alpaca:</span> instruction = system prompt, input = user message, output = assistant completion.</li>
-            <li><span class="text-slate-400">Flat:</span> adds id, timestamps, purpose, model, tokens, and separate system / user / assistant text columns.</li>
-            <li><span class="text-slate-400">Chat JSON:</span> one <code class="text-[11px]">messages</code> field with role/content pairs; omit empty system blocks.</li>
+            <li><span class="text-slate-400">Flat:</span> three columns only — system, user, assistant (no ids or token stats).</li>
+            <li><span class="text-slate-400">Chat JSON:</span> one column <code class="text-[11px]">messages</code> (JSON array of role/content); empty system blocks omitted.</li>
         </ul>
     </section>
 </div>

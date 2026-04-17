@@ -467,7 +467,7 @@ def _llm_dataset_csv_iterator(qs, fmt: str):
                 continue
             yield writer.writerow([sys_p, user_m, assistant])
     elif fmt == "messages_json":
-        yield writer.writerow(["id", "created_at", "purpose", "model_name", "messages"])
+        yield writer.writerow(["messages"])
         for row in qs.iterator(chunk_size=500):
             sys_p, user_m = _parse_llm_outbound_json(row.outbound_request_json)
             assistant = (row.response_text or "").strip()
@@ -479,59 +479,21 @@ def _llm_dataset_csv_iterator(qs, fmt: str):
             messages.append({"role": "user", "content": user_m})
             messages.append({"role": "assistant", "content": assistant})
             payload = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
-            yield writer.writerow(
-                [
-                    row.pk,
-                    timezone.localtime(row.created_at).strftime("%Y-%m-%d %H:%M:%S"),
-                    row.purpose,
-                    row.model_name,
-                    payload,
-                ]
-            )
+            yield writer.writerow([payload])
     else:
-        yield writer.writerow(
-            [
-                "id",
-                "created_at",
-                "purpose",
-                "config_name",
-                "model_name",
-                "sdk",
-                "success",
-                "prompt_tokens",
-                "completion_tokens",
-                "system",
-                "user",
-                "assistant",
-            ]
-        )
+        yield writer.writerow(["system", "user", "assistant"])
         for row in qs.iterator(chunk_size=500):
             sys_p, user_m = _parse_llm_outbound_json(row.outbound_request_json)
             assistant = (row.response_text or "").strip()
             if not assistant:
                 continue
-            yield writer.writerow(
-                [
-                    row.pk,
-                    timezone.localtime(row.created_at).strftime("%Y-%m-%d %H:%M:%S"),
-                    row.purpose,
-                    row.config_name,
-                    row.model_name,
-                    row.sdk,
-                    row.success,
-                    row.prompt_tokens,
-                    row.completion_tokens,
-                    sys_p,
-                    user_m,
-                    assistant,
-                ]
-            )
+            yield writer.writerow([sys_p, user_m, assistant])
 
 
 @login_required
 def llm_dataset_export(request):
     """
-    Export LLM usage rows as training-friendly CSV (Alpaca, flat columns, or chat messages JSON).
+    Export LLM usage rows as training-friendly CSV (Alpaca, system/user/assistant, or messages JSON).
     """
     from llm.models import LLMUsage
 
