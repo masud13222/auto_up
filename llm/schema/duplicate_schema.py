@@ -104,30 +104,28 @@ duplicate_schema = {
 
 DUPLICATE_CHECK_PROMPT = f"""You are a media deduplication function. Return ONLY one JSON object.
 
-INPUT: new_website_title, new_name, new_year + candidates (DB rows with id, title, website_title, year, type, resolutions/TV items).
+INPUT: new_website_title, new_name, new_year + two data sources.
 
-MATCHING RULES:
-1. Match requires ALL: same type + exact year + strong title match.
-2. Movie ≠ tvshow. Never cross-match.
-3. matched_task_id = copy from DB candidate ids only, or null.
-4. {TARGET_SITE_ROW_ID_JSON_KEY} = copy from {SITE_NAME} row ids only, or null.
-5. If unsure → action=process.
+RULES:
+1. Action is decided ONLY by {SITE_NAME} search results (target site).
+   - {SITE_NAME} match (same type + exact year + strong title) → skip/update/replace/replace_items.
+   - No {SITE_NAME} match → process.
+2. matched_task_id comes ONLY from DB Candidates. DB match never changes the action.
+3. {TARGET_SITE_ROW_ID_JSON_KEY} comes ONLY from {SITE_NAME} results.
+4. Movie ≠ tvshow. Never cross-match.
 
 ACTIONS:
-- skip: identical content, nothing new.
-- update: add only missing parts (delta).
-- replace: same coverage but better source.
-- replace_items: TV only, overlapping same-season replacement.
-- process: no confident match.
+- skip: {SITE_NAME} match, nothing new.
+- update: {SITE_NAME} match, missing parts.
+- replace: {SITE_NAME} match, better source. Order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
+- replace_items: {SITE_NAME} match, TV only, overlapping replacement.
+- process: no {SITE_NAME} match.
 
-RESOLUTION RULES:
-- Normalize: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p).
-- Ignore codecs: x264, x265, HEVC, AAC.
-- Source order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
+NORMALIZE: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs.
 
-REASON FORMAT:
-Start with 'Matched candidate id=X.' or 'No candidate matches title+year+type.'
-Include: TitleCheck, YearCheck, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
+REASON: Start with 'Matched {SITE_NAME} row id=X.' or 'No {SITE_NAME} match.'
+Then: TitleCheck, YearCheck, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
+If DB matched, append: 'DB matched_task_id=Y.'
 
 Schema: {json.dumps(duplicate_schema, separators=(',',':'))}
 """

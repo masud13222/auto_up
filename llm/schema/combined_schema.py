@@ -74,85 +74,75 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
     return f"""
 ---
 ## DUPLICATE CHECK
+
 {chr(10).join(ctx_parts)}
 
-MATCHING:
-- Match requires ALL THREE: same type + exact year + strong title match after trivial cleanup.
-- Movie ≠ tvshow. Never cross-match.
-- `matched_task_id` = copy one integer `id` from DB Candidates ONLY, or null. NEVER use a {site} search result id here.
-- `{TARGET_SITE_ROW_ID_JSON_KEY}` = copy one integer `id` from {site} search results ONLY, or null. NEVER use a DB Candidate id here.
-- These two id namespaces are SEPARATE. If DB Candidates is empty, `matched_task_id` MUST be null.
-- If title/year/type don't match any candidate → action=`process`.
+### RULES
+1. **Action** is decided ONLY by {site} search results (target site where content is uploaded).
+   - {site} match found (same type + exact year + strong title) → `skip` / `update` / `replace` / `replace_items`.
+   - No {site} match → `process`.
+2. **`matched_task_id`** comes ONLY from DB Candidates (internal database, metadata only).
+   - DB match found (same type + exact year + strong title) → `matched_task_id` = its integer `id`.
+   - No DB match → `matched_task_id` = null.
+   - DB match never changes the action.
+3. **`{TARGET_SITE_ROW_ID_JSON_KEY}`** comes ONLY from {site} search results — never from DB Candidates.
+4. Movie ≠ tvshow. Never cross-match types.
 
-NORMALIZE:
-- Resolution keys: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs (x264/x265/HEVC/AAC).
-- `Extracted` = resolutions from your extracted `data`.
-- `Existing` = resolutions/items from the matched DB candidate.
-- `Missing` = in Extracted but not in Existing.
-- For TV: compare per exact season_number + episode_range + resolution. Never union resolutions across different ranges.
+### WHEN {site} MATCH EXISTS
+Compare `Extracted` (from your extracted `data`) vs `Existing` (from matched {site} row):
+- `Extracted` = `Existing` → `skip`.
+- `Extracted` has items not in `Existing` → `update`. Fill `update_details`.
+- Same coverage but higher source → `replace`. Source order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
+- TV only, overlapping same-season replacement → `replace_items`.
 
-ACTIONS:
-- `process`: no confident match → `data` = full extraction.
-- `skip`: same content, nothing new.
-- `replace`: same coverage, better source → `data` = full extraction.
-- `replace_items`: TV only, overlapping same-season replacement → `data` = full extraction (replacement scope decided later).
-- `update`: new resolutions or episodes exist → `data` = full extraction. Also fill `update_details` (see below).
+### NORMALIZE
+Resolution keys: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs.
+For TV: compare per exact season_number + episode_range + resolution. Never union across ranges.
 
-SOURCE ORDER: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
-Higher source for same coverage → `replace`. Never replace from codec alone.
-
-TV-SPECIFIC:
+### TV-SPECIFIC
 - `has_new_episodes`=true only for explicit new episode labels/ranges.
-- New later range or new season → `update`.
-- Same range + missing resolutions only → `update`.
+- New range or season → `update`. Same range + missing resolutions → `update`.
 - Same range + better source → `replace` or `replace_items`.
 - Different seasons are additive; never replace another season.
 - `replace_items` only when no combo/full-season pack is involved.
-- Never treat an aggregated title that summarizes many episodes as proof that every range/resolution is new.
 
-REASON: single line. Start with `Matched candidate id=X.` or `No candidate matches title+year+type.`
-Include: TitleCheck, YearCheck: new <N> vs candidate <M>, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
+### REASON FORMAT
+Single line: `Matched {site} row id=X.` or `No {site} match.`
+Then: TitleCheck, YearCheck, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
+If DB candidate also matched, append: `DB matched_task_id=Y.`
 
-`updated_website_title` = better stored title ending ` - {SITE_NAME}`, or `false`.
-
-`update_details` (ONLY when action=update):
-Provide a structured breakdown so a downstream delta filter knows exactly what to look for.
-- `missing_items`: array — one entry per download group that has something missing.
-  - Movie: one entry with `missing_resolutions` = list of resolution keys (e.g. ["480p","2160p"]).
-  - TV: one entry per season+episode_range that has missing resolutions or is entirely new.
-    - `season_number`: integer.
-    - `episode_range`: same value as in the extracted download_item.
-    - `missing_resolutions`: resolution keys missing for that range.
-    - `is_new_range`: true if this episode_range does not exist at all in the candidate.
-- `summary`: one-line human-readable description. E.g. "S05 EP41-48: need 480p; EP49-56: new range (720p,1080p)".
+### OTHER FIELDS
+- `updated_website_title`: better stored title ending ` - {SITE_NAME}`, or `false`.
+- `update_details` (only when action=update): `missing_items` array + `summary` string.
+  - Movie: one entry with `missing_resolutions`.
+  - TV: one entry per season+episode_range — include `season_number`, `episode_range`, `missing_resolutions`, `is_new_range`.
 
 ```json
 {json.dumps(duplicate_schema, **_COMPACT)}
 ```
 
-### FEW-SHOT EXAMPLES (action selection):
+### EXAMPLES
 
-**EX-1: update — missing resolution**
-Existing: S05, Episode 41-48, resolutions: 1080p, 720p.
-Page: S05, Episode 41-48, resolutions: 480p, 720p, 1080p.
-Action: `update`. `update_details`: {{"missing_items":[{{"season_number":5,"episode_range":"41-48","missing_resolutions":["480p"],"is_new_range":false}}],"summary":"S05 EP41-48: need 480p"}}
-`data` = full extraction.
+**EX-1: {site} match, DB empty → skip**
+{site}: [{{"id":1540,"title":"Movie X (1991)","download_links":{{"qualities":["480p","720p"]}}}}]. DB: [].
+Extracted:[480p,720p]. {site} id=1540 matches. Existing:[480p,720p]. Missing:[].
+→ is_duplicate=true, {TARGET_SITE_ROW_ID_JSON_KEY}=1540, matched_task_id=null, action=`skip`.
 
-**EX-2: update — new episode range + missing resolution**
-Existing: S02, Episode 01-06, resolutions: 1080p, 720p.
-Page: S02, Episode 01-06 (480p, 720p, 1080p) AND Episode 07-12 (720p, 1080p).
-Action: `update`, has_new_episodes=true. `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-06","missing_resolutions":["480p"],"is_new_range":false}},{{"season_number":2,"episode_range":"07-12","missing_resolutions":["720p","1080p"],"is_new_range":true}}],"summary":"S02 EP01-06: need 480p; EP07-12: new range (720p,1080p)"}}
-`data` = full extraction.
+**EX-2: No {site} match, DB match → process**
+{site}: [{{"id":300,"title":"Different Movie (2018)"}}]. DB: [{{"id":77,"title":"New Movie","year":2024,"type":"movie"}}].
+Extracted:"New Movie" 2024. No {site} match → action=`process`. DB id=77 matches → matched_task_id=77.
+→ is_duplicate=false, {TARGET_SITE_ROW_ID_JSON_KEY}=null, matched_task_id=77, action=`process`.
 
-**EX-3: skip — everything exists**
-Existing: S01, Episode 01-10, resolutions: 480p, 720p, 1080p.
-Page: S01, Episode 01-10, resolutions: 720p, 1080p.
-Analysis: nothing new → action=`skip`. No `update_details` needed.
+**EX-3: {site} match, missing resolution → update**
+{site}: [{{"id":218,"title":"Show (2023)","download_links":{{"qualities":["720p","1080p"]}}}}]. DB: [].
+Extracted:[480p,720p,1080p]. {site} id=218 matches. Missing:[480p].
+→ is_duplicate=true, {TARGET_SITE_ROW_ID_JSON_KEY}=218, matched_task_id=null, action=`update`.
+  `update_details`: {{"missing_items":[{{"missing_resolutions":["480p"]}}],"summary":"need 480p"}}
 
-**EX-4: id namespace — DB Candidates empty, only search results**
-DB Candidates: [] (empty). Search results: [{{"id":218,"title":"Show S05 EP01-80",...}}]
-Action: `update`. `matched_task_id`: null (DB Candidates is empty — MUST be null). `{TARGET_SITE_ROW_ID_JSON_KEY}`: 218 (from search results).
-WRONG: setting `matched_task_id` to 218 — that id belongs to search results, not DB Candidates.
+**EX-4: TV update — new episodes + missing resolution**
+{site} match. Existing: S02 EP01-06 [720p,1080p]. Extracted: EP01-06 [480p,720p,1080p] + EP07-12 [720p,1080p].
+→ action=`update`, has_new_episodes=true.
+  `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-06","missing_resolutions":["480p"],"is_new_range":false}},{{"season_number":2,"episode_range":"07-12","missing_resolutions":["720p","1080p"],"is_new_range":true}}],"summary":"S02 EP01-06: need 480p; EP07-12: new range"}}
 
 """
 
