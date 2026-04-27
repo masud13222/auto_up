@@ -104,6 +104,14 @@ class LLMUsage(models.Model):
             "auto_filter: per-URL local db_results + FlixBD rows (auto_filter_db_and_flixbd_by_item)."
         ),
     )
+    search_query_json = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Search query trace used before LLM call. Includes extracted title/year/season_tag and "
+            "DB/FlixBD query phases so admin can see exactly what was searched."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

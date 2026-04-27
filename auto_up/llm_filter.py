@@ -138,6 +138,14 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             for e in payload
             if isinstance(e, dict)
         ]
+        search_query_by_item = [
+            {
+                "url": str(item.get("url") or ""),
+                "search_query": dict(item.get("search_query_json") or {}),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ]
         _save_duplicate_usage_snapshot_to_latest_usage(
             dup_result=None,
             db_match_candidates=None,
@@ -145,6 +153,7 @@ def filter_items_with_llm(items: list[dict]) -> list[dict]:
             purpose="auto_filter",
             response_text=raw_response,
             extra_context={"auto_filter_db_and_flixbd_by_item": context_by_item},
+            search_query_json={"auto_filter_search_by_item": search_query_by_item},
         )
 
         logger.info(f"LLM returned {len(decisions)} decisions")

@@ -19,7 +19,7 @@ from upload.utils.drive_file_delete import cleanup_old_drive_files
 from upload.utils.tv_items import split_tv_replace_scope
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
-from llm.utils.name_extractor import extract_title_info
+from llm.utils.guessit_extractor import extract_title_info
 from upload.task_locks import RuntimeLock, acquire_runtime_lock
 
 from .helpers import normalize_result_download_languages, save_task
@@ -249,11 +249,27 @@ def process_media_task(task_pk: int) -> str:
         if website_title:
             logger.info(f"Website title: {website_title}")
             info = extract_title_info(website_title)
-            name, year = info.title, info.year
-            logger.info(f"Extracted: name='{name}', year='{year}'")
+            name, year, season_tag = info.title, info.year, info.season_tag
+            logger.info(f"Extracted: name='{name}', year='{year}', season_tag='{season_tag}'")
+            db_search_debug: dict = {}
+            flixbd_search_debug: dict = {}
+            search_query_json = {
+                "extract": {
+                    "website_title": website_title,
+                    "name": name,
+                    "year": year,
+                    "season_tag": season_tag,
+                }
+            }
 
             if name:
-                matches = _search_db(name, year, exclude_pk=media_task.pk)
+                matches = _search_db(
+                    name,
+                    year,
+                    season_tag=season_tag,
+                    exclude_pk=media_task.pk,
+                    search_debug=db_search_debug,
+                )
                 if matches:
                     db_match_candidates = build_db_match_candidates(matches)
                     db_candidate_map = {t.pk: t for t in matches}
@@ -269,7 +285,14 @@ def process_media_task(task_pk: int) -> str:
                     logger.info(f"No existing match for '{name}'. New content.")
 
                 # ── FlixBD search (pre-LLM, results passed to LLM as context) ──
-                flixbd_results = fetch_flixbd_results(name, year=year)
+                flixbd_results = fetch_flixbd_results(
+                    name,
+                    year=year,
+                    season_tag=season_tag,
+                    fetch_debug=flixbd_search_debug,
+                )
+                search_query_json["db_search"] = db_search_debug
+                search_query_json["flixbd_search"] = flixbd_search_debug
 
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
@@ -286,6 +309,7 @@ def process_media_task(task_pk: int) -> str:
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
             existing_result=resume_result if resume_result else None,
+            search_query_json=search_query_json if website_title else None,
         )
         title = data.get("title", "Unknown")
 

@@ -17,6 +17,7 @@ from constant import (
 )
 from upload.models import MediaTask
 from upload.tasks.helpers import download_source_urls
+from llm.utils.guessit_extractor import build_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -131,18 +132,15 @@ def _fuzzy_score(query: str, candidate_title: str, candidate_web_title: str) -> 
     return max(scores) if scores else 0
 
 
-def _fuzzy_score_merged(name: str, year: str | None, candidate_title: str, candidate_web_title: str) -> int:
-    """Like ``_fuzzy_score`` on ``name``, plus optional ``name + year`` query when year is set."""
-    s = _fuzzy_score(name, candidate_title, candidate_web_title)
-    if not year:
-        return s
-    ys = str(year).strip()
-    if not ys:
-        return s
-    qy = f"{(name or '').strip()} {ys}".lower()
-    qn = (name or "").strip().lower()
-    if qy == qn:
-        return s
+def _fuzzy_score_merged(
+    name: str,
+    year: str | None,
+    season_tag: str | None,
+    candidate_title: str,
+    candidate_web_title: str,
+) -> int:
+    """Best fuzzy score against prioritized query set."""
+    s = 0
     texts = []
     if candidate_title:
         texts.append(candidate_title.lower())
@@ -150,60 +148,58 @@ def _fuzzy_score_merged(name: str, year: str | None, candidate_title: str, candi
         texts.append(candidate_web_title.lower())
     if not texts:
         return s
-    for t in texts:
-        s = max(s, fuzz.partial_ratio(qy, t))
+    for spec in build_search_queries(name, year=year, season_tag=season_tag):
+        q = spec["q"].lower()
+        for t in texts:
+            s = max(s, fuzz.partial_ratio(q, t))
     return int(s)
 
 
-def _fetch_candidates(base_qs, name: str, year: str = None) -> dict:
+def _fetch_candidates(base_qs, name: str, year: str = None, season_tag: str | None = None) -> dict:
     """
     Broad DB fetch in two phases (name-only keywords, then name+year keywords), merged by pk,
     then a single fuzzy pass (name and optional name+year vs titles).
     Returns {pk: (task, matched_by_list, score)}.
     """
     candidates: dict = {}
-    keywords = _get_search_keywords(name)
+    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
     merged: dict[int, tuple] = {}  # pk -> (task, matched_by list)
     order: list[int] = []
+    priority_by_pk: dict[int, int] = {}
 
-    def _ingest(qs, tag: str) -> None:
+    def _ingest(qs, tag: str, priority: int) -> None:
         for task in qs:
             if task.pk not in merged:
                 merged[task.pk] = (task, [tag])
                 order.append(task.pk)
+                priority_by_pk[task.pk] = priority
             else:
                 _, tags = merged[task.pk]
                 if tag not in tags:
                     tags.append(tag)
+                priority_by_pk[task.pk] = max(priority_by_pk.get(task.pk, 0), priority)
 
-    for keyword in keywords:
-        qs = base_qs.filter(
-            Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
-        ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_AUTO_UP]
-        _ingest(qs, "name_only")
-
-    if year:
-        try:
-            year_int = int(year)
-            for keyword in keywords:
-                qs = base_qs.filter(
-                    Q(title__icontains=keyword) | Q(website_title__icontains=keyword),
-                    result__year=year_int,
-                ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_AUTO_UP]
-                _ingest(qs, "name_with_year")
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid year value: {year}")
+    for spec in query_specs:
+        query_text = spec["q"]
+        tag = spec["tag"]
+        priority = int(spec["priority"])
+        keywords = _get_search_keywords(query_text)
+        for keyword in keywords:
+            qs = base_qs.filter(
+                Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
+            ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_AUTO_UP]
+            _ingest(qs, tag, priority)
 
     for pk in order:
         task, matched_by = merged[pk]
-        score = _fuzzy_score_merged(name, year, task.title, task.website_title)
+        score = _fuzzy_score_merged(name, year, season_tag, task.title, task.website_title)
         if score >= FUZZY_THRESHOLD_DB:
-            candidates[task.pk] = (task, matched_by, score)
+            candidates[task.pk] = (task, matched_by, score, priority_by_pk.get(task.pk, 0))
 
-    return candidates
+    return candidates, query_specs
 
 
-def search_existing(name: str, year: str = None) -> dict:
+def search_existing(name: str, year: str = None, season_tag: str | None = None) -> dict:
     """
     Search MediaTask for matching entries using fuzzy matching.
     
@@ -216,11 +212,15 @@ def search_existing(name: str, year: str = None) -> dict:
     Each result has a `matched_by` field showing which queries hit.
     """
     base_qs = MediaTask.objects.exclude(result__isnull=True)
-    candidates = _fetch_candidates(base_qs, name, year)
+    candidates, query_specs = _fetch_candidates(base_qs, name, year, season_tag=season_tag)
 
     # Build result list, sorted by fuzzy score (best first)
     seen_pks = {}
-    for pk, (task, matched_by, score) in sorted(candidates.items(), key=lambda x: x[1][2], reverse=True):
+    for pk, (task, matched_by, score, priority) in sorted(
+        candidates.items(),
+        key=lambda x: (x[1][3], x[1][2]),
+        reverse=True,
+    ):
         rich = _extract_rich_info(task)
         seen_pks[pk] = {
             "task_pk": pk,
@@ -248,4 +248,11 @@ def search_existing(name: str, year: str = None) -> dict:
     return {
         "results": results,
         "has_matches": has_matches,
+        "search_debug": {
+            "name": (name or "").strip(),
+            "year": str(year).strip() if year is not None and str(year).strip() else None,
+            "season_tag": (season_tag or "").strip() or None,
+            "query_specs": [dict(spec) for spec in query_specs],
+            "llm_max_db_rows": AUTO_UP_DB_LLM_MAX_CANDIDATES,
+        },
     }

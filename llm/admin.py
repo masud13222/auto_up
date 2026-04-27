@@ -108,6 +108,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'outbound_request_json',
         'duplicate_check_json',
         'duplicate_context_json',
+        'search_query_json',
         'purpose',
         'config_name',
         'model_name',
@@ -128,6 +129,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'outbound_request_display',
         'duplicate_check_display',
         'duplicate_context_display',
+        'search_query_display',
     )
     fieldsets = (
         (
@@ -183,6 +185,15 @@ class LLMUsageAdmin(admin.ModelAdmin):
                     'auto_filter: per-URL db_results + flixbd_results (auto_filter_db_and_flixbd_by_item).'
                 ),
                 'fields': ('duplicate_context_display',),
+            },
+        ),
+        (
+            'Search query trace',
+            {
+                'description': (
+                    'Search query JSON used before LLM call (extract fields + DB/FlixBD phases).'
+                ),
+                'fields': ('search_query_display',),
             },
         ),
     )
@@ -260,6 +271,28 @@ class LLMUsageAdmin(admin.ModelAdmin):
         if not obj or not (obj.duplicate_context_json or '').strip():
             return '—'
         raw = obj.duplicate_context_json.strip()
+        try:
+            parsed = json.loads(raw)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            inner = escape(raw)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                f'<pre class="llm-usage-response-pre">{inner}</pre>'
+                '</div>'
+            )
+
+    @admin.display(description='Search query trace (JSON)')
+    def search_query_display(self, obj):
+        if not obj or not (obj.search_query_json or '').strip():
+            return '—'
+        raw = obj.search_query_json.strip()
         try:
             parsed = json.loads(raw)
             inner = _highlight_json_html(parsed)

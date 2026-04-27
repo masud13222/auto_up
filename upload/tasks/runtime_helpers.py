@@ -30,6 +30,7 @@ from llm.schema.blocked_names import (
     TARGET_SITE_ROW_ID_JSON_KEY,
     LEGACY_SITE_ROW_ID_JSON_KEY,
 )
+from llm.utils.guessit_extractor import build_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -556,33 +557,32 @@ def flixbd_search_query(name: str, year: str | int | None = None) -> str:
     return f"{n} {ys}"
 
 
-def _flixbd_title_fuzzy_score(name: str, year: str | int | None, title: str) -> int:
-    """partial_ratio of API ``title`` vs extracted name and (when distinct) name+year query."""
+def _flixbd_title_fuzzy_score(name: str, year: str | int | None, title: str, season_tag: str | None = None) -> int:
+    """Best partial_ratio against prioritized queries (name, name+year, name+year+season)."""
     from rapidfuzz import fuzz
 
     t = (title or "").lower()
     if not t:
         return 0
-    qn = (name or "").strip().lower()
-    s = fuzz.partial_ratio(qn, t) if qn else 0
-    ys = str(year).strip() if year is not None else ""
-    if ys:
-        qy = flixbd_search_query(name, year).strip().lower()
-        if qy and qy != qn:
-            s = max(s, fuzz.partial_ratio(qy, t))
-    return int(s)
+    best = 0
+    for spec in build_search_queries(name, year=year, season_tag=season_tag):
+        q = spec["q"].lower()
+        if q:
+            best = max(best, fuzz.partial_ratio(q, t))
+    return int(best)
 
 
 def _flixbd_merge_two_phase_raw(
     name: str,
     year: str | int | None,
+    season_tag: str | None = None,
     *,
     per_page: int,
     api_url: str,
     api_key: str,
 ) -> tuple[list[dict], list[str], int]:
     """
-    Run FlixBD search twice when useful (name-only, then name+year), merge rows by ``id``.
+    Run FlixBD search across prioritized queries and merge rows by ``id``.
 
     Returns ``(merged_items, queries_used, phases_without_payload_count)``.
     """
@@ -620,18 +620,22 @@ def _flixbd_merge_two_phase_raw(
             row["id"] = nk
             merged.append(row)
 
-    q_name = (name or "").strip()
-    _phase(q_name)
-    q_year = flixbd_search_query(name, year).strip()
-    if q_year and q_year != q_name:
-        _phase(q_year)
+    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
+    for spec in sorted(query_specs, key=lambda item: int(item["priority"]), reverse=True):
+        _phase(spec["q"])
 
     return merged, queries_run, phases_no_payload
 
 
-def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debug: dict | None = None) -> list:
+def fetch_flixbd_results(
+    name: str,
+    *,
+    year: str | int | None = None,
+    season_tag: str | None = None,
+    fetch_debug: dict | None = None,
+) -> list:
     """
-    FlixBD: two API phases (``q`` = name only, then ``q`` = name+year when distinct), merged by ``id``,
+    FlixBD: prioritized API phases (name, name+year, name+year+season_tag when available), merged by ``id``,
     then fuzzy filter on titles (>= ``FLIXBD_FUZZY_THRESHOLD``), best scores first, capped at
     ``FLIXBD_LLM_MAX_RESULTS``. Slim rows for the LLM (no match_score field).
 
@@ -648,6 +652,7 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
         fetch_debug.clear()
         fetch_debug["name"] = name
         fetch_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
+        fetch_debug["season_tag"] = str(season_tag).strip() if season_tag else None
 
     q_label = (name or "").strip()
     if not q_label:
@@ -662,6 +667,7 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
         raw_merged, queries_run, phases_no_payload = _flixbd_merge_two_phase_raw(
             name,
             year,
+            season_tag=season_tag,
             per_page=FLIXBD_SEARCH_PER_PAGE,
             api_url=api_url,
             api_key=api_key,
@@ -704,7 +710,7 @@ def fetch_flixbd_results(name: str, *, year: str | int | None = None, fetch_debu
             if rd is not None and rd != "":
                 row["release_date"] = rd
 
-            fs = _flixbd_title_fuzzy_score(name, year, item_title)
+            fs = _flixbd_title_fuzzy_score(name, year, item_title, season_tag=season_tag)
             if fs >= FLIXBD_FUZZY_THRESHOLD:
                 scored.append((fs, row))
 
@@ -1060,7 +1066,6 @@ def build_db_candidate(task: MediaTask) -> dict:
 
     if is_tvshow:
         episodes = []
-        tv_items = []
         for season in result_data.get("seasons", []):
             season_num = season.get("season_number")
             for item in season.get("download_items", []):
@@ -1078,18 +1083,8 @@ def build_db_candidate(task: MediaTask) -> dict:
                 episodes.append(
                     f"S{season_num} {item_type} {episode_range or '-'} {label}: {','.join(ep_res)}"
                 )
-                tv_items.append(
-                    {
-                        "season_number": season_num,
-                        "type": item_type,
-                        "episode_range": episode_range,
-                        "label": label,
-                        "resolutions": ep_res,
-                    }
-                )
-        candidate["episode_count"] = len(tv_items)
+        candidate["episode_count"] = len(episodes)
         candidate["episodes"] = episodes
-        candidate["tv_items"] = tv_items
 
     return candidate
 

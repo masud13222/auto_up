@@ -10,7 +10,7 @@ import os
 FUZZY_THRESHOLD_DB = 75
 
 # Max DB candidate rows after fuzzy sort (upload combined LLM duplicate section).
-DB_DUPLICATE_LLM_MAX_CANDIDATES = 5
+DB_DUPLICATE_LLM_MAX_CANDIDATES = 3
 
 # auto_up LLM filter: max rows per scraped item (DB and FlixBD are separate lists; merge is per-source).
 AUTO_UP_DB_LLM_MAX_CANDIDATES = 2
@@ -44,7 +44,7 @@ FORCE_IS_ADULT_SOURCE_ROOT_DOMAIN_LABELS = _force_is_adult_root_domain_labels_fr
 
 # --- FlixBD search (merged phases, fuzzy trim, LLM slim rows) ---
 # Upload ``process_media_task`` combined LLM: max slim FlixBD rows after fuzzy.
-FLIXBD_LLM_MAX_RESULTS = 3
+FLIXBD_LLM_MAX_RESULTS = 5
 FLIXBD_SEARCH_PER_PAGE = 20
 FLIXBD_FUZZY_THRESHOLD = 80
 

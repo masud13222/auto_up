@@ -31,7 +31,7 @@ from constant import (
     FLIXBD_FUZZY_THRESHOLD,
     FLIXBD_SEARCH_PER_PAGE,
 )
-from llm.utils.name_extractor import extract_title_info
+from llm.utils.guessit_extractor import extract_title_info
 from upload.models import MediaTask
 
 logger = logging.getLogger(__name__)
@@ -66,9 +66,15 @@ def _daily_limit_bypass_window_active(at=None) -> bool:
     return h >= _DAILY_LIMIT_BYPASS_START_HOUR or h < _DAILY_LIMIT_BYPASS_END_HOUR
 
 
-def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = None) -> list:
+def _fetch_flixbd_top(
+    name: str,
+    year: str | None = None,
+    season_tag: str | None = None,
+    max_results: int = None,
+    fetch_debug: dict | None = None,
+) -> list:
     """
-    FlixBD: name-only then name+year API phases (when distinct), merged by ``id``, fuzzy on titles,
+    FlixBD: prioritized phases (name, name+year, name+year+season when present), merged by ``id``, fuzzy on titles,
     then up to ``max_results`` rows (same shape as before for auto_up LLM).
     """
     from upload.service import flixbd_client as fx
@@ -80,6 +86,12 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
     if max_results is None:
         max_results = AUTO_UP_FLIXBD_LLM_MAX_RESULTS
     max_results = min(int(max_results), AUTO_UP_FLIXBD_LLM_MAX_RESULTS)
+    if fetch_debug is not None:
+        fetch_debug.clear()
+        fetch_debug["name"] = (name or "").strip()
+        fetch_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
+        fetch_debug["season_tag"] = (season_tag or "").strip() or None
+        fetch_debug["llm_max_flixbd_rows"] = max_results
 
     if not (name or "").strip():
         return []
@@ -91,11 +103,15 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
         raw_merged, queries_run, _ = _flixbd_merge_two_phase_raw(
             name,
             year,
+            season_tag=season_tag,
             per_page=FLIXBD_SEARCH_PER_PAGE,
             api_url=api_url,
             api_key=api_key,
         )
         if not raw_merged:
+            if fetch_debug is not None:
+                fetch_debug["queries"] = list(queries_run)
+                fetch_debug["merged_raw_count"] = 0
             return []
 
         scored: list[tuple[int, dict]] = []
@@ -104,7 +120,7 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
             if fid is None:
                 continue
             item_title = item.get("title", "") or ""
-            fs = _flixbd_title_fuzzy_score(name, year, item_title)
+            fs = _flixbd_title_fuzzy_score(name, year, item_title, season_tag=season_tag)
             if fs < FLIXBD_FUZZY_THRESHOLD:
                 continue
             download_links = item.get("download_links") or {}
@@ -120,6 +136,10 @@ def _fetch_flixbd_top(name: str, year: str | None = None, max_results: int = Non
 
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [e for _, e in scored[:max_results]]
+        if fetch_debug is not None:
+            fetch_debug["queries"] = list(queries_run)
+            fetch_debug["merged_raw_count"] = len(raw_merged)
+            fetch_debug["after_fuzzy_count"] = len(top)
 
         if top:
             logger.debug(
@@ -321,10 +341,20 @@ def auto_scrape_and_queue() -> str:
                 continue
 
             # Search our DB
-            db_results = search_existing(title_info.title, title_info.year)
+            db_results = search_existing(
+                title_info.title,
+                title_info.year,
+                season_tag=title_info.season_tag,
+            )
 
             # Search FlixBD (two-phase merge + fuzzy; capped by ``AUTO_UP_FLIXBD_LLM_MAX_RESULTS``)
-            flixbd_results = _fetch_flixbd_top(title_info.title, year=title_info.year)
+            flixbd_search_debug: dict = {}
+            flixbd_results = _fetch_flixbd_top(
+                title_info.title,
+                year=title_info.year,
+                season_tag=title_info.season_tag,
+                fetch_debug=flixbd_search_debug,
+            )
 
             enriched_items.append({
                 "raw_title": raw_title,
@@ -334,6 +364,16 @@ def auto_scrape_and_queue() -> str:
                 "url": url,
                 "db_results": db_results,
                 "flixbd_results": flixbd_results,
+                "search_query_json": {
+                    "extract": {
+                        "raw_title": raw_title,
+                        "name": title_info.title,
+                        "year": title_info.year,
+                        "season_tag": title_info.season_tag,
+                    },
+                    "db_search": (db_results or {}).get("search_debug", {}),
+                    "flixbd_search": flixbd_search_debug,
+                },
             })
 
         logger.info(f"Enriched {len(enriched_items)} items with DB + FlixBD search results")

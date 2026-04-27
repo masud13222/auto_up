@@ -19,6 +19,7 @@ from constant import (
 )
 from upload.models import MediaTask
 from upload.tasks.helpers import is_drive_link
+from llm.utils.guessit_extractor import build_search_queries
 from llm.schema.blocked_names import (
     LEGACY_SITE_ROW_ID_JSON_KEY,
     TARGET_SITE_ROW_ID_JSON_KEY,
@@ -113,7 +114,13 @@ def _db_candidate_fuzzy_score(name: str, year: str | None, task: MediaTask) -> i
     return int(best)
 
 
-def _search_db(name: str, year: str = None, exclude_pk: int = None) -> list:
+def _search_db(
+    name: str,
+    year: str = None,
+    season_tag: str = None,
+    exclude_pk: int = None,
+    search_debug: dict | None = None,
+) -> list:
     """
     Search MediaTask for duplicate candidates.
 
@@ -129,43 +136,65 @@ def _search_db(name: str, year: str = None, exclude_pk: int = None) -> list:
     if exclude_pk:
         base_qs = base_qs.exclude(pk=exclude_pk)
 
-    keywords = _get_search_keywords(name)
+    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
+    if search_debug is not None:
+        search_debug.clear()
+        search_debug["name"] = (name or "").strip()
+        search_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
+        search_debug["season_tag"] = (season_tag or "").strip() or None
+        search_debug["query_specs"] = [dict(spec) for spec in query_specs]
+        search_debug["phase_queries"] = []
+    if not query_specs:
+        return []
     merged: dict[int, MediaTask] = {}
     order: list[int] = []
+    matched_by: dict[int, set[str]] = {}
+    priority_by_pk: dict[int, int] = {}
 
-    def _ingest_qs(qs):
+    def _ingest_qs(qs, tag: str, priority: int):
         for task in qs:
             if task.pk not in merged:
                 merged[task.pk] = task
                 order.append(task.pk)
+                matched_by[task.pk] = set()
+                priority_by_pk[task.pk] = priority
+            else:
+                priority_by_pk[task.pk] = max(priority_by_pk.get(task.pk, 0), priority)
+            matched_by[task.pk].add(tag)
 
-    for keyword in keywords:
-        qs = base_qs.filter(
-            Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
-        ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_UPLOAD]
-        _ingest_qs(qs)
+    for spec in query_specs:
+        query_text = spec["q"]
+        tag = spec["tag"]
+        priority = int(spec["priority"])
+        keywords = _get_search_keywords(query_text)
+        if search_debug is not None:
+            search_debug["phase_queries"].append(
+                {
+                    "tag": tag,
+                    "priority": priority,
+                    "query": query_text,
+                    "keywords": list(keywords),
+                }
+            )
+        for keyword in keywords:
+            qs = base_qs.filter(
+                Q(title__icontains=keyword) | Q(website_title__icontains=keyword)
+            ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_UPLOAD]
+            _ingest_qs(qs, tag, priority)
 
-    if year:
-        try:
-            yi = int(year)
-            for keyword in keywords:
-                qs = base_qs.filter(
-                    Q(title__icontains=keyword) | Q(website_title__icontains=keyword),
-                    result__year=yi,
-                ).order_by("-updated_at")[:DB_SEARCH_QUERY_SLICE_UPLOAD]
-                _ingest_qs(qs)
-        except (ValueError, TypeError):
-            pass
-
-    scored: list[tuple[MediaTask, int]] = []
+    scored: list[tuple[MediaTask, int, int]] = []
     for pk in order:
         task = merged[pk]
         score = _db_candidate_fuzzy_score(name, year, task)
         if score >= FUZZY_THRESHOLD_DB:
-            scored.append((task, score))
+            scored.append((task, score, priority_by_pk.get(pk, 0)))
 
-    scored.sort(key=lambda x: x[1], reverse=True)
-    matches = [t for t, _ in scored[:DB_DUPLICATE_LLM_MAX_CANDIDATES]]
+    scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
+    matches = [t for t, _, _ in scored[:DB_DUPLICATE_LLM_MAX_CANDIDATES]]
+    if search_debug is not None:
+        search_debug["merged_candidate_count"] = len(order)
+        search_debug["after_fuzzy_count"] = len(scored)
+        search_debug["llm_max_db_rows"] = DB_DUPLICATE_LLM_MAX_CANDIDATES
 
     if matches:
         logger.debug(

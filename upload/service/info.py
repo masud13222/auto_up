@@ -64,10 +64,11 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
     purpose: str,
     response_text: str = "",
     extra_context: dict | None = None,
+    search_query_json: dict | None = None,
 ) -> None:
     """Persist duplicate-check output and prompt context on the matching LLMUsage row."""
     has_dup = bool(dup_result)
-    has_ctx = bool(db_match_candidates or flixbd_results or extra_context)
+    has_ctx = bool(db_match_candidates or flixbd_results or extra_context or search_query_json)
     if not purpose or (not has_dup and not has_ctx):
         return
     try:
@@ -95,6 +96,9 @@ def _save_duplicate_usage_snapshot_to_latest_usage(
             if ctx:
                 row.duplicate_context_json = json.dumps(ctx, **_JSON_FOR_DB)
                 update_fields.append("duplicate_context_json")
+        if search_query_json:
+            row.search_query_json = json.dumps(search_query_json, **_JSON_FOR_DB)
+            update_fields.append("search_query_json")
         if update_fields:
             row.save(update_fields=update_fields)
     except Exception as e:
@@ -153,6 +157,7 @@ def detect_and_extract(
     html_content: str,
     db_match_candidates: list = None,
     flixbd_results: list = None,
+    search_query_json: dict | None = None,
 ) -> tuple:
     """
     Single LLM call: detects content type AND extracts structured data.
@@ -224,13 +229,14 @@ def detect_and_extract(
         max_extra=max_extra,
     )
 
-    if has_dup_ctx:
+    if has_dup_ctx or search_query_json:
         _save_duplicate_usage_snapshot_to_latest_usage(
             dup_result=dup_result,
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
             purpose=purpose,
             response_text=llm_response,
+            search_query_json=search_query_json,
         )
 
     title = data.get("title", "Unknown")
@@ -482,6 +488,7 @@ def get_content_info(
     db_match_candidates=None,
     flixbd_results=None,
     existing_result=None,
+    search_query_json: dict | None = None,
 ):
     """
     Main entry point: Single LLM call detects type + extracts info + optional duplicate check,
@@ -510,6 +517,7 @@ def get_content_info(
         html_content,
         db_match_candidates=db_match_candidates,
         flixbd_results=flixbd_results,
+        search_query_json=search_query_json,
     )
     apply_force_is_adult_from_source_urls(data, [url])
 
