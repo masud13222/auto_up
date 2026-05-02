@@ -114,18 +114,13 @@ def build_combined_tv_duplicate_examples(site: str, row_id_key: str) -> str:
 → action=`update`, has_new_episodes=true, {row_id_key}=210.
   `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-06","missing_resolutions":["480p"],"is_new_range":false}},{{"season_number":2,"episode_range":"07-12","missing_resolutions":["720p","1080p"],"is_new_range":true}}],"summary":"S02 EP01-06: need 480p; EP07-12: new range"}}
 
-**EX-2: {site} match + DB match, identical coverage → skip**
-{site}: [{{"id":440,"title":"Series X 2022 Season 1 ...","download_links":{{"episodes_range":["S01 Episode 01-04: 1080p,720p"]}}}}]. DB: [{{"id":9001,"title":"Series X","year":2022,"type":"tvshow"}}].
-Extracted vs Existing: same S01 EP01-04 resolutions. Missing:[].
-→ is_duplicate=true, {row_id_key}=440, matched_task_id=9001, action=`skip`.
-
-**EX-3: {site} match + DB match, missing resolution on same range → update**
+**EX-2: {site} match + DB match, missing resolution on same range → update**
 {site}: [{{"id":441,"title":"Series Y 2023 Season 2 ...","download_links":{{"episodes_range":["S02 Episode 01-08: 720p,1080p"]}}}}]. DB: [{{"id":9002,"title":"Series Y","year":2023,"type":"tvshow"}}].
 Extracted: S02 EP01-08 [480p,720p,1080p]. Existing:[720p,1080p]. Missing:[480p] for that range.
 → is_duplicate=true, {row_id_key}=441, matched_task_id=9002, action=`update`, has_new_episodes=false.
   `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-08","missing_resolutions":["480p"],"is_new_range":false}}],"summary":"S02 EP01-08: need 480p"}}
 
-**EX-4: No {site} match, DB match → update**
+**EX-3: No {site} match, DB match → update**
 {site} search results are unrelated titles only (no row with same tvshow + exact year + strong title match for extracted content). Example:
 {site}: [{{"id":1,"title":"Other Show (2019)","download_links":{{"episodes_range":["S01 Episode 01-04: 1080p"]}}}},{{"id":2,"title":"Different Series (2020)","download_links":{{"episodes_range":[]}}}}].
 DB: [{{"id":9100,"title":"New Show","year":2025,"type":"tvshow","episode_count":0,"episodes":[]}}].
