@@ -19,6 +19,7 @@ from upload.utils.media_entry_helpers import (
 from llm.services import LLMService
 from llm.json_repair import repair_json
 from llm.schema import get_combined_system_prompt, validate_combined_extract
+from llm.schema.prompts.duplicate_section import db_candidates_for_llm_prompt
 from llm.schema.response_validate import (
     LLM_SCHEMA_RETRY_MAX as _LLM_JSON_RETRY_MAX,
     VALIDATION_RETRY_SUFFIX,
@@ -218,7 +219,7 @@ def _apply_pass2_update(
         return data, dup_result
 
     search_context = {
-        "db_match_candidates": db_match_candidates or [],
+        "db_match_candidates": db_candidates_for_llm_prompt(db_match_candidates),
         "flixbd_results": flixbd_results or [],
     }
     logger.info("Pass-2: running delta filter (content_type=%s)", content_type)

@@ -18,23 +18,38 @@ from .combined_tv import (
 )
 
 
+_LLM_STRIP_DB_CANDIDATE_KEYS = frozenset({"episodes", "resolutions", "episode_count"})
+
+
+def db_candidates_for_llm_prompt(candidates: list | None) -> list[dict]:
+    """Drop verbose DB candidate keys for LLM prompts only. Full rows stay in duplicate_context_json."""
+    if not candidates:
+        return []
+    return [
+        {k: v for k, v in row.items() if k not in _LLM_STRIP_DB_CANDIDATE_KEYS}
+        for row in candidates
+        if isinstance(row, dict)
+    ]
+
+
 def build_duplicate_section(
     *,
     locked_content_type: Literal["movie", "tvshow"],
     db_match_candidates: list | None,
     flixbd_results: list | None,
 ) -> str:
-    if not db_match_candidates and not flixbd_results:
+    db_for_prompt = db_candidates_for_llm_prompt(db_match_candidates)
+    if not db_for_prompt and not flixbd_results:
         return ""
 
     site = SITE_NAME
     rk = TARGET_SITE_ROW_ID_JSON_KEY
     ctx_parts: list[str] = []
 
-    if db_match_candidates:
+    if db_for_prompt:
         ctx_parts.append(
-            f"### DB Candidates ({len(db_match_candidates)}):\n```json\n"
-            f"{json_compact(db_match_candidates)}\n```"
+            f"### DB Candidates ({len(db_for_prompt)}):\n```json\n"
+            f"{json_compact(db_for_prompt)}\n```"
         )
     if flixbd_results:
         ctx_parts.append(
