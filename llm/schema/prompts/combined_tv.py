@@ -78,6 +78,7 @@ def build_combined_tv_duplicate_pre_schema(site: str, row_id_key: str) -> str:
 
 ### WHEN {site} MATCH EXISTS — TV rows
 Compare `Extracted` (from your extracted `data`) vs `Existing` (from matched {site} row):
+- `Existing` has empty `episodes_range` ([] or missing) → treat ALL extracted items as missing → `update`.
 - `Extracted` = `Existing` → `skip`.
 - `Extracted` has items not in `Existing` → `update`. Fill `update_details`.
 - Same coverage but higher source → `replace`. Source order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
@@ -93,7 +94,6 @@ Compare per exact season_number + episode_range + resolution. Never union across
 - Same range + better source → `replace` or `replace_items`.
 - Different seasons are additive; never replace another season.
 - `replace_items` only when no combo/full-season pack is involved.
-- `Existing` has empty `episodes_range` ([] or missing) → treat ALL extracted items as missing → `update`.
 
 ### REASON FORMAT
 Single line: `Matched {site} row id=X.` or `No {site} match.`
