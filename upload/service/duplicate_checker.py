@@ -202,7 +202,7 @@ def _search_db(
             "DB fuzzy match for %r: %s found (scores: %s)",
             name,
             len(matches),
-            [s for _, s in scored[: len(matches)]],
+            [s for _, s, _ in scored[: len(matches)]],
         )
 
     return matches
