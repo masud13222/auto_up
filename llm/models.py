@@ -71,7 +71,15 @@ class LLMUsage(models.Model):
     completion_tokens = models.IntegerField(default=0)
     total_tokens = models.IntegerField(default=0)
 
-    purpose = models.CharField(max_length=100, blank=True, default='', help_text="What this call was for (extract, duplicate, filename, etc.)")
+    purpose = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text=(
+            "Call kind: e.g. presearch_extract (markdown metadata), combined extract+dup_check, "
+            "filename, auto_filter, etc."
+        ),
+    )
     success = models.BooleanField(default=True)
     duration_ms = models.IntegerField(default=0, help_text="Call duration in milliseconds")
 
@@ -108,8 +116,16 @@ class LLMUsage(models.Model):
         blank=True,
         default="",
         help_text=(
-            "Search query trace used before LLM call. Includes extracted title/year/season_tag and "
-            "DB/FlixBD query phases so admin can see exactly what was searched."
+            "Search query trace used before the combined LLM call (title/year/season_tag + DB/FlixBD "
+            "phases). For purpose=presearch_extract, see presearch_result_json instead."
+        ),
+    )
+    presearch_result_json = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "When purpose=presearch_extract: normalized fields after JSON repair (content_type, "
+            "name, year, season_tag, etc.) for admin and audits."
         ),
     )
 

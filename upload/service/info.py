@@ -4,6 +4,8 @@ from datetime import timedelta
 from typing import Any, Literal
 
 from django.utils import timezone
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+from pydantic import ValidationError
 
 from upload.utils.web_scrape import WebScrapeService
 from upload.utils.tv_items import tv_item_key
@@ -16,7 +18,12 @@ from upload.utils.media_entry_helpers import (
 )
 from llm.services import LLMService
 from llm.json_repair import repair_json
-from llm.schema import get_combined_system_prompt
+from llm.schema import get_combined_system_prompt, validate_combined_extract
+from llm.schema.response_validate import (
+    LLM_SCHEMA_RETRY_MAX as _LLM_JSON_RETRY_MAX,
+    VALIDATION_RETRY_SUFFIX,
+    format_validation_detail,
+)
 from llm.schema.blocked_names import TARGET_SITE_ROW_ID_JSON_KEY
 from llm.update_pass import compute_update_delta
 from upload.utils.resolution_policy import apply_upload_resolution_policy
@@ -25,11 +32,17 @@ from upload.utils.force_is_adult_source_domain import apply_force_is_adult_from_
 logger = logging.getLogger(__name__)
 
 _JSON_FOR_DB = {"indent": 2, "ensure_ascii": False}
-_LLM_JSON_RETRY_MAX = 2
 _JSON_RETRY_USER_SUFFIX = (
     "\n\nReturn a single valid JSON object only (no markdown fences, no text outside JSON). "
     "Previous attempt produced invalid JSON."
 )
+
+
+def _combined_retry_user_suffix(exc: Exception) -> str:
+    """Instructor-style: send schema validation errors back to the model on retry."""
+    if isinstance(exc, (ValidationError, JsonSchemaValidationError)):
+        return VALIDATION_RETRY_SUFFIX.format(detail=format_validation_detail(exc))
+    return _JSON_RETRY_USER_SUFFIX + f"\n\nJSON parse/repair error:\n{str(exc)[:1500]}"
 
 
 def _entry_language_key(entry: dict) -> str:
@@ -112,33 +125,50 @@ def _repair_with_llm_retry(
     event_log: list | None = None,
     persist_usage: bool = True,
     capture_usage_events: list[dict[str, Any]] | None = None,
+    locked_content_type: Literal["movie", "tvshow"] = "movie",
+    require_duplicate_check: bool = False,
 ) -> tuple[dict, str]:
+    """
+    Parse JSON (with ``repair_json``), then validate with JSON Schema (same dicts as prompts).
+    Retries the LLM with parse or validation feedback like instructor-style re-asking.
+    """
     current_response = llm_response
     last_error: Exception | None = None
 
     for attempt in range(_LLM_JSON_RETRY_MAX + 1):
         try:
-            return get_structured_output(current_response), current_response
+            parsed = get_structured_output(current_response)
+            validated = validate_combined_extract(
+                parsed,
+                locked_content_type=locked_content_type,
+                require_duplicate_check=require_duplicate_check,
+            )
+            return validated, current_response
         except Exception as e:
             last_error = e
             if attempt >= _LLM_JSON_RETRY_MAX:
                 break
             logger.warning(
-                "Structured JSON parse failed for purpose=%s (attempt %s/%s): %s. Requesting LLM JSON repair.",
+                "Combined extract parse/validation failed for purpose=%s (attempt %s/%s): %s. Retrying LLM.",
                 purpose or "n/a",
                 attempt + 1,
                 _LLM_JSON_RETRY_MAX + 1,
                 e,
             )
             if event_log is not None:
+                kind = (
+                    "validation_failed"
+                    if isinstance(e, (ValidationError, JsonSchemaValidationError))
+                    else "json_parse_failed"
+                )
                 event_log.append(
                     {
-                        "kind": "json_parse_failed",
+                        "kind": kind,
                         "attempt": attempt + 1,
                         "error": str(e)[:800],
                     }
                 )
-            repair_prompt = (original_user_prompt or "") + _JSON_RETRY_USER_SUFFIX
+            repair_prompt = (original_user_prompt or "") + _combined_retry_user_suffix(e)
             current_response = LLMService.generate_completion(
                 prompt=repair_prompt,
                 system_prompt=system_prompt,
@@ -150,12 +180,12 @@ def _repair_with_llm_retry(
                 event_log.append(
                     {
                         "kind": "llm_response",
-                        "label": "json_repair",
+                        "label": "json_or_schema_repair",
                         "text": current_response,
                     }
                 )
 
-    raise last_error or ValueError("Could not parse structured JSON response")
+    raise last_error or ValueError("Could not parse or validate structured JSON response")
 
 
 def _normalize_duplicate_check(dup_result) -> dict | None:
@@ -318,6 +348,8 @@ def detect_and_extract(
         event_log=llm_events,
         persist_usage=persist_usage,
         capture_usage_events=capture_usage_events,
+        locked_content_type=locked_content_type,
+        require_duplicate_check=has_dup_ctx,
     )
     content_type = result.get("content_type")
     if content_type != locked_content_type:

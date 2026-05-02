@@ -109,6 +109,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'duplicate_check_json',
         'duplicate_context_json',
         'search_query_json',
+        'presearch_result_json',
         'purpose',
         'config_name',
         'model_name',
@@ -130,6 +131,7 @@ class LLMUsageAdmin(admin.ModelAdmin):
         'duplicate_check_display',
         'duplicate_context_display',
         'search_query_display',
+        'presearch_result_display',
     )
     fieldsets = (
         (
@@ -191,9 +193,18 @@ class LLMUsageAdmin(admin.ModelAdmin):
             'Search query trace',
             {
                 'description': (
-                    'Search query JSON used before LLM call (extract fields + DB/FlixBD phases).'
+                    'Combined LLM: title/year/season keys + DB/FlixBD phases before extract+dup_check.'
                 ),
                 'fields': ('search_query_display',),
+            },
+        ),
+        (
+            'Presearch (parsed)',
+            {
+                'description': (
+                    'presearch_extract calls: normalized content_type, name, year, season_tag after JSON repair.'
+                ),
+                'fields': ('presearch_result_display',),
             },
         ),
     )
@@ -293,6 +304,28 @@ class LLMUsageAdmin(admin.ModelAdmin):
         if not obj or not (obj.search_query_json or '').strip():
             return '—'
         raw = obj.search_query_json.strip()
+        try:
+            parsed = json.loads(raw)
+            inner = _highlight_json_html(parsed)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                '<pre class="llm-usage-response-pre llm-json-pre">'
+                f"{inner}"
+                "</pre></div>"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            inner = escape(raw)
+            return mark_safe(
+                '<div class="llm-usage-response-wrap">'
+                f'<pre class="llm-usage-response-pre">{inner}</pre>'
+                '</div>'
+            )
+
+    @admin.display(description='Presearch parsed (JSON)')
+    def presearch_result_display(self, obj):
+        if not obj or not (obj.presearch_result_json or '').strip():
+            return '—'
+        raw = obj.presearch_result_json.strip()
         try:
             parsed = json.loads(raw)
             inner = _highlight_json_html(parsed)

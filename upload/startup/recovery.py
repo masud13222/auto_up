@@ -1,0 +1,236 @@
+"""
+Stuck-task recovery and download dir cleanup after process start.
+
+Deferred on a timer so ORM access does not run during Django app registry init.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import sys
+import threading
+
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+_STARTUP_CLEANUP_LOCK_NAME = "upload-startup-cleanup"
+
+
+def _is_server_or_queue_process() -> bool:
+    """Only run queue recovery for server / worker-like processes, not ad-hoc mgmt commands."""
+    joined = " ".join(sys.argv).lower()
+    if "runserver" in joined or "qcluster" in joined or "gunicorn" in joined:
+        return True
+    return os.path.basename(sys.argv[0]).lower() == "gunicorn"
+
+
+def _clean_downloads_folder() -> None:
+    try:
+        downloads_dir = str(settings.DOWNLOADS_DIR)
+        if os.path.isdir(downloads_dir):
+            for item in os.listdir(downloads_dir):
+                item_path = os.path.join(downloads_dir, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                except OSError:
+                    pass
+            logger.info("Downloads directory cleaned on startup.")
+    except Exception:
+        pass
+
+
+def _is_recent_processing_task(task, now, *, window_seconds: int = 90) -> bool:
+    updated_at = getattr(task, "updated_at", None)
+    if updated_at is None:
+        return False
+    try:
+        return (now - updated_at).total_seconds() <= window_seconds
+    except Exception:
+        return False
+
+
+def _queued_media_task_rows() -> dict[int, list[dict]]:
+    """
+    Map MediaTask.pk -> django-q OrmQ row metadata (lock + priority).
+
+    Lets resume logic tell "waiting now" vs "stale lock from before restart".
+    """
+    from django_q.models import OrmQ
+    from django_q.signing import SignedPackage
+
+    queued: dict[int, list[dict]] = {}
+    for row in OrmQ.objects.only("id", "payload", "lock"):
+        try:
+            task = SignedPackage.loads(row.payload)
+        except Exception:
+            continue
+        if not isinstance(task, dict):
+            continue
+        func = str(task.get("func") or "")
+        args = task.get("args") or ()
+        if "process_media_task" not in func or not args:
+            continue
+        try:
+            media_task_pk = int(args[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        queued.setdefault(media_task_pk, []).append(
+            {
+                "row_id": row.pk,
+                "lock": getattr(row, "lock", None),
+                "q_priority": int(task.get("q_priority", 0) or 0),
+            }
+        )
+    return queued
+
+
+def recover_stuck_tasks_and_clean_downloads() -> None:
+    """Main body: optional file lock, stuck MediaTask scan, re-queue, then wipe downloads dir."""
+    startup_lock = None
+    try:
+        from django.db import transaction
+        from django.utils import timezone
+        from django_q.tasks import async_task
+
+        from upload.models import MediaTask
+        from upload.task_locks import acquire_runtime_lock
+
+        startup_lock = acquire_runtime_lock(
+            _STARTUP_CLEANUP_LOCK_NAME,
+            stale_after_seconds=600,
+        )
+        if startup_lock is None:
+            logger.info("Startup cleanup already running in another process; skipping resume scan.")
+            _clean_downloads_folder()
+            return
+
+        with transaction.atomic():
+            now = timezone.now()
+            stuck = list(
+                MediaTask.objects.select_for_update(skip_locked=True).filter(
+                    status__in=["processing", "pending"]
+                )
+            )
+
+            if not stuck:
+                _clean_downloads_folder()
+                return
+
+            queued_task_rows = _queued_media_task_rows()
+
+            resumed = 0
+            skipped_already_queued = 0
+            skipped_recent_processing = 0
+            recovered_stale_locked = 0
+            for task in stuck:
+                queued_rows = queued_task_rows.get(task.pk, [])
+                waitable_rows = [
+                    row for row in queued_rows if row.get("lock") is None or row["lock"] <= now
+                ]
+                locked_rows = [
+                    row for row in queued_rows if row.get("lock") is not None and row["lock"] > now
+                ]
+
+                if waitable_rows:
+                    skipped_already_queued += 1
+                    logger.info(
+                        "Startup resume skipped: %s task already queued/running: %s (pk=%s)",
+                        task.status,
+                        task.title or task.url[:50],
+                        task.pk,
+                    )
+                    continue
+                if task.status == "pending" and locked_rows:
+                    from django_q.models import OrmQ
+
+                    stale_row_ids = [row["row_id"] for row in locked_rows]
+                    stale_priority = max(
+                        (int(row.get("q_priority") or 0) for row in locked_rows),
+                        default=0,
+                    )
+                    deleted_count, _ = OrmQ.objects.filter(pk__in=stale_row_ids).delete()
+                    recovered_stale_locked += deleted_count
+                    logger.warning(
+                        "Startup resume recovered %s stale locked queue row(s) for pending task: %s (pk=%s); requeueing",
+                        deleted_count,
+                        task.title or task.url[:50],
+                        task.pk,
+                    )
+                    q_id = async_task(
+                        "upload.tasks.process_media_task",
+                        task.pk,
+                        task_name=f"Resume: {task.title or task.url[:50]}",
+                        q_options={"q_priority": stale_priority},
+                    )
+                    task.task_id = q_id or ""
+                    task.save(update_fields=["task_id"])
+                    resumed += 1
+                    continue
+                if task.status == "processing" and _is_recent_processing_task(task, now):
+                    skipped_recent_processing += 1
+                    logger.info(
+                        "Startup resume skipped: processing task looks active already: %s (pk=%s)",
+                        task.title or task.url[:50],
+                        task.pk,
+                    )
+                    continue
+                logger.info(
+                    "Auto-resuming %s task: %s (pk=%s)",
+                    task.status,
+                    task.title or task.url[:50],
+                    task.pk,
+                )
+                task.status = "pending"
+                task.save(update_fields=["status", "updated_at"])
+
+                q_id = async_task(
+                    "upload.tasks.process_media_task",
+                    task.pk,
+                    task_name=f"Resume: {task.title or task.url[:50]}",
+                )
+                task.task_id = q_id or ""
+                task.save(update_fields=["task_id"])
+                resumed += 1
+
+            if resumed:
+                logger.warning("Auto-resumed %s task(s) (pending+processing).", resumed)
+            if skipped_already_queued or skipped_recent_processing or recovered_stale_locked:
+                logger.info(
+                    "Startup resume skipped %s already-queued task(s), %s recently-active processing task(s), and recovered %s stale locked queue row(s).",
+                    skipped_already_queued,
+                    skipped_recent_processing,
+                    recovered_stale_locked,
+                )
+
+    except Exception as e:
+        logger.debug("Startup cleanup skipped: %s", e)
+    finally:
+        if startup_lock is not None:
+            startup_lock.release()
+
+    _clean_downloads_folder()
+
+
+def schedule_upload_startup_hooks() -> None:
+    """Called from UploadConfig.ready: django-q installs + timers (no DB at import time)."""
+    from upload.django_q_priority import install_django_q_priority
+    from upload.django_q_pusher_backpressure import install_django_q_pusher_backpressure
+
+    install_django_q_priority()
+    install_django_q_pusher_backpressure()
+
+    if not _is_server_or_queue_process():
+        return
+
+    # Gunicorn workers: downloads only — qcluster owns queue resume
+    if os.environ.get("GUNICORN_WORKER_PROCESS"):
+        threading.Timer(0.5, _clean_downloads_folder).start()
+        return
+
+    threading.Timer(1.0, recover_stuck_tasks_and_clean_downloads).start()

@@ -1,11 +1,38 @@
+"""JSON API to enqueue scrape/upload MediaTask rows."""
+
+from __future__ import annotations
+
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
+from django.http import JsonResponse, QueryDict
 
-from .django_q_priority import EnqueueError, enqueue_process_media_task, parse_q_priority
-from .models import MediaTask
+from upload.django_q_priority import EnqueueError, enqueue_process_media_task, parse_q_priority
+from upload.models import MediaTask
 
 
-def _queue_new_task(url: str, *, q_priority: int = 0) -> MediaTask:
+def _has_http_or_https_scheme(url: str) -> bool:
+    low = url.lower()
+    return low.startswith("http://") or low.startswith("https://")
+
+
+def _coerce_skip_duplicate_check(post) -> bool:
+    if "skip_duplicate_check" not in post:
+        return False
+    sk = (post.get("skip_duplicate_check") or "1").lower()
+    return sk not in ("0", "false", "off", "no")
+
+
+def _url_lines_from_post(post: QueryDict) -> list[str]:
+    """Non-empty trimmed lines from ``urls`` (newline block) or a single ``url``."""
+    raw_block = post.get("urls", "").strip()
+    single = post.get("url", "").strip()
+    if raw_block:
+        return [ln.strip() for ln in raw_block.splitlines() if ln.strip()]
+    if single:
+        return [single]
+    return []
+
+
+def queue_new_media_task(url: str, *, q_priority: int = 0) -> MediaTask:
     media_task = MediaTask.objects.create(url=url)
     try:
         q_task_id = enqueue_process_media_task(media_task.pk, url, q_priority=q_priority)
@@ -17,11 +44,8 @@ def _queue_new_task(url: str, *, q_priority: int = 0) -> MediaTask:
     return media_task
 
 
-def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
-    """
-    When URL deduplication is on: block or merge with an existing MediaTask for the same URL.
-    Returns a dict suitable for JSON (always includes keys used by the panel).
-    """
+def process_one_with_url_dedupe(url: str, *, q_priority: int = 0) -> dict:
+    """Merge with existing row when URL matches settings; payload for JSON responses."""
     existing = MediaTask.objects.filter(url=url).first()
 
     if existing:
@@ -64,7 +88,7 @@ def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
                 "redirect": f"/panel/task/{existing.pk}/",
             }
 
-    media_task = _queue_new_task(url, q_priority=q_priority)
+    media_task = queue_new_media_task(url, q_priority=q_priority)
     return {
         "success": True,
         "task_id": media_task.pk,
@@ -73,9 +97,9 @@ def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
     }
 
 
-def _process_one_skip_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
-    """Always create a new task and queue (no URL deduplication)."""
-    media_task = _queue_new_task(url, q_priority=q_priority)
+def process_one_always_new(url: str, *, q_priority: int = 0) -> dict:
+    """New row every time — no URL deduplication."""
+    media_task = queue_new_media_task(url, q_priority=q_priority)
     return {
         "success": True,
         "task_id": media_task.pk,
@@ -87,57 +111,33 @@ def _process_one_skip_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
 @login_required
 def process_media(request):
     """
-    AJAX endpoint: one or many URLs (one per line in ``urls``), optional duplicate check.
+    POST: enqueue one URL or batch (newline-separated ``urls``); optional duplicate skip.
 
-    POST:
-      - ``urls`` — multiline, one URL per line (preferred)
-      - ``url`` — single URL (backward compatible)
-      - ``skip_duplicate_check`` — if 1/on/true/yes, never match existing MediaTask by URL
-      - ``q_priority`` — optional int 0–999999; higher values are dequeued first (ORM broker)
+    Fields: urls | url, skip_duplicate_check, q_priority
     """
     if request.method != "POST":
         return JsonResponse({"error": "POST method required."}, status=405)
 
-    if "skip_duplicate_check" not in request.POST:
-        skip_dup = False
-    else:
-        _sk = (request.POST.get("skip_duplicate_check") or "1").lower()
-        skip_dup = _sk not in ("0", "false", "off", "no")
-
+    skip_dup = _coerce_skip_duplicate_check(request.POST)
     q_priority = parse_q_priority(request.POST.get("q_priority"))
-
-    raw_block = request.POST.get("urls", "").strip()
-    single = request.POST.get("url", "").strip()
-    if raw_block:
-        lines = [ln.strip() for ln in raw_block.splitlines() if ln.strip()]
-    elif single:
-        lines = [single]
-    else:
+    lines = _url_lines_from_post(request.POST)
+    if not lines:
         return JsonResponse({"error": "URL is required."}, status=400)
-
-    def valid_http(u: str) -> bool:
-        low = u.lower()
-        return low.startswith("http://") or low.startswith("https://")
 
     results: list[dict] = []
     failed: list[dict] = []
 
     for url in lines:
-        if not valid_http(url):
+        if not _has_http_or_https_scheme(url):
             failed.append({"url": url, "error": "Must start with http:// or https://"})
             continue
         try:
             if skip_dup:
-                payload = _process_one_skip_duplicate_check(url, q_priority=q_priority)
+                payload = process_one_always_new(url, q_priority=q_priority)
             else:
-                payload = _process_one_with_duplicate_check(url, q_priority=q_priority)
+                payload = process_one_with_url_dedupe(url, q_priority=q_priority)
         except EnqueueError as e:
-            failed.append(
-                {
-                    "url": url,
-                    "error": e.message,
-                }
-            )
+            failed.append({"url": url, "error": e.message})
             continue
         results.append({"url": url, **payload})
 

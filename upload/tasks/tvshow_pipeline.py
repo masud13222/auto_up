@@ -11,7 +11,7 @@ from upload.utils.subtitle_remove import process_downloaded_files
 from screenshot.services.capture import capture_screenshots_for_publish
 from django.conf import settings
 
-from .helpers import (
+from .media_entry_bridge import (
     coerce_download_source_value,
     coerce_entry_language_value,
     download_source_urls,

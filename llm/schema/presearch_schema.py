@@ -58,7 +58,7 @@ Rules:
 - content_type: use tvshow if seasons/episodes/Sxx/Season appear; otherwise movie.
 - name: main title only; strip release group, quality, resolution, WEB-DL, dubbed tags, site names.
 - alt_name: second title only if clearly a different release title (e.g. translated vs original). Else "".
-- year: 4-digit release year if explicit; else "".
+- year: 4-digit release year if explicit; if several years appear, prefer the one next to the main title; else "".
 - season_tag: for tvshow, copy the season marker exactly as written (S01 vs Season 01). Else "".
 
 JSON schema:

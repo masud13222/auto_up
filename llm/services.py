@@ -57,6 +57,9 @@ USAGE_EXTRACTORS = {
     "mistral": _extract_usage_openai_like,
 }
 
+# Always persist LLMUsage rows for these purposes even when token usage is missing from the SDK.
+_PURPOSES_ALWAYS_PERSIST_USAGE = frozenset({"presearch_extract"})
+
 
 def _completion_truncated(response: Any, sdk: str) -> bool:
     try:
@@ -305,7 +308,8 @@ def _save_usage(
 
         body = (response_text or "").strip()
         has_tokens = any(int(usage.get(k, 0) or 0) > 0 for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
-        if not has_tokens and not body:
+        force_persist = success and (purpose in _PURPOSES_ALWAYS_PERSIST_USAGE)
+        if not has_tokens and not body and not force_persist:
             return None
 
         outbound_json = json.dumps(
