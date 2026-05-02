@@ -76,12 +76,13 @@ def build_combined_movie_duplicate_examples(site: str, row_id_key: str) -> str:
 Extracted:[480p,720p]. {site} id=1540 matches. Existing:[480p,720p]. Missing:[].
 → is_duplicate=true, {row_id_key}=1540, matched_task_id=null, action=`skip`.
 
-**EX-2: No {site} match, DB match → process**
-{site}: [{{"id":300,"title":"Different Movie (2018)"}}]. DB: [{{"id":77,"title":"New Movie","year":2024,"type":"movie"}}].
-Extracted:"New Movie" 2024. No {site} match → action=`process`. DB id=77 matches → matched_task_id=77.
-→ is_duplicate=false, {row_id_key}=null, matched_task_id=77, action=`process`.
+**EX-2: {site} match + DB match, missing resolution → update**
+{site}: [{{"id":301,"title":"New Movie (2024)","download_links":{{"qualities":["720p","1080p"]}}}}]. DB: [{{"id":77,"title":"New Movie","year":2024,"type":"movie"}}].
+Extracted:[480p,720p,1080p]. {site} id=301 matches (same title+year). Existing:[720p,1080p]. Missing:[480p].
+→ is_duplicate=true, {row_id_key}=301, matched_task_id=77, action=`update`.
+  `update_details`: {{"missing_items":[{{"missing_resolutions":["480p"]}}],"summary":"need 480p"}}
 
-**EX-3: {site} match, missing resolution → update**
+**EX-3: {site} match, missing resolution, DB empty → update**
 {site}: [{{"id":218,"title":"Show (2023)","download_links":{{"qualities":["720p","1080p"]}}}}]. DB: [].
 Extracted:[480p,720p,1080p]. {site} id=218 matches. Missing:[480p].
 → is_duplicate=true, {row_id_key}=218, matched_task_id=null, action=`update`.
