@@ -130,6 +130,5 @@ DB: [{{"id":9100,"title":"New Show","year":2025,"type":"tvshow","episode_count":
 Extracted: title "New Show", year 2025, seasons with download_items. **Action** follows {site} only → no qualifying {site} match → `update`. DB still records prior internal row → matched_task_id=9100.
 → is_duplicate=true, {row_id_key}=null, matched_task_id=9100, action=`update`, has_new_episodes=false, missing_resolutions=[].
 
-For resolution-only `update` / `skip` on one title row (no new episode ranges beyond EX-1), apply the same comparison as movie duplicates (same title+year; skip if identical coverage; update if new resolution keys).
-
+For resolution-only comparison: same season+range exists in Existing with identical resolutions → `skip`. If any resolution missing → `update`. 
 """
