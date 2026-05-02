@@ -73,12 +73,12 @@ def build_combined_tv_duplicate_pre_schema(site: str, row_id_key: str) -> str:
    - DB match found (same type + exact year + strong title) → `matched_task_id` = its integer `id`.
    - No DB match → `matched_task_id` = null.
    - DB match never changes the action.
+   - NEVER use DB Candidates `episodes` field for comparison — it is ignored entirely.
 3. **`{row_id_key}`** comes ONLY from {site} search results — never from DB Candidates.
 4. Movie ≠ tvshow. Never cross-match types.
 
 ### WHEN {site} MATCH EXISTS — TV rows
 Compare `Extracted` (from your extracted `data`) vs `Existing` (from matched {site} row):
-- `Existing` has empty `episodes_range` ([] or missing) → treat ALL extracted items as missing → `update`.
 - `Extracted` = `Existing` → `skip`.
 - `Extracted` has items not in `Existing` → `update`. Fill `update_details`.
 - Same coverage but higher source → `replace`. Source order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
