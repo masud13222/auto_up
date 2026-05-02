@@ -58,7 +58,7 @@ def cleanup_old_drive_files(existing_result: dict) -> int:
 
     Returns count of deleted files.
     """
-    from upload.tasks.helpers import is_drive_link
+    from upload.utils.media_entry_helpers import is_drive_link
 
     # Collect all drive file IDs
     file_ids = set()

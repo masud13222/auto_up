@@ -27,7 +27,7 @@ from upload.utils.web_scrape import WebScrapeService
 from llm.models import LLMConfig
 from llm.services import LLMService, _try_one_config, _get_ordered_configs
 from llm.json_repair import repair_json
-from llm.schema import COMBINED_SYSTEM_PROMPT
+from llm.schema import get_combined_system_prompt
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(name)s: %(message)s')
 
@@ -77,6 +77,12 @@ def main():
     parser.add_argument('--config', type=int, default=None, help='Force specific config ID')
     parser.add_argument('--list', action='store_true', help='List all configs')
     parser.add_argument('--save', type=str, default=None, help='Save result to JSON file')
+    parser.add_argument(
+        '--content-type',
+        choices=('movie', 'tvshow'),
+        default='tvshow',
+        help='Locked schema for combined extract (must match page kind; default tvshow for sample URL)',
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -88,6 +94,7 @@ def main():
     print(f"{B}{'═' * 55}{X}")
     print(f"  URL:    {args.url[:65]}...")
     print(f"  Config: {args.config or 'auto (primary → fallback)'}")
+    print(f"  Locked content_type: {args.content_type}")
 
     # Show configs order
     try:
@@ -108,8 +115,9 @@ def main():
 
     # Combined detect + extract (1 LLM call)
     section("Combined Detect + Extract (1 API call)...")
+    system_prompt = get_combined_system_prompt(locked_content_type=args.content_type)
     try:
-        raw = call_llm(html, COMBINED_SYSTEM_PROMPT, args.config)
+        raw = call_llm(html, system_prompt, args.config)
     except Exception as e:
         print(f"  {R}❌ LLM call failed: {e}{X}")
         sys.exit(1)

@@ -4,7 +4,7 @@ import time
 
 import httpx
 
-from upload.tasks.helpers import (
+from upload.utils.media_entry_helpers import (
     coerce_entry_language_value,
     movie_download_entry_key,
     primary_download_source_url,

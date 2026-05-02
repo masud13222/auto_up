@@ -1,5 +1,3 @@
-import json
-
 from .blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
 
 # ───────────────────────────────────────────────
@@ -100,32 +98,3 @@ duplicate_schema = {
     ],
     "additionalProperties": False,
 }
-
-
-DUPLICATE_CHECK_PROMPT = f"""You are a media deduplication function. Return ONLY one JSON object.
-
-INPUT: new_website_title, new_name, new_year + two data sources.
-
-RULES:
-1. Action is decided ONLY by {SITE_NAME} search results (target site).
-   - {SITE_NAME} match (same type + exact year + strong title) → skip/update/replace/replace_items.
-   - No {SITE_NAME} match → process.
-2. matched_task_id comes ONLY from DB Candidates. DB match never changes the action.
-3. {TARGET_SITE_ROW_ID_JSON_KEY} comes ONLY from {SITE_NAME} results.
-4. Movie ≠ tvshow. Never cross-match.
-
-ACTIONS:
-- skip: {SITE_NAME} match, nothing new.
-- update: {SITE_NAME} match, missing parts.
-- replace: {SITE_NAME} match, better source. Order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
-- replace_items: {SITE_NAME} match, TV only, overlapping replacement.
-- process: no {SITE_NAME} match.
-
-NORMALIZE: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs.
-
-REASON: Start with 'Matched {SITE_NAME} row id=X.' or 'No {SITE_NAME} match.'
-Then: TitleCheck, YearCheck, Extracted:[...], Existing:[...], Missing:[...], Action: <action> because <why>.
-If DB matched, append: 'DB matched_task_id=Y.'
-
-Schema: {json.dumps(duplicate_schema, separators=(',',':'))}
-"""

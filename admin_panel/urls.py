@@ -12,6 +12,8 @@ urlpatterns = [
     # Core pages
     path('', views.dashboard, name='dashboard'),
     path('process/', views.process, name='process'),
+    path('llm/extract-debug/', views.llm_extract_debug, name='llm_extract_debug'),
+    path('llm/extract-debug/stream/', views.llm_extract_debug_stream, name='llm_extract_debug_stream'),
     path('queue/', views.queue, name='queue'),
     path('auto-up/skip-urls/', views.auto_up_skip_urls, name='auto_up_skip_urls'),
     path('settings/', views.settings_view, name='settings'),

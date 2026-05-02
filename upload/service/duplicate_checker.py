@@ -1,11 +1,8 @@
 """
 DB helpers for duplicate-related flows: fuzzy MediaTask search and resolution lists.
 
-Main upload pipeline injects match context into the **combined** LLM prompt
-(``get_combined_system_prompt``) — no separate duplicate LLM call there.
-
-For a legacy two-step flow (title + DB + ``DUPLICATE_CHECK_PROMPT`` LLM only), see
-``upload.service.duplicate_check_legacy.check_duplicate``.
+The upload pipeline injects match context into the combined LLM prompt
+(``get_combined_system_prompt``); duplicate detection is part of that single call.
 """
 
 import logging
@@ -18,12 +15,9 @@ from constant import (
     FUZZY_THRESHOLD_DB,
 )
 from upload.models import MediaTask
-from upload.tasks.helpers import is_drive_link
-from llm.utils.guessit_extractor import build_search_queries
-from llm.schema.blocked_names import (
-    LEGACY_SITE_ROW_ID_JSON_KEY,
-    TARGET_SITE_ROW_ID_JSON_KEY,
-)
+from upload.utils.media_entry_helpers import is_drive_link
+from llm.utils.search_queries import build_search_queries
+from llm.schema.blocked_names import TARGET_SITE_ROW_ID_JSON_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +58,11 @@ def coerce_target_site_row_id(value) -> int | None:
     return coerce_matched_task_pk(value)
 
 
-def coerce_flixbd_task_id(value) -> int | None:
-    """Backward-compatible alias for coerce_target_site_row_id."""
-    return coerce_target_site_row_id(value)
-
-
 def site_row_id_from_duplicate_result(dup: dict | None) -> int | None:
-    """Read site row id from duplicate_check; accepts current and legacy JSON keys."""
+    """Read target site row id from duplicate_check."""
     if not dup or not isinstance(dup, dict):
         return None
-    v = dup.get(TARGET_SITE_ROW_ID_JSON_KEY)
-    if v is None:
-        v = dup.get(LEGACY_SITE_ROW_ID_JSON_KEY)
-    return coerce_target_site_row_id(v)
+    return coerce_target_site_row_id(dup.get(TARGET_SITE_ROW_ID_JSON_KEY))
 
 
 def _get_search_keywords(name: str) -> list[str]:
@@ -90,27 +76,38 @@ def _get_search_keywords(name: str) -> list[str]:
     return queries
 
 
-def _db_candidate_fuzzy_score(name: str, year: str | None, task: MediaTask) -> int:
-    """Best rapidfuzz partial_ratio vs title/website_title using name and (when present) name+year."""
+def _db_candidate_fuzzy_score(
+    name: str,
+    year: str | None,
+    task: MediaTask,
+    alt_name: str | None = None,
+) -> int:
     from rapidfuzz import fuzz
 
-    qn = (name or "").strip().lower()
-    texts: list[str] = []
-    if task.title:
-        texts.append(task.title.lower())
-    if task.website_title:
-        texts.append(task.website_title.lower())
-    if not texts or not qn:
-        return 0
-    best = 0
-    for t in texts:
-        best = max(best, fuzz.partial_ratio(qn, t))
-        if year:
-            ys = str(year).strip()
-            if ys:
-                qy = f"{(name or '').strip()} {ys}".lower()
-                if qy != qn:
-                    best = max(best, fuzz.partial_ratio(qy, t))
+    def score_for_base(base: str) -> int:
+        qn = (base or "").strip().lower()
+        texts: list[str] = []
+        if task.title:
+            texts.append(task.title.lower())
+        if task.website_title:
+            texts.append(task.website_title.lower())
+        if not texts or not qn:
+            return 0
+        best = 0
+        for t in texts:
+            best = max(best, fuzz.partial_ratio(qn, t))
+            if year:
+                ys = str(year).strip()
+                if ys:
+                    qy = f"{(base or '').strip()} {ys}".lower()
+                    if qy != qn:
+                        best = max(best, fuzz.partial_ratio(qy, t))
+        return int(best)
+
+    best = score_for_base(name)
+    alt = (alt_name or "").strip()
+    if alt and alt.lower() != (name or "").strip().lower():
+        best = max(best, score_for_base(alt))
     return int(best)
 
 
@@ -120,6 +117,7 @@ def _search_db(
     season_tag: str = None,
     exclude_pk: int = None,
     search_debug: dict | None = None,
+    alt_name: str | None = None,
 ) -> list:
     """
     Search MediaTask for duplicate candidates.
@@ -136,10 +134,13 @@ def _search_db(
     if exclude_pk:
         base_qs = base_qs.exclude(pk=exclude_pk)
 
-    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
+    query_specs = build_search_queries(
+        name, year=year, season_tag=season_tag, alt_name=alt_name
+    )
     if search_debug is not None:
         search_debug.clear()
         search_debug["name"] = (name or "").strip()
+        search_debug["alt_name"] = (alt_name or "").strip() or None
         search_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
         search_debug["season_tag"] = (season_tag or "").strip() or None
         search_debug["query_specs"] = [dict(spec) for spec in query_specs]
@@ -185,7 +186,7 @@ def _search_db(
     scored: list[tuple[MediaTask, int, int]] = []
     for pk in order:
         task = merged[pk]
-        score = _db_candidate_fuzzy_score(name, year, task)
+        score = _db_candidate_fuzzy_score(name, year, task, alt_name=alt_name)
         if score >= FUZZY_THRESHOLD_DB:
             scored.append((task, score, priority_by_pk.get(pk, 0)))
 

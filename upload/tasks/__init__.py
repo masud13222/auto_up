@@ -19,10 +19,10 @@ from upload.utils.drive_file_delete import cleanup_old_drive_files
 from upload.utils.tv_items import split_tv_replace_scope
 from upload.utils.web_scrape import WebScrapeService, normalize_http_url
 from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
-from llm.utils.guessit_extractor import extract_title_info
+from llm.utils.presearch_extract import PRESEARCH_MARKDOWN_MAX, extract_presearch_from_markdown
 from upload.task_locks import RuntimeLock, acquire_runtime_lock
 
-from .helpers import normalize_result_download_languages, save_task
+from upload.utils.media_entry_helpers import normalize_result_download_languages, save_task
 from .movie_pipeline import process_movie_pipeline
 from .runtime_helpers import (
     build_db_candidate,
@@ -235,8 +235,7 @@ def process_media_task(task_pk: int) -> str:
             getattr(current_process(), "name", "main"),
         )
 
-        # ── Step 0: Title fetch + DB search (no LLM call) ──
-        website_title = WebScrapeService.cinefreak_title(url)
+        # ── Step 0: Markdown presearch + DB / FlixBD (no combined extract LLM yet) ──
         db_match_candidates = None
         db_candidate_map = {}
         flixbd_results = []
@@ -246,53 +245,94 @@ def process_media_task(task_pk: int) -> str:
         has_existing_drive = has_drive_links(resume_result_raw)
         resume_result = resume_result_raw if has_existing_drive else {}
 
-        if website_title:
-            logger.info(f"Website title: {website_title}")
-            info = extract_title_info(website_title)
-            name, year, season_tag = info.title, info.year, info.season_tag
-            logger.info(f"Extracted: name='{name}', year='{year}', season_tag='{season_tag}'")
-            db_search_debug: dict = {}
-            flixbd_search_debug: dict = {}
-            search_query_json = {
-                "extract": {
-                    "website_title": website_title,
-                    "name": name,
-                    "year": year,
-                    "season_tag": season_tag,
-                }
+        search_query_json: dict
+
+        page_md = WebScrapeService.get_page_content(url)
+        if not page_md or not str(page_md).strip():
+            msg = "Failed to fetch page markdown; presearch is required for search keys and content type."
+            logger.error(msg)
+            save_task(media_task, status="failed", error_message=msg)
+            return json.dumps({"status": "error", "message": msg})
+
+        try:
+            pre = extract_presearch_from_markdown(page_md[:PRESEARCH_MARKDOWN_MAX])
+        except Exception as exc:
+            msg = f"Presearch failed (required): {exc}"
+            logger.error(msg, exc_info=True)
+            save_task(media_task, status="failed", error_message=msg)
+            return json.dumps({"status": "error", "message": msg})
+
+        name = pre.primary_name
+        year = pre.year
+        season_tag = pre.season_tag
+        alt_name = pre.alt_name
+        locked_content_type = pre.content_type
+        search_query_json = {
+            "extract": {
+                "source": "markdown_presearch",
+                "markdown_chars": len(page_md),
+                "snippet_chars": min(len(page_md), PRESEARCH_MARKDOWN_MAX),
+                "content_type": pre.content_type,
+                "name": name,
+                "alt_name": alt_name,
+                "year": year,
+                "season_tag": season_tag,
             }
+        }
+        logger.info(
+            "Presearch (markdown): name=%r alt=%r year=%r season_tag=%r type=%s",
+            name,
+            alt_name,
+            year,
+            season_tag,
+            pre.content_type,
+        )
 
-            if name:
-                matches = _search_db(
-                    name,
-                    year,
-                    season_tag=season_tag,
-                    exclude_pk=media_task.pk,
-                    search_debug=db_search_debug,
-                )
-                if matches:
-                    db_match_candidates = build_db_match_candidates(matches)
-                    db_candidate_map = {t.pk: t for t in matches}
-                    logger.info(
-                        f"Found {len(matches)} DB candidate(s): "
-                        + ", ".join(f"[{t.pk}] {t.title}" for t in matches)
-                    )
-                elif resume_result:
-                    logger.info(f"No other match, but task has existing result (reused task). Using self for dup check.")
-                    db_match_candidates = [build_db_candidate(media_task)]
-                    db_candidate_map = {media_task.pk: media_task}
-                else:
-                    logger.info(f"No existing match for '{name}'. New content.")
+        db_search_debug: dict = {}
+        flixbd_search_debug: dict = {}
 
-                # ── FlixBD search (pre-LLM, results passed to LLM as context) ──
-                flixbd_results = fetch_flixbd_results(
-                    name,
-                    year=year,
-                    season_tag=season_tag,
-                    fetch_debug=flixbd_search_debug,
-                )
-                search_query_json["db_search"] = db_search_debug
-                search_query_json["flixbd_search"] = flixbd_search_debug
+        logger.info(
+            "Search keys: name=%r year=%r season_tag=%r alt=%r",
+            name,
+            year,
+            season_tag,
+            alt_name,
+        )
+
+        matches = _search_db(
+            name,
+            year,
+            season_tag=season_tag,
+            exclude_pk=media_task.pk,
+            search_debug=db_search_debug,
+            alt_name=alt_name,
+        )
+        if matches:
+            db_match_candidates = build_db_match_candidates(matches)
+            db_candidate_map = {t.pk: t for t in matches}
+            logger.info(
+                "Found %s DB candidate(s): %s",
+                len(matches),
+                ", ".join(f"[{t.pk}] {t.title}" for t in matches),
+            )
+        elif resume_result:
+            logger.info(
+                "No other match, but task has existing result (reused task). Using self for dup check."
+            )
+            db_match_candidates = [build_db_candidate(media_task)]
+            db_candidate_map = {media_task.pk: media_task}
+        else:
+            logger.info("No existing match for %r. New content.", name)
+
+        flixbd_results = fetch_flixbd_results(
+            name,
+            year=year,
+            season_tag=season_tag,
+            alt_name=alt_name,
+            fetch_debug=flixbd_search_debug,
+        )
+        search_query_json["db_search"] = db_search_debug
+        search_query_json["flixbd_search"] = flixbd_search_debug
 
         # ── Step 1: Full scrape + combined LLM call (extract + dup check) ──
         def _on_progress(data):
@@ -309,7 +349,9 @@ def process_media_task(task_pk: int) -> str:
             db_match_candidates=db_match_candidates,
             flixbd_results=flixbd_results,
             existing_result=resume_result if resume_result else None,
-            search_query_json=search_query_json if website_title else None,
+            search_query_json=search_query_json,
+            page_markdown=page_md,
+            locked_content_type=pre.content_type,
         )
         title = data.get("title", "Unknown")
 

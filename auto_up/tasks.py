@@ -31,8 +31,10 @@ from constant import (
     FLIXBD_FUZZY_THRESHOLD,
     FLIXBD_SEARCH_PER_PAGE,
 )
-from llm.utils.guessit_extractor import extract_title_info
+from llm.utils.name_extractor import extract_title_info
+from llm.utils.presearch_extract import PRESEARCH_MARKDOWN_MAX, extract_presearch_from_markdown
 from upload.models import MediaTask
+from upload.utils.web_scrape import WebScrapeService
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ def _fetch_flixbd_top(
     name: str,
     year: str | None = None,
     season_tag: str | None = None,
+    alt_name: str | None = None,
     max_results: int = None,
     fetch_debug: dict | None = None,
 ) -> list:
@@ -89,6 +92,7 @@ def _fetch_flixbd_top(
     if fetch_debug is not None:
         fetch_debug.clear()
         fetch_debug["name"] = (name or "").strip()
+        fetch_debug["alt_name"] = (alt_name or "").strip() or None
         fetch_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
         fetch_debug["season_tag"] = (season_tag or "").strip() or None
         fetch_debug["llm_max_flixbd_rows"] = max_results
@@ -104,6 +108,7 @@ def _fetch_flixbd_top(
             name,
             year,
             season_tag=season_tag,
+            alt_name=alt_name,
             per_page=FLIXBD_SEARCH_PER_PAGE,
             api_url=api_url,
             api_key=api_key,
@@ -120,7 +125,9 @@ def _fetch_flixbd_top(
             if fid is None:
                 continue
             item_title = item.get("title", "") or ""
-            fs = _flixbd_title_fuzzy_score(name, year, item_title, season_tag=season_tag)
+            fs = _flixbd_title_fuzzy_score(
+                name, year, item_title, season_tag=season_tag, alt_name=alt_name
+            )
             if fs < FLIXBD_FUZZY_THRESHOLD:
                 continue
             download_links = item.get("download_links") or {}
@@ -326,8 +333,24 @@ def auto_scrape_and_queue() -> str:
             raw_title = entry["raw_title"]
             url = entry["url"]
 
-            # Extract clean name + year
-            title_info = extract_title_info(raw_title)
+            alt_name = None
+            title_info = None
+            page_md = WebScrapeService.get_page_content(url)
+            if page_md and page_md.strip():
+                try:
+                    pre = extract_presearch_from_markdown(page_md[:PRESEARCH_MARKDOWN_MAX])
+                    title_info = pre.as_title_info()
+                    alt_name = pre.alt_name
+                except Exception as exc:
+                    logger.warning(
+                        "auto_up presearch failed url=%s: %s",
+                        url,
+                        exc,
+                    )
+
+            if title_info is None or not title_info.title:
+                title_info = extract_title_info(raw_title)
+                alt_name = None
 
             if not title_info.title:
                 logger.warning(f"Could not extract title from: {raw_title}")
@@ -345,14 +368,15 @@ def auto_scrape_and_queue() -> str:
                 title_info.title,
                 title_info.year,
                 season_tag=title_info.season_tag,
+                alt_name=alt_name,
             )
 
-            # Search FlixBD (two-phase merge + fuzzy; capped by ``AUTO_UP_FLIXBD_LLM_MAX_RESULTS``)
             flixbd_search_debug: dict = {}
             flixbd_results = _fetch_flixbd_top(
                 title_info.title,
                 year=title_info.year,
                 season_tag=title_info.season_tag,
+                alt_name=alt_name,
                 fetch_debug=flixbd_search_debug,
             )
 
@@ -368,6 +392,7 @@ def auto_scrape_and_queue() -> str:
                     "extract": {
                         "raw_title": raw_title,
                         "name": title_info.title,
+                        "alt_name": alt_name,
                         "year": title_info.year,
                         "season_tag": title_info.season_tag,
                     },

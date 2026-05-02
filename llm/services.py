@@ -3,80 +3,75 @@ import logging
 import os
 import re
 import time
+from typing import Any
 
 from .models import LLMConfig, LLMUsage
 
 logger = logging.getLogger(__name__)
 
-# Retry settings
 MAX_RETRIES = 3
-RETRY_DELAYS = [3, 8, 15]
+RETRY_DELAYS = (3, 8, 15)
 
-# Max output is configured per LLMConfig.max_output_tokens (omit = no max_* parameter sent).
+_RETRYABLE_SUBSTRINGS = frozenset(
+    (
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "rate limit",
+        "timeout",
+        "empty response",
+        "overloaded",
+        "capacity",
+        "temporarily",
+    )
+)
 
 
-def _extract_usage_openai(response) -> dict:
-    """Extract token usage from OpenAI-compatible response."""
-    usage = getattr(response, 'usage', None)
+def _extract_usage_openai_like(response: Any) -> dict:
+    usage = getattr(response, "usage", None)
     if not usage:
         return {}
     return {
-        'prompt_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
-        'completion_tokens': getattr(usage, 'completion_tokens', 0) or 0,
-        'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
     }
 
 
-def _extract_usage_google(response) -> dict:
-    """Extract token usage from Google Gemini response."""
-    meta = getattr(response, 'usage_metadata', None)
+def _extract_usage_google(response: Any) -> dict:
+    meta = getattr(response, "usage_metadata", None)
     if not meta:
         return {}
     return {
-        'prompt_tokens': getattr(meta, 'prompt_token_count', 0) or 0,
-        'completion_tokens': getattr(meta, 'candidates_token_count', 0) or 0,
-        'total_tokens': getattr(meta, 'total_token_count', 0) or 0,
-    }
-
-
-def _extract_usage_mistral(response) -> dict:
-    """Extract token usage from Mistral response."""
-    usage = getattr(response, 'usage', None)
-    if not usage:
-        return {}
-    return {
-        'prompt_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
-        'completion_tokens': getattr(usage, 'completion_tokens', 0) or 0,
-        'total_tokens': getattr(usage, 'total_tokens', 0) or 0,
+        "prompt_tokens": int(getattr(meta, "prompt_token_count", 0) or 0),
+        "completion_tokens": int(getattr(meta, "candidates_token_count", 0) or 0),
+        "total_tokens": int(getattr(meta, "total_token_count", 0) or 0),
     }
 
 
 USAGE_EXTRACTORS = {
-    'openai': _extract_usage_openai,
-    'google': _extract_usage_google,
-    'mistral': _extract_usage_mistral,
+    "openai": _extract_usage_openai_like,
+    "google": _extract_usage_google,
+    "mistral": _extract_usage_openai_like,
 }
 
 
-def _completion_truncated(response, sdk: str) -> bool:
-    """True if the provider stopped because of output length (partial JSON possible)."""
+def _completion_truncated(response: Any, sdk: str) -> bool:
     try:
-        sdk = (sdk or "").lower()
-        if sdk == "openai":
+        s = (sdk or "").lower()
+        if s in ("openai", "mistral"):
             choices = getattr(response, "choices", None) or []
             if choices and getattr(choices[0], "finish_reason", None) == "length":
                 return True
-        if sdk == "mistral":
-            choices = getattr(response, "choices", None) or []
-            if choices and getattr(choices[0], "finish_reason", None) == "length":
-                return True
-        if sdk == "google":
+        if s == "google":
             for c in getattr(response, "candidates", None) or []:
                 fr = getattr(c, "finish_reason", None)
                 if fr is not None and "MAX" in str(fr).upper():
                     return True
     except Exception:
-        pass
+        return False
     return False
 
 
@@ -90,13 +85,7 @@ def _config_max_output_int(config: LLMConfig) -> int | None:
         return None
 
 
-def _max_output_cap_for_config(config: LLMConfig) -> int | None:
-    """Single cap from config only: None = omit max_* on the request (no fallback)."""
-    return _config_max_output_int(config)
-
-
-def _chat_completions_assistant_text(response) -> str:
-    """Standard chat.completions shape: choices[0].message.content (str or OpenAI text parts list)."""
+def _chat_completions_assistant_text(response: Any) -> str:
     choices = getattr(response, "choices", None) or []
     if not choices:
         raise RuntimeError("LLM returned no choices.")
@@ -121,12 +110,7 @@ def _chat_completions_assistant_text(response) -> str:
     return str(raw)
 
 
-def _optional_gemini_thinking_config(types_mod) -> object | None:
-    """
-    Only when env sets optional Gemini thinking knobs; otherwise omit (legacy behavior).
-    GEMINI_THINKING_LEVEL: MINIMAL|LOW|... (ThinkingLevel). Takes precedence over budget if both set.
-    GEMINI_THINKING_BUDGET: integer string (e.g. 0, -1). Invalid values are skipped with a warning.
-    """
+def _optional_gemini_thinking_config(types_mod: Any) -> Any | None:
     level_raw = os.environ.get("GEMINI_THINKING_LEVEL", "").strip()
     if level_raw:
         label = level_raw.upper()
@@ -153,24 +137,22 @@ def _call_openai(
     temperature: float = 0.1,
     *,
     max_completion_tokens: int | None = None,
-):
-    """Call OpenAI-compatible API. Returns (content, response)."""
+) -> tuple[str, Any]:
     from openai import OpenAI
 
     client = OpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com/v1")
-    kwargs = dict(
-        model=config.model_name,
-        messages=[
+    kwargs: dict[str, Any] = {
+        "model": config.model_name,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        temperature=temperature,
-    )
+        "temperature": temperature,
+    }
     if max_completion_tokens is not None:
         kwargs["max_tokens"] = max_completion_tokens
     effort = os.environ.get("OPENAI_REASONING_EFFORT", "").strip()
     if effort:
-        # API expects lowercase literals (none, minimal, low, ...); see OpenAI chat completion params.
         kwargs["reasoning_effort"] = effort.lower()
     response = client.chat.completions.create(**kwargs)
     return _chat_completions_assistant_text(response), response
@@ -183,27 +165,24 @@ def _call_google(
     temperature: float = 0.1,
     *,
     max_completion_tokens: int | None = None,
-):
-    """Call Google Gemini API. Returns (content, response)."""
+) -> tuple[str, Any]:
     from google import genai
     from google.genai import types
     from django.conf import settings
 
-    use_proxy = getattr(settings, 'GOOGLE_LLM_USE_PROXY', False)
-    proxy_url = getattr(settings, 'SCRAPE_PROXY', None) if use_proxy else None
+    use_proxy = getattr(settings, "GOOGLE_LLM_USE_PROXY", False)
+    proxy_url = getattr(settings, "SCRAPE_PROXY", None) if use_proxy else None
 
-    http_options = None
-    if proxy_url:
-        http_options = types.HttpOptions(client_args={"proxy": proxy_url})
+    http_options = types.HttpOptions(client_args={"proxy": proxy_url}) if proxy_url else None
 
     client = genai.Client(
         api_key=config.api_key,
         http_options=http_options,
     )
-    gen_kwargs = dict(
-        system_instruction=system_prompt,
-        temperature=temperature,
-    )
+    gen_kwargs: dict[str, Any] = {
+        "system_instruction": system_prompt,
+        "temperature": temperature,
+    }
     if max_completion_tokens is not None:
         gen_kwargs["max_output_tokens"] = max_completion_tokens
     thinking = _optional_gemini_thinking_config(types)
@@ -224,19 +203,18 @@ def _call_mistral(
     temperature: float = 0.1,
     *,
     max_completion_tokens: int | None = None,
-):
-    """Call Mistral AI API. Returns (content, response)."""
+) -> tuple[str, Any]:
     from mistralai import Mistral
 
     client = Mistral(api_key=config.api_key)
-    kwargs = dict(
-        model=config.model_name,
-        messages=[
+    kwargs: dict[str, Any] = {
+        "model": config.model_name,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        temperature=temperature,
-    )
+        "temperature": temperature,
+    }
     if max_completion_tokens is not None:
         kwargs["max_tokens"] = max_completion_tokens
     response = client.chat.complete(**kwargs)
@@ -249,7 +227,7 @@ def _invoke_llm(
     system_prompt: str,
     temperature: float,
     max_completion_tokens: int | None,
-) -> tuple[str, object]:
+) -> tuple[str, Any]:
     sdk = (config.sdk or "").strip().lower()
     if sdk == "openai":
         return _call_openai(
@@ -275,20 +253,38 @@ def _invoke_llm(
             temperature,
             max_completion_tokens=max_completion_tokens,
         )
-    raise ValueError(f"Unknown SDK type: {config.sdk}")
+    raise ValueError(f"Unknown SDK type: {config.sdk!r}")
 
 
-# SDK dispatcher (default completion cap; truncation retry uses _invoke_llm directly)
-SDK_CALLERS = {
-    'openai': _call_openai,
-    'google': _call_google,
-    'mistral': _call_mistral,
-}
+def _capture_usage_snapshot(
+    config: LLMConfig,
+    response: Any | None,
+    duration_ms: int,
+    *,
+    purpose: str = "",
+) -> dict[str, Any]:
+    if response is None:
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    else:
+        extractor = USAGE_EXTRACTORS.get(config.sdk)
+        usage = extractor(response) if extractor else {}
+        if not usage:
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return {
+        "purpose": purpose or "",
+        "config_name": getattr(config, "name", ""),
+        "model_name": getattr(config, "model_name", ""),
+        "sdk": getattr(config, "sdk", ""),
+        "duration_ms": int(duration_ms or 0),
+        "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+        "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or 0),
+    }
 
 
 def _save_usage(
     config: LLMConfig,
-    response,
+    response: Any,
     duration_ms: int,
     success: bool = True,
     purpose: str = "",
@@ -296,27 +292,30 @@ def _save_usage(
     *,
     outbound_system_prompt: str = "",
     outbound_user_message: str = "",
-):
-    """Save token usage, completion text, and exact outbound system+user messages."""
+) -> LLMUsage | None:
     try:
-        extractor = USAGE_EXTRACTORS.get(config.sdk)
-        usage = extractor(response) if extractor else {}
-
-        if not usage:
+        usage: dict[str, int]
+        if response is None:
             usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        else:
+            extractor = USAGE_EXTRACTORS.get(config.sdk)
+            usage = extractor(response) if extractor else {}
+            if not usage:
+                usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         body = (response_text or "").strip()
-        has_tokens = any(
-            int(usage.get(k, 0) or 0) > 0 for k in ("prompt_tokens", "completion_tokens", "total_tokens")
-        )
+        has_tokens = any(int(usage.get(k, 0) or 0) > 0 for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
         if not has_tokens and not body:
-            return
+            return None
 
-        outbound_payload = {
-            "system_prompt": outbound_system_prompt or "",
-            "user_message": outbound_user_message or "",
-        }
-        outbound_json = json.dumps(outbound_payload, indent=2, ensure_ascii=False)
+        outbound_json = json.dumps(
+            {
+                "system_prompt": outbound_system_prompt or "",
+                "user_message": outbound_user_message or "",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
 
         row = LLMUsage.objects.create(
             config=config,
@@ -333,22 +332,20 @@ def _save_usage(
             outbound_request_json=outbound_json,
         )
         logger.debug(
-            f"[{config.name}] Usage: {usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)}"
-            f"={usage.get('total_tokens', 0)} tokens ({duration_ms}ms)"
+            "[%s] Usage: %s+%s=%s tokens (%sms)",
+            config.name,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            duration_ms,
         )
         return row
     except Exception as e:
-        logger.warning(f"Failed to save LLM usage: {e}")
+        logger.warning("Failed to save LLM usage: %s", e)
         return None
 
 
-def _get_ordered_configs():
-    """
-    Get active LLM configs ordered by priority.
-    Primary first, then others by ID.
-    Drops duplicate rows that point at the same provider+model+base_url (avoids retrying
-    the same failing endpoint twice, e.g. two identical Gemini primary rows).
-    """
+def _get_ordered_configs() -> list[LLMConfig]:
     raw = list(LLMConfig.objects.filter(is_active=True).order_by("-is_primary", "pk"))
     seen: set[tuple[str, str, str]] = set()
     configs: list[LLMConfig] = []
@@ -368,9 +365,8 @@ def _get_ordered_configs():
         seen.add(key)
         configs.append(c)
     if not configs:
-        raise Exception(
-            "No active LLM configs found. "
-            "Please add at least one LLM config in the admin panel."
+        raise RuntimeError(
+            "No active LLM configs found. Please add at least one LLM config in the admin panel."
         )
     return configs
 
@@ -380,23 +376,33 @@ _MD_FENCE_TAIL_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
 
 
 def _strip_markdown_fences(text: str) -> str:
-    """Remove ```json ... ``` wrappers that LLMs sometimes add despite being told not to."""
     stripped = _MD_FENCE_RE.sub("", text.strip())
     stripped = _MD_FENCE_TAIL_RE.sub("", stripped.strip())
     return stripped.strip()
 
 
-def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperature: float = 0.1, purpose: str = '') -> str:
-    """
-    Try a single config with retries.
-    Returns content string on success, raises on final failure.
-    """
-    last_error = None
+def _is_retryable_error_message(msg: str) -> bool:
+    lower = msg.lower()
+    return any(s in lower for s in _RETRYABLE_SUBSTRINGS)
+
+
+def _try_one_config(
+    config: LLMConfig,
+    prompt: str,
+    system_prompt: str,
+    temperature: float = 0.1,
+    purpose: str = "",
+    *,
+    persist_usage: bool = True,
+    capture_usage_events: list[dict[str, Any]] | None = None,
+) -> str:
+    last_error: Exception | None = None
     last_duration_ms = 0
+
     for attempt in range(MAX_RETRIES + 1):
         try:
             llm_start = time.time()
-            cap = _max_output_cap_for_config(config)
+            cap = _config_max_output_int(config)
             content, response = _invoke_llm(
                 config, prompt, system_prompt, temperature, cap
             )
@@ -405,61 +411,67 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
                     f"[{config.name}] Output hit the max length cap (finish_reason=length). "
                     "Pick a higher max output value in this LLM config or shorten the prompt."
                 )
-            duration_ms = int((time.time() - llm_start) * 1000)
+            duration_ms = max(0, int((time.time() - llm_start) * 1000))
 
             content = _strip_markdown_fences(content)
 
             if not content:
                 logger.warning(
-                    f"[{config.name}] Empty response (attempt {attempt + 1}/{MAX_RETRIES + 1})"
+                    "[%s] Empty response (attempt %s/%s)",
+                    config.name,
+                    attempt + 1,
+                    MAX_RETRIES + 1,
                 )
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_DELAYS[attempt])
                     continue
-                raise Exception("LLM returned empty response after all retries")
+                raise RuntimeError("LLM returned empty response after all retries")
 
-            _save_usage(
-                config,
-                response,
-                duration_ms,
-                success=True,
-                purpose=purpose,
-                response_text=content,
-                outbound_system_prompt=system_prompt,
-                outbound_user_message=prompt,
-            )
+            if capture_usage_events is not None:
+                capture_usage_events.append(
+                    _capture_usage_snapshot(config, response, duration_ms, purpose=purpose)
+                )
+
+            if persist_usage:
+                _save_usage(
+                    config,
+                    response,
+                    duration_ms,
+                    success=True,
+                    purpose=purpose,
+                    response_text=content,
+                    outbound_system_prompt=system_prompt,
+                    outbound_user_message=prompt,
+                )
 
             logger.info(
-                f"[{config.name}] LLM raw output: {len(content)} characters "
-                f"(purpose={purpose or 'n/a'}, {duration_ms}ms)"
+                "[%s] LLM raw output: %s characters (purpose=%s, %sms)",
+                config.name,
+                len(content),
+                purpose or "n/a",
+                duration_ms,
             )
             return content
 
         except Exception as e:
             last_error = e
-            last_duration_ms = int((time.time() - llm_start) * 1000)
-            error_str = str(e).lower()
+            last_duration_ms = max(0, int((time.time() - llm_start) * 1000))
+            err_text = str(e).lower()
 
-            # Check if retryable
-            is_retryable = any(x in error_str for x in [
-                '429', '500', '502', '503', '504',
-                'rate limit', 'timeout', 'empty response',
-                'overloaded', 'capacity', 'temporarily'
-            ])
-
-            if is_retryable and attempt < MAX_RETRIES:
+            if _is_retryable_error_message(err_text) and attempt < MAX_RETRIES:
                 delay = RETRY_DELAYS[attempt]
                 logger.warning(
-                    f"[{config.name}] Error (attempt {attempt + 1}): {e}. "
-                    f"Retrying in {delay}s..."
+                    "[%s] Error (attempt %s): %s. Retrying in %ss...",
+                    config.name,
+                    attempt + 1,
+                    e,
+                    delay,
                 )
                 time.sleep(delay)
                 continue
-
-            # Non-retryable or all retries exhausted
             break
 
-    if last_error is not None:
+    if last_error is not None and persist_usage:
         _save_usage(
             config,
             None,
@@ -470,54 +482,54 @@ def _try_one_config(config: LLMConfig, prompt: str, system_prompt: str, temperat
             outbound_system_prompt=system_prompt,
             outbound_user_message=prompt,
         )
+    if last_error is None:
+        raise RuntimeError("LLM call failed with no exception recorded.")
     raise last_error
 
 
 class LLMService:
-    """
-    Multi-provider LLM service with automatic fallback.
-    Tries primary config first, then falls back to other active configs.
-    """
-
     @staticmethod
-    def generate_completion(prompt: str, system_prompt: str = "You are a helpful assistant.", temperature: float = 0.1, purpose: str = '') -> str:
-        """
-        Generate text completion with automatic provider fallback.
-
-        Flow:
-        1. Get all active configs (primary first)
-        2. Try each config with retries
-        3. If all fail, raise the last error
-        """
+    def generate_completion(
+        prompt: str,
+        system_prompt: str = "You are a helpful assistant.",
+        temperature: float = 0.1,
+        purpose: str = "",
+        *,
+        persist_usage: bool = True,
+        capture_usage_events: list[dict[str, Any]] | None = None,
+    ) -> str:
         configs = _get_ordered_configs()
 
         logger.info(
-            f"Generating LLM completion. "
-            f"Configs: {[f'{c.name}({c.sdk})' for c in configs]}"
+            "Generating LLM completion. Configs: %s",
+            [f"{c.name}({c.sdk})" for c in configs],
         )
 
-        errors = []
+        errors: list[str] = []
         for i, config in enumerate(configs):
             try:
-                logger.info(f"Trying [{config.name}] model={config.model_name} sdk={config.sdk}")
-                content = _try_one_config(config, prompt, system_prompt, temperature, purpose=purpose)
-                
+                logger.info("Trying [%s] model=%s sdk=%s", config.name, config.model_name, config.sdk)
+                content = _try_one_config(
+                    config,
+                    prompt,
+                    system_prompt,
+                    temperature,
+                    purpose=purpose,
+                    persist_usage=persist_usage,
+                    capture_usage_events=capture_usage_events,
+                )
+
                 if i > 0:
-                    logger.info(f"Fallback succeeded with [{config.name}] after {i} failure(s)")
-                
+                    logger.info("Fallback succeeded with [%s] after %s failure(s)", config.name, i)
+
                 return content
 
             except Exception as e:
-                logger.warning(f"[{config.name}] Failed: {e}")
+                logger.warning("[%s] Failed: %s", config.name, e)
                 errors.append(f"{config.name}: {e}")
 
-                # Continue to next config
                 if i < len(configs) - 1:
-                    logger.info(f"Falling back to next config...")
-                    continue
+                    logger.info("Falling back to next config...")
 
-        # All configs failed
         error_summary = "\n".join(errors)
-        raise Exception(
-            f"All {len(configs)} LLM config(s) failed:\n{error_summary}"
-        )
+        raise RuntimeError(f"All {len(configs)} LLM config(s) failed:\n{error_summary}")

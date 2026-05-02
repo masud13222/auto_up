@@ -15,7 +15,7 @@ from upload.service.duplicate_checker import (
     coerce_matched_task_pk,
     coerce_target_site_row_id,
 )
-from upload.tasks.helpers import (
+from upload.utils.media_entry_helpers import (
     coerce_download_source_value,
     coerce_entry_language_value,
     entry_language_key,
@@ -25,12 +25,8 @@ from upload.tasks.helpers import (
     primary_download_source_url,
 )
 from upload.utils.tv_items import tv_item_key
-from llm.schema.blocked_names import (
-    SITE_NAME,
-    TARGET_SITE_ROW_ID_JSON_KEY,
-    LEGACY_SITE_ROW_ID_JSON_KEY,
-)
-from llm.utils.guessit_extractor import build_search_queries
+from llm.schema.blocked_names import SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
+from llm.utils.search_queries import build_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +242,7 @@ def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: li
     if not isinstance(dl, dict):
         return
     fail_by_link: set[tuple[str, str, str, str]] = set()
-    fail_legacy_triple: set[tuple[str, str, str]] = set()
+    fail_triple_no_link_id: set[tuple[str, str, str]] = set()
     for f in failed:
         if not isinstance(f, dict):
             continue
@@ -257,7 +253,7 @@ def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: li
         if isinstance(lid, str) and lid.strip():
             fail_by_link.add((q, lang, fn, lid.strip()))
         else:
-            fail_legacy_triple.add((q, lang, fn))
+            fail_triple_no_link_id.add((q, lang, fn))
 
     for res_key in list(dl.keys()):
         entries = dl.get(res_key)
@@ -273,7 +269,7 @@ def strip_movie_download_entries_by_flixbd_failures(movie_data: dict, failed: li
             eid = movie_download_entry_key(rk, entry)
             if eid in fail_by_link:
                 continue
-            if (rk, lang, fn) in fail_legacy_triple:
+            if (rk, lang, fn) in fail_triple_no_link_id:
                 continue
             kept.append(entry)
         if kept:
@@ -557,15 +553,22 @@ def flixbd_search_query(name: str, year: str | int | None = None) -> str:
     return f"{n} {ys}"
 
 
-def _flixbd_title_fuzzy_score(name: str, year: str | int | None, title: str, season_tag: str | None = None) -> int:
-    """Best partial_ratio against prioritized queries (name, name+year, name+year+season)."""
+def _flixbd_title_fuzzy_score(
+    name: str,
+    year: str | int | None,
+    title: str,
+    season_tag: str | None = None,
+    alt_name: str | None = None,
+) -> int:
     from rapidfuzz import fuzz
 
     t = (title or "").lower()
     if not t:
         return 0
     best = 0
-    for spec in build_search_queries(name, year=year, season_tag=season_tag):
+    for spec in build_search_queries(
+        name, year=year, season_tag=season_tag, alt_name=alt_name
+    ):
         q = spec["q"].lower()
         if q:
             best = max(best, fuzz.partial_ratio(q, t))
@@ -577,6 +580,7 @@ def _flixbd_merge_two_phase_raw(
     year: str | int | None,
     season_tag: str | None = None,
     *,
+    alt_name: str | None = None,
     per_page: int,
     api_url: str,
     api_key: str,
@@ -620,7 +624,9 @@ def _flixbd_merge_two_phase_raw(
             row["id"] = nk
             merged.append(row)
 
-    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
+    query_specs = build_search_queries(
+        name, year=year, season_tag=season_tag, alt_name=alt_name
+    )
     for spec in sorted(query_specs, key=lambda item: int(item["priority"]), reverse=True):
         _phase(spec["q"])
 
@@ -632,6 +638,7 @@ def fetch_flixbd_results(
     *,
     year: str | int | None = None,
     season_tag: str | None = None,
+    alt_name: str | None = None,
     fetch_debug: dict | None = None,
 ) -> list:
     """
@@ -651,6 +658,7 @@ def fetch_flixbd_results(
     if fetch_debug is not None:
         fetch_debug.clear()
         fetch_debug["name"] = name
+        fetch_debug["alt_name"] = (alt_name or "").strip() or None
         fetch_debug["year"] = str(year).strip() if year is not None and str(year).strip() else None
         fetch_debug["season_tag"] = str(season_tag).strip() if season_tag else None
 
@@ -668,6 +676,7 @@ def fetch_flixbd_results(
             name,
             year,
             season_tag=season_tag,
+            alt_name=alt_name,
             per_page=FLIXBD_SEARCH_PER_PAGE,
             api_url=api_url,
             api_key=api_key,
@@ -710,7 +719,9 @@ def fetch_flixbd_results(
             if rd is not None and rd != "":
                 row["release_date"] = rd
 
-            fs = _flixbd_title_fuzzy_score(name, year, item_title, season_tag=season_tag)
+            fs = _flixbd_title_fuzzy_score(
+                name, year, item_title, season_tag=season_tag, alt_name=alt_name
+            )
             if fs >= FLIXBD_FUZZY_THRESHOLD:
                 scored.append((fs, row))
 
@@ -1117,11 +1128,6 @@ def normalize_duplicate_response(
     """Canonicalize duplicate_check keys; promote site id wrongly placed in matched_task_id."""
     if not dup_result or not isinstance(dup_result, dict):
         return
-    legacy_id = dup_result.get(LEGACY_SITE_ROW_ID_JSON_KEY)
-    current_id = dup_result.get(TARGET_SITE_ROW_ID_JSON_KEY)
-    if current_id is None and legacy_id is not None:
-        dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = legacy_id
-    dup_result.pop(LEGACY_SITE_ROW_ID_JSON_KEY, None)
     if TARGET_SITE_ROW_ID_JSON_KEY not in dup_result:
         dup_result[TARGET_SITE_ROW_ID_JSON_KEY] = None
 

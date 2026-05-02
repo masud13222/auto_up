@@ -16,8 +16,8 @@ from constant import (
     FUZZY_THRESHOLD_DB,
 )
 from upload.models import MediaTask
-from upload.tasks.helpers import download_source_urls
-from llm.utils.guessit_extractor import build_search_queries
+from upload.utils.media_entry_helpers import download_source_urls
+from llm.utils.search_queries import build_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +138,8 @@ def _fuzzy_score_merged(
     season_tag: str | None,
     candidate_title: str,
     candidate_web_title: str,
+    alt_name: str | None = None,
 ) -> int:
-    """Best fuzzy score against prioritized query set."""
     s = 0
     texts = []
     if candidate_title:
@@ -148,21 +148,31 @@ def _fuzzy_score_merged(
         texts.append(candidate_web_title.lower())
     if not texts:
         return s
-    for spec in build_search_queries(name, year=year, season_tag=season_tag):
+    for spec in build_search_queries(
+        name, year=year, season_tag=season_tag, alt_name=alt_name
+    ):
         q = spec["q"].lower()
         for t in texts:
             s = max(s, fuzz.partial_ratio(q, t))
     return int(s)
 
 
-def _fetch_candidates(base_qs, name: str, year: str = None, season_tag: str | None = None) -> dict:
+def _fetch_candidates(
+    base_qs,
+    name: str,
+    year: str = None,
+    season_tag: str | None = None,
+    alt_name: str | None = None,
+) -> dict:
     """
     Broad DB fetch in two phases (name-only keywords, then name+year keywords), merged by pk,
     then a single fuzzy pass (name and optional name+year vs titles).
     Returns {pk: (task, matched_by_list, score)}.
     """
     candidates: dict = {}
-    query_specs = build_search_queries(name, year=year, season_tag=season_tag)
+    query_specs = build_search_queries(
+        name, year=year, season_tag=season_tag, alt_name=alt_name
+    )
     merged: dict[int, tuple] = {}  # pk -> (task, matched_by list)
     order: list[int] = []
     priority_by_pk: dict[int, int] = {}
@@ -192,14 +202,21 @@ def _fetch_candidates(base_qs, name: str, year: str = None, season_tag: str | No
 
     for pk in order:
         task, matched_by = merged[pk]
-        score = _fuzzy_score_merged(name, year, season_tag, task.title, task.website_title)
+        score = _fuzzy_score_merged(
+            name, year, season_tag, task.title, task.website_title, alt_name=alt_name
+        )
         if score >= FUZZY_THRESHOLD_DB:
             candidates[task.pk] = (task, matched_by, score, priority_by_pk.get(task.pk, 0))
 
     return candidates, query_specs
 
 
-def search_existing(name: str, year: str = None, season_tag: str | None = None) -> dict:
+def search_existing(
+    name: str,
+    year: str = None,
+    season_tag: str | None = None,
+    alt_name: str | None = None,
+) -> dict:
     """
     Search MediaTask for matching entries using fuzzy matching.
     
@@ -212,7 +229,9 @@ def search_existing(name: str, year: str = None, season_tag: str | None = None) 
     Each result has a `matched_by` field showing which queries hit.
     """
     base_qs = MediaTask.objects.exclude(result__isnull=True)
-    candidates, query_specs = _fetch_candidates(base_qs, name, year, season_tag=season_tag)
+    candidates, query_specs = _fetch_candidates(
+        base_qs, name, year, season_tag=season_tag, alt_name=alt_name
+    )
 
     # Build result list, sorted by fuzzy score (best first)
     seen_pks = {}

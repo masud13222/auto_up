@@ -6,8 +6,11 @@ Sends Pass-1 data + search context → LLM returns filtered data (only missing
 downloads) and action ("update" or "skip").
 """
 
+from __future__ import annotations
+
 import json
 import logging
+from typing import Any
 
 from llm.services import LLMService
 from llm.json_repair import repair_json
@@ -27,6 +30,9 @@ def compute_update_delta(
     content_type: str,
     pass1_data: dict,
     dup_search_context: dict,
+    *,
+    persist_usage: bool = True,
+    capture_usage_events: list[dict[str, Any]] | None = None,
 ) -> dict | None:
     """Run Pass-2 LLM call.
 
@@ -72,6 +78,8 @@ def compute_update_delta(
                         prompt=user_prompt + _JSON_RETRY_SUFFIX,
                         system_prompt=system_prompt,
                         purpose="update_delta",
+                        persist_usage=persist_usage,
+                        capture_usage_events=capture_usage_events,
                     )
 
         if result is None:

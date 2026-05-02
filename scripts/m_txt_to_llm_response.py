@@ -123,6 +123,13 @@ def main() -> int:
         action="store_true",
         help="Inject minimal duplicate-check context into combined prompt",
     )
+    parser.add_argument(
+        "--content-type",
+        choices=("movie", "tvshow"),
+        default="movie",
+        dest="content_type",
+        help="Locked combined extract schema (movie vs tvshow)",
+    )
     parser.add_argument("--label", default=DEFAULT_LABEL, help="Print label only")
     args = parser.parse_args()
 
@@ -148,6 +155,7 @@ def main() -> int:
             flixbd = [{"title": "Single Papa", "download_links": {"qualities": "720p"}}]
 
         system_prompt = get_combined_system_prompt(
+            args.content_type,
             extra_below=False,
             extra_above=False,
             max_extra=0,

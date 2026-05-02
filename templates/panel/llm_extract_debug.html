@@ -1,0 +1,857 @@
+{% extends 'panel/base.html' %}
+{% block title %}LLM URL debug — FlixBD{% endblock %}
+{% block page_title %}LLM URL debug{% endblock %}
+{% block nav_llm_extract_debug %}active{% endblock %}
+
+{% block content %}
+<style>
+    @keyframes llmStepPulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.35); }
+        50% { box-shadow: 0 0 0 6px rgba(249, 115, 22, 0); }
+    }
+    .llm-step-active .llm-step-dot {
+        animation: llmStepPulse 1.6s ease-in-out infinite;
+    }
+    .llm-progress-strip {
+        background: linear-gradient(90deg, #f97316, #fb923c, #f97316);
+        background-size: 200% 100%;
+        animation: llmShimmer 1.2s linear infinite;
+    }
+    @keyframes llmShimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
+    }
+    .llm-json-view { margin: 0; padding: 0.75rem; background: #0e0e0e !important; border-radius: 0.5rem; border: 1px solid #262626; overflow: auto; }
+    .llm-json-view code[class*="language-"] { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; line-height: 1.5; text-shadow: none; }
+    .llm-json-view .token.property { color: #7dd3fc; }
+    .llm-json-view .token.string { color: #86efac; }
+    .llm-json-view .token.number { color: #fcd34d; }
+    .llm-json-view .token.boolean { color: #c4b5fd; }
+    .llm-json-view .token.null { color: #94a3b8; }
+    .llm-json-view .token.punctuation { color: #94a3b8; }
+    .llm-json-view .token.operator { color: #f472b6; }
+    .llm-json-view .token.keyword { color: #fcd34d; }
+    .llm-json-view .token.comment { color: #64748b; font-style: italic; }
+</style>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" crossorigin="anonymous" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js" crossorigin="anonymous"></script>
+
+<div
+    class="w-full max-w-5xl mx-auto space-y-5"
+    x-data="llmExtractDebugUi('{{ url|escapejs }}', '{% url 'panel:llm_extract_debug_stream' %}')"
+    x-init="init()"
+>
+    <div class="card p-4 sm:p-6 border border-[#262626]">
+        <p class="text-xs sm:text-sm text-[#737373] leading-relaxed mb-4">
+            Runs <strong class="text-[#a3a3a3]">scrape → presearch LLM → DB + FlixBD search (queries shown) → combined extract LLM</strong>.
+            Does <strong class="text-amber-500/90">not</strong> resolve download gateways, upload to Drive, or sync to the site — for debugging only.
+            Does <strong class="text-amber-500/90">not</strong> write to the database (no <code class="text-[#888]">LLMUsage</code> rows, no duplicate-context updates).
+        </p>
+        <form
+            x-ref="debugForm"
+            method="post"
+            class="flex flex-col sm:flex-row gap-3 sm:items-end"
+            @submit.prevent="runStream()"
+        >
+            {% csrf_token %}
+            <div class="flex-1 min-w-0">
+                <label for="id_url" class="block text-[11px] font-medium text-[#a3a3a3] uppercase tracking-wider mb-2">Page URL</label>
+                <input
+                    type="url"
+                    name="url"
+                    id="id_url"
+                    x-model="urlInput"
+                    placeholder="https://example.com/page/"
+                    required
+                    class="w-full bg-[#0e0e0e] border border-[#262626] text-white rounded-xl px-3 py-2.5 text-sm focus:border-[#f97316] transition-colors disabled:opacity-50"
+                    autocomplete="off"
+                    :disabled="streaming"
+                >
+            </div>
+            <div class="flex flex-wrap gap-2 shrink-0">
+                <button
+                    type="submit"
+                    class="btn-primary px-5 py-2.5 rounded-xl text-sm"
+                    :disabled="streaming || !urlInput.trim()"
+                    x-text="streaming ? 'Running…' : 'Run debug'"
+                ></button>
+                <button
+                    type="button"
+                    class="px-4 py-2.5 rounded-xl text-sm font-medium border border-[#333] text-[#a3a3a3] hover:border-[#444] hover:text-white transition-colors"
+                    x-show="streaming"
+                    @click="abortStream()"
+                >Stop</button>
+            </div>
+        </form>
+        <p class="mt-3 text-[10px] text-[#525252]">
+            Live progress streams over the network; GET with <code class="text-[#888]">?url=...</code> prefills the field and auto-starts one run.
+        </p>
+    </div>
+
+    <!-- Live status -->
+    <div
+        x-show="streaming || liveMessage || elapsedLabel"
+        x-cloak
+        class="card p-4 border border-[#262626] space-y-3"
+        role="status"
+        aria-live="polite"
+    >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+                <span
+                    class="inline-flex h-2 w-2 rounded-full shrink-0"
+                    :class="streaming ? 'bg-emerald-500 llm-progress-strip' : 'bg-[#404040]'"
+                ></span>
+                <p class="text-sm text-white font-medium truncate" x-text="liveMessage || (streaming ? 'Starting…' : 'Idle')"></p>
+            </div>
+            <p class="text-[11px] font-mono text-[#737373]" x-show="elapsedLabel" x-text="elapsedLabel"></p>
+        </div>
+        <div class="h-1.5 rounded-full bg-[#1a1a1a] overflow-hidden border border-[#262626]">
+            <div
+                class="h-full rounded-full transition-all duration-300 ease-out"
+                :class="streaming ? 'llm-progress-strip' : 'bg-[#f97316]'"
+                :style="`
+                    width: ${progressPct()}%;
+                    opacity: ${streaming && progressPct() < 5 ? '0.45' : '1'};
+                `"
+            ></div>
+        </div>
+        <p class="text-[10px] text-[#525252]" x-show="streaming" x-text="`Step ${activeIndex} of ${totalSteps}${activeStepLabel ? ' · ' + activeStepLabel : ''}`"></p>
+    </div>
+
+    <!-- Timeline -->
+    <div x-show="timeline.length > 0" x-cloak class="card border border-[#262626] overflow-hidden">
+        <div class="px-4 py-3 border-b border-[#262626] bg-[#121212]/80 flex items-center justify-between">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316]">Pipeline</h3>
+            <span class="text-[10px] text-[#525252] font-mono" x-show="timeline.length && timeline.filter((s) => s.phase === 'done').length === totalSteps">All steps complete</span>
+        </div>
+        <ol class="divide-y divide-[#1e1e1e]" role="list">
+            <template x-for="row in timeline" :key="row.key">
+                <li
+                    class="flex gap-3 sm:gap-4 px-4 py-4"
+                    :class="{
+                        'llm-step-active bg-[#f97316]/[0.04]': row.phase === 'active',
+                        'opacity-50': row.phase === 'pending',
+                    }"
+                >
+                    <div class="flex flex-col items-center pt-1 shrink-0">
+                        <span
+                            class="llm-step-dot w-3 h-3 rounded-full border-2 shrink-0 transition-colors"
+                            :class="{
+                                'border-[#f97316] bg-[#f97316]': row.phase === 'done',
+                                'border-[#f97316] bg-transparent': row.phase === 'active',
+                                'border-[#333] bg-[#0e0e0e]': row.phase === 'pending',
+                                'border-red-400 bg-red-500/20': row.phase === 'error',
+                            }"
+                        ></span>
+                    </div>
+                    <div class="min-w-0 flex-1 space-y-2">
+                        <div class="flex flex-wrap items-baseline gap-2 justify-between">
+                            <h4 class="text-sm font-semibold text-white" x-text="row.label"></h4>
+                            <span
+                                class="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-md"
+                                :class="badgeClass(row.phase)"
+                                x-text="phaseWord(row.phase)"
+                            ></span>
+                        </div>
+                        <div
+                            class="flex flex-wrap gap-1.5 items-center"
+                            x-show="row.tokenUsage && ((row.tokenUsage.total_tokens || 0) > 0 || (row.tokenUsage.calls || 0) > 0)"
+                        >
+                            <span class="inline-flex items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10px] font-bold text-sky-100">
+                                <span class="text-[9px] font-semibold text-sky-400/90 uppercase tracking-wide">in</span>
+                                <span x-text="formatTok(row.tokenUsage.prompt_tokens)"></span>
+                            </span>
+                            <span class="inline-flex items-center gap-1 rounded-md border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-bold text-violet-100">
+                                <span class="text-[9px] font-semibold text-violet-400/90 uppercase tracking-wide">out</span>
+                                <span x-text="formatTok(row.tokenUsage.completion_tokens)"></span>
+                            </span>
+                            <span class="inline-flex items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-100">
+                                <span class="text-[9px] font-semibold text-amber-400/90 uppercase tracking-wide">Σ</span>
+                                <span x-text="formatTok(row.tokenUsage.total_tokens)"></span>
+                            </span>
+                            <span class="inline-flex items-center gap-1 rounded-md border border-[#333] bg-[#141414] px-2 py-0.5 text-[10px] font-mono text-[#a3a3a3]" x-show="(row.tokenUsage.calls || 0) > 0">
+                                <span x-text="row.tokenUsage.calls + ' call' + (row.tokenUsage.calls === 1 ? '' : 's')"></span>
+                            </span>
+                        </div>
+                        <p class="text-[11px] text-[#737373] leading-relaxed font-mono" x-show="row.hint" x-text="row.hint"></p>
+                        <details class="text-xs border border-[#262626] rounded-lg bg-[#0c0c0c] overflow-hidden" x-show="row.key === 'page_scrape' && row.markdownReady">
+                            <summary class="cursor-pointer px-3 py-2.5 text-[#a3a3a3] hover:text-[#f97316] list-none flex items-center justify-between gap-2 border-b border-transparent open:border-[#262626]">
+                                <span class="flex items-center gap-2 font-medium">
+                                    <svg class="w-3 h-3 text-[#525252] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                                    Page markdown <span class="text-[10px] font-normal text-[#525252]">(full scrape)</span>
+                                </span>
+                                <span class="text-[10px] text-[#525252] font-mono shrink-0" x-text="(row.markdownBody || '').length + ' chars'"></span>
+                            </summary>
+                            <div class="p-3 pt-3">
+                                <textarea
+                                    readonly
+                                    rows="16"
+                                    class="w-full p-3 rounded-lg bg-[#0e0e0e] border border-[#1e1e1e] text-[#cfcfcf] font-mono text-[11px] leading-relaxed resize-y min-h-[12rem]"
+                                    :value="row.markdownBody || ''"
+                                ></textarea>
+                            </div>
+                        </details>
+
+                        <!-- First N chars only (fed to presearch LLM when shorter than full page) -->
+                        <details class="text-xs border border-[#303030] rounded-lg bg-[#0e0e0e]" x-show="row.key === 'page_scrape' && row.markdownReady && row.showPreSnippetBlock">
+                            <summary class="cursor-pointer px-3 py-2 text-[#737373] hover:text-[#a3a3a3] list-none flex items-center justify-between gap-2">
+                                <span>Presearch snippet only</span>
+                                <span class="text-[10px] font-mono text-[#525252]" x-text="'(first ' + (row.preSnippetChars||0) + ' chars)'"></span>
+                            </summary>
+                            <textarea
+                                readonly
+                                rows="10"
+                                class="w-full mt-2 p-3 rounded-lg bg-[#0a0a0a] border border-[#262626] text-[#a3a3a3] font-mono text-[11px] leading-relaxed"
+                                :value="row.presearchSnippetMd || ''"
+                            ></textarea>
+                        </details>
+
+                        <!-- Presearch LLM: model output + prompts -->
+                        <details class="text-xs border border-[#262626] rounded-lg bg-[#0c0c0c] overflow-hidden" x-show="row.key === 'presearch_llm' && row.presearchLlmReady">
+                            <summary class="cursor-pointer px-3 py-2.5 text-[#a3a3a3] hover:text-[#f97316] list-none flex items-center justify-between gap-2">
+                                <span class="font-medium">Presearch LLM — raw response</span>
+                                <span class="text-[10px] text-[#525252] font-mono shrink-0" x-text="(row.presearchRawResponse || '').length + ' chars'"></span>
+                            </summary>
+                            <div class="p-3 pt-2 border-t border-[#1e1e1e]">
+                                <textarea
+                                    readonly
+                                    rows="14"
+                                    class="w-full p-3 rounded-lg bg-[#0e0e0e] border border-[#1e1e1e] text-[#e5e5e5] font-mono text-[11px] leading-relaxed resize-y min-h-[10rem]"
+                                    :value="row.presearchRawResponse || ''"
+                                ></textarea>
+                                <p class="text-[10px] text-[#525252] mt-2">Parsed fields in the summary below use <code class="text-[#737373]">repair_json</code> on this text.</p>
+                            </div>
+                        </details>
+                        <details
+                            class="text-xs border border-[#262626] rounded-lg bg-[#0c0c0c] overflow-hidden"
+                            x-show="row.key === 'presearch_llm' && row.presearchLlmReady && row.modelResponseJsonPretty"
+                        >
+                            <summary class="cursor-pointer px-3 py-2.5 text-[#a3a3a3] hover:text-[#f97316] list-none flex items-center justify-between gap-2">
+                                <span class="font-medium">Response payload <span class="text-[10px] font-normal text-[#525252]">(valid JSON)</span></span>
+                                <span class="text-[10px] text-[#525252] font-mono shrink-0" x-text="(row.modelResponseJsonPretty || '').length + ' chars formatted'"></span>
+                            </summary>
+                            <div class="p-3 pt-2 border-t border-[#1e1e1e]">
+                                <pre class="llm-json-view max-h-[min(60vh,24rem)]"><code class="language-json" x-html="highlightJsonSyntax(row.modelResponseJsonPretty)"></code></pre>
+                            </div>
+                        </details>
+                        <p class="text-[10px] text-[#737373] px-0.5 font-mono" x-show="row.key === 'presearch_llm' && row.presearchLlmReady && row.presearchRawResponse && !row.modelResponseJsonPretty">
+                            Response is not strict JSON — use raw model text above; pipeline still parses with repair.
+                        </p>
+                        <details class="text-xs border border-[#303030] rounded-lg bg-[#0e0e0e]" x-show="row.key === 'presearch_llm' && row.presearchLlmReady">
+                            <summary class="cursor-pointer px-3 py-2 text-[#737373] hover:text-[#a3a3a3]">Presearch — system prompt</summary>
+                            <textarea
+                                readonly
+                                rows="12"
+                                class="w-full mt-2 p-3 rounded-lg bg-[#0a0a0a] border border-[#262626] text-[#a3a3a3] font-mono text-[11px] leading-relaxed"
+                                :value="row.presearchSystemPrompt || ''"
+                            ></textarea>
+                        </details>
+                        <details class="text-xs border border-[#303030] rounded-lg bg-[#0e0e0e]" x-show="row.key === 'presearch_llm' && row.presearchLlmReady">
+                            <summary class="cursor-pointer px-3 py-2 text-[#737373] hover:text-[#a3a3a3]">Presearch — user prompt (snippet + instruction)</summary>
+                            <textarea
+                                readonly
+                                rows="14"
+                                class="w-full mt-2 p-3 rounded-lg bg-[#0a0a0a] border border-[#262626] text-[#a3a3a3] font-mono text-[11px] leading-relaxed"
+                                :value="row.presearchUserPrompt || ''"
+                            ></textarea>
+                        </details>
+
+                        <!-- Combined extract LLM: same request/response as downstream cards -->
+                        <details class="text-xs border border-[#262626] rounded-lg bg-[#0c0c0c] overflow-hidden" x-show="row.key === 'combined_llm' && row.combinedLlmReady">
+                            <summary class="cursor-pointer px-3 py-2.5 text-[#a3a3a3] hover:text-[#f97316] list-none flex items-center justify-between gap-2">
+                                <span class="font-medium">Combined LLM — raw model output (after retries)</span>
+                                <span class="text-[10px] text-[#525252] font-mono shrink-0" x-text="(row.combinedFinalResponse || '').length + ' chars'"></span>
+                            </summary>
+                            <div class="p-3 pt-2 border-t border-[#1e1e1e]">
+                                <textarea
+                                    readonly
+                                    rows="14"
+                                    class="w-full p-3 rounded-lg bg-[#0e0e0e] border border-[#1e1e1e] text-[#e5e5e5] font-mono text-[11px] leading-relaxed resize-y min-h-[10rem]"
+                                    :value="row.combinedFinalResponse || ''"
+                                ></textarea>
+                                <p class="text-[10px] text-[#525252] mt-2">Structured output is parsed from this text; see event log below for every completion.</p>
+                            </div>
+                        </details>
+                        <details
+                            class="text-xs border border-[#262626] rounded-lg bg-[#0c0c0c] overflow-hidden"
+                            x-show="row.key === 'combined_llm' && row.combinedLlmReady && row.modelResponseJsonPretty"
+                        >
+                            <summary class="cursor-pointer px-3 py-2.5 text-[#a3a3a3] hover:text-[#f97316] list-none flex items-center justify-between gap-2">
+                                <span class="font-medium">Response payload <span class="text-[10px] font-normal text-[#525252]">(valid JSON)</span></span>
+                                <span class="text-[10px] text-[#525252] font-mono shrink-0" x-text="(row.modelResponseJsonPretty || '').length + ' chars formatted'"></span>
+                            </summary>
+                            <div class="p-3 pt-2 border-t border-[#1e1e1e]">
+                                <pre class="llm-json-view max-h-[min(70vh,32rem)]"><code class="language-json" x-html="highlightJsonSyntax(row.modelResponseJsonPretty)"></code></pre>
+                            </div>
+                        </details>
+                        <p class="text-[10px] text-[#737373] px-0.5 font-mono" x-show="row.key === 'combined_llm' && row.combinedLlmReady && row.combinedFinalResponse && !row.modelResponseJsonPretty">
+                            Final model text is not strict JSON — use raw output above plus event log entries.
+                        </p>
+                        <details class="text-xs border border-[#303030] rounded-lg bg-[#0e0e0e]" x-show="row.key === 'combined_llm' && row.combinedLlmReady">
+                            <summary class="cursor-pointer px-3 py-2 text-[#737373] hover:text-[#a3a3a3]">Combined — system prompt</summary>
+                            <textarea
+                                readonly
+                                rows="12"
+                                class="w-full mt-2 p-3 rounded-lg bg-[#0a0a0a] border border-[#262626] text-[#a3a3a3] font-mono text-[11px] leading-relaxed"
+                                :value="row.combinedSystemPrompt || ''"
+                            ></textarea>
+                        </details>
+                        <details class="text-xs border border-[#303030] rounded-lg bg-[#0e0e0e]" x-show="row.key === 'combined_llm' && row.combinedLlmReady">
+                            <summary class="cursor-pointer px-3 py-2 text-[#737373] hover:text-[#a3a3a3] flex items-center justify-between gap-2">
+                                <span>Combined — user prompt</span>
+                                <span class="text-[10px] font-mono text-[#525252]" x-text="(row.combinedUserPrompt || '').length + ' chars (page markdown)'"></span>
+                            </summary>
+                            <textarea
+                                readonly
+                                rows="16"
+                                class="w-full mt-2 p-3 rounded-lg bg-[#0a0a0a] border border-[#262626] text-[#a3a3a3] font-mono text-[11px] leading-relaxed resize-y min-h-[12rem]"
+                                :value="row.combinedUserPrompt || ''"
+                            ></textarea>
+                        </details>
+                        <div class="text-xs space-y-2" x-show="row.key === 'combined_llm' && row.combinedLlmReady && row.combinedLlmEvents && row.combinedLlmEvents.length">
+                            <p class="text-[10px] text-[#737373] uppercase tracking-wider font-semibold px-0.5">Every completion + JSON parse attempts</p>
+                            <template x-for="(ev, cidx) in row.combinedLlmEvents" :key="cidx">
+                                <div>
+                                    <template x-if="ev.kind === 'llm_response'">
+                                        <details class="text-xs border border-[#262626] rounded-lg p-2 bg-[#121212]">
+                                            <summary class="cursor-pointer text-[#a3a3a3] font-mono" x-text="(ev.label || 'response') + ' · ' + (ev.text || '').length + ' chars'"></summary>
+                                            <textarea readonly rows="8" class="mt-2 w-full p-2 rounded bg-[#0e0e0e] border border-[#1e1e1e] text-[#a3a3a3] font-mono text-xs" :value="ev.text || ''"></textarea>
+                                        </details>
+                                    </template>
+                                    <template x-if="ev.kind === 'json_parse_failed'">
+                                        <div class="text-xs border border-amber-500/20 rounded-lg p-2 bg-amber-500/5 text-amber-200/90 font-mono">
+                                            parse attempt <span x-text="ev.attempt"></span> — <span x-text="ev.error"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+
+                        <details class="text-xs group" x-show="row.detailJson">
+                            <summary class="cursor-pointer text-[#737373] hover:text-[#a3a3a3] list-none flex items-center gap-1 mt-2">
+                                <svg class="w-3 h-3 text-[#525252] group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Step payload <span class="text-[#525252] font-normal normal-case tracking-normal">(meta)</span>
+                            </summary>
+                            <p class="text-[10px] text-[#525252] mt-2 mb-1 leading-relaxed">Full markdown, LLM prompts, and raw model strings are expanded above; below is the trimmed JSON streamed for this row (excluding large blobs).</p>
+                            <pre class="llm-json-view mt-2 max-h-[min(70vh,32rem)]"><code class="language-json" x-html="highlightJsonSyntax(row.detailJson)"></code></pre>
+                        </details>
+                        <template x-if="row.extraLines && row.extraLines.length">
+                            <ul class="text-[11px] text-[#a3a3a3] space-y-1 list-disc list-inside font-mono">
+                                <template x-for="ln in row.extraLines" :key="ln"><li x-text="ln"></li></template>
+                            </ul>
+                        </template>
+                    </div>
+                </li>
+            </template>
+        </ol>
+    </div>
+
+    <!-- Errors from stream -->
+    <div x-show="streamErr" x-transition class="rounded-xl border border-red-500/25 bg-red-500/5 p-4 text-sm">
+        <p class="text-red-400 font-medium">Stream error</p>
+        <p class="text-[#a3a3a3] mt-1 font-mono text-xs" x-text="streamErr"></p>
+    </div>
+
+    <!-- Final report panels -->
+    <template x-if="finalReport && !finalReport.ok">
+        <div class="rounded-xl border border-red-500/25 bg-red-500/5 p-4 text-sm space-y-3">
+            <p class="text-red-400 font-medium font-mono" x-text="finalReport.error"></p>
+            <p class="text-[#a3a3a3]" x-text="finalReport.message"></p>
+            <template x-if="finalReport.partial_debug_capture_json">
+                <details class="text-xs mt-2">
+                    <summary class="cursor-pointer text-[#737373]">Partial LLM debug capture</summary>
+                    <pre class="llm-json-view mt-2 max-h-64"><code class="language-json" x-html="highlightJsonSyntax(finalReport.partial_debug_capture_json)"></code></pre>
+                </details>
+            </template>
+        </div>
+    </template>
+
+    <template x-if="finalReport && finalReport.ok">
+        <div class="space-y-4">
+            <div class="card p-4 border border-[#262626]">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316] mb-2">Search context (JSON)</h3>
+                <p class="text-[11px] text-[#737373] mb-2">DB phase queries and FlixBD queries used for combined extract.</p>
+                <pre class="llm-json-view max-h-64"><code class="language-json" x-html="highlightJsonSyntax(finalReport.search_query_json_text)"></code></pre>
+            </div>
+
+            <div class="card p-4 border border-[#f97316]/25 bg-gradient-to-br from-[#1a1510]/80 to-[#121212]" x-show="finalReport.token_usage_summary">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316]">Token usage summary</h3>
+                    <div class="flex flex-wrap gap-1.5 justify-end">
+                        <span class="inline-flex items-center gap-1 rounded-lg border border-sky-500/35 bg-sky-500/15 px-2.5 py-1 text-[11px] font-bold text-sky-50">
+                            <span class="text-[9px] uppercase text-sky-300">in Σ</span>
+                            <span x-text="formatTok((finalReport.token_usage_summary && finalReport.token_usage_summary.grand) ? finalReport.token_usage_summary.grand.prompt_tokens : 0)"></span>
+                        </span>
+                        <span class="inline-flex items-center gap-1 rounded-lg border border-violet-500/35 bg-violet-500/15 px-2.5 py-1 text-[11px] font-bold text-violet-50">
+                            <span class="text-[9px] uppercase text-violet-300">out Σ</span>
+                            <span x-text="formatTok((finalReport.token_usage_summary && finalReport.token_usage_summary.grand) ? finalReport.token_usage_summary.grand.completion_tokens : 0)"></span>
+                        </span>
+                        <span class="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-50">
+                            <span class="text-[9px] uppercase text-amber-300">total</span>
+                            <span x-text="formatTok((finalReport.token_usage_summary && finalReport.token_usage_summary.grand) ? finalReport.token_usage_summary.grand.total_tokens : 0)"></span>
+                        </span>
+                        <span class="inline-flex items-center gap-1 rounded-lg border border-[#333] bg-[#0c0c0c] px-2.5 py-1 text-[11px] font-mono text-[#c4c4c4]" x-show="finalReport.token_usage_summary && finalReport.token_usage_summary.grand">
+                            <span x-text="(finalReport.token_usage_summary.grand.calls || 0) + ' API call' + ((finalReport.token_usage_summary.grand.calls || 0) === 1 ? '' : 's')"></span>
+                        </span>
+                    </div>
+                </div>
+                <div class="grid sm:grid-cols-2 gap-3 text-[11px]" x-show="finalReport.token_usage_summary && finalReport.token_usage_summary.by_phase">
+                    <div class="rounded-lg border border-[#2a2a2a] bg-[#0e0e0e] p-3">
+                        <p class="text-[10px] font-semibold uppercase tracking-wider text-[#737373] mb-2">Presearch LLM</p>
+                        <div class="flex flex-wrap gap-1.5 font-mono text-[#d4d4d4]">
+                            <span x-text="'in ' + formatTok((finalReport.token_usage_summary.by_phase.presearch_llm || {}).prompt_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span x-text="'out ' + formatTok((finalReport.token_usage_summary.by_phase.presearch_llm || {}).completion_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span class="text-amber-200/90" x-text="'Σ ' + formatTok((finalReport.token_usage_summary.by_phase.presearch_llm || {}).total_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span class="text-[#737373]" x-text="((finalReport.token_usage_summary.by_phase.presearch_llm || {}).calls || 0) + ' call' + (((finalReport.token_usage_summary.by_phase.presearch_llm || {}).calls || 0) === 1 ? '' : 's')"></span>
+                        </div>
+                    </div>
+                    <div class="rounded-lg border border-[#2a2a2a] bg-[#0e0e0e] p-3">
+                        <p class="text-[10px] font-semibold uppercase tracking-wider text-[#737373] mb-2">Combined + pass-2 + repairs</p>
+                        <div class="flex flex-wrap gap-1.5 font-mono text-[#d4d4d4]">
+                            <span x-text="'in ' + formatTok((finalReport.token_usage_summary.by_phase.combined_llm || {}).prompt_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span x-text="'out ' + formatTok((finalReport.token_usage_summary.by_phase.combined_llm || {}).completion_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span class="text-amber-200/90" x-text="'Σ ' + formatTok((finalReport.token_usage_summary.by_phase.combined_llm || {}).total_tokens || 0)"></span>
+                            <span class="text-[#404040]">·</span>
+                            <span class="text-[#737373]" x-text="((finalReport.token_usage_summary.by_phase.combined_llm || {}).calls || 0) + ' call' + (((finalReport.token_usage_summary.by_phase.combined_llm || {}).calls || 0) === 1 ? '' : 's')"></span>
+                        </div>
+                    </div>
+                </div>
+                <details class="text-xs mt-3 group">
+                    <summary class="cursor-pointer text-[#737373] hover:text-[#a3a3a3] list-none flex items-center gap-1">
+                        <svg class="w-3 h-3 text-[#525252] group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        Per-call breakdown (model, purpose, ms)
+                    </summary>
+                    <pre class="llm-json-view mt-2 max-h-56"><code class="language-json" x-html="highlightJsonSyntax(JSON.stringify((finalReport.token_usage_summary && finalReport.token_usage_summary.calls_detail) ? finalReport.token_usage_summary.calls_detail : [], null, 2))"></code></pre>
+                </details>
+            </div>
+
+            <div class="card p-4 border border-[#262626] space-y-4">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316]">Combined LLM — request</h3>
+                <template x-if="finalReport.debug_capture">
+                    <div class="space-y-3">
+                        <div class="flex flex-wrap gap-1.5">
+                            <span class="rounded-md border border-[#333] bg-[#141414] px-2 py-0.5 text-[10px] font-semibold text-[#d4d4d4]" x-text="'purpose: ' + (finalReport.debug_capture.purpose || '—')"></span>
+                            <span class="rounded-md border border-[#333] bg-[#141414] px-2 py-0.5 text-[10px] font-semibold text-[#d4d4d4]" x-text="'type: ' + (finalReport.debug_capture.locked_content_type || '—')"></span>
+                            <span class="rounded-md border border-sky-500/25 bg-sky-500/5 px-2 py-0.5 text-[10px] font-bold text-sky-200" x-text="'user ' + formatTok(finalReport.debug_capture.user_prompt_char_length || 0) + ' chars'"></span>
+                            <span class="rounded-md border border-violet-500/25 bg-violet-500/5 px-2 py-0.5 text-[10px] font-bold text-violet-200" x-text="'system ' + formatTok((finalReport.system_prompt_text || '').length) + ' chars'"></span>
+                        </div>
+                        <details class="text-xs group" open>
+                            <summary class="cursor-pointer text-[#a3a3a3] font-medium list-none flex items-center gap-1">
+                                <svg class="w-3 h-3 text-[#525252] group-open:rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Raw request envelope (JSON)
+                            </summary>
+                            <pre class="llm-json-view mt-2 max-h-48"><code class="language-json" x-html="highlightJsonSyntax(finalReport.combined_request_meta_json || '{}')"></code></pre>
+                        </details>
+                    <details class="text-xs">
+                        <summary class="cursor-pointer text-[#737373] hover:text-[#a3a3a3]">Full system prompt</summary>
+                        <textarea readonly rows="14" class="mt-2 w-full p-3 rounded-lg bg-[#0e0e0e] border border-[#262626] text-[#a3a3a3] font-mono text-xs" :value="finalReport.system_prompt_text || ''"></textarea>
+                    </details>
+                    <details class="text-xs">
+                        <summary class="cursor-pointer text-[#737373] hover:text-[#a3a3a3]">Full user prompt (page markdown)</summary>
+                        <textarea readonly rows="12" class="mt-2 w-full p-3 rounded-lg bg-[#0e0e0e] border border-[#262626] text-[#a3a3a3] font-mono text-xs" :value="finalReport.user_prompt_text || ''"></textarea>
+                    </details>
+                    </div>
+                </template>
+            </div>
+
+            <div class="card p-4 border border-[#262626] space-y-3">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316]">Combined LLM — responses</h3>
+                <p class="text-[11px] text-[#737373]">Primary completion, then optional JSON-repair attempts.</p>
+                <template x-for="(ev, idx) in (finalReport.debug_capture && finalReport.debug_capture.llm_events) ? finalReport.debug_capture.llm_events : []" :key="idx">
+                    <div>
+                        <template x-if="ev.kind === 'llm_response'">
+                            <details class="text-xs border border-[#262626] rounded-lg p-2 bg-[#121212]">
+                                <summary class="cursor-pointer text-[#a3a3a3] font-mono" x-text="(ev.label || 'response') + ' · ' + (ev.text || '').length + ' chars'"></summary>
+                                <textarea readonly rows="10" class="mt-2 w-full p-2 rounded bg-[#0e0e0e] border border-[#1e1e1e] text-[#a3a3a3] font-mono text-xs" :value="ev.text || ''"></textarea>
+                            </details>
+                        </template>
+                        <template x-if="ev.kind === 'json_parse_failed'">
+                            <div class="text-xs border border-amber-500/20 rounded-lg p-2 bg-amber-500/5 text-amber-200/90">
+                                <span class="font-mono">parse attempt <span x-text="ev.attempt"></span></span> — <span x-text="ev.error"></span>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+            </div>
+
+            <div class="card p-4 border border-[#262626]">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-[#f97316] mb-2">Parsed result</h3>
+                <p class="text-[11px] text-[#737373] mb-2">After resolution policy + pass-2 — not uploaded to Drive.</p>
+                <pre class="llm-json-view max-h-[28rem]"><code class="language-json" x-html="highlightJsonSyntax(finalReport.result_json)"></code></pre>
+            </div>
+        </div>
+    </template>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    const STEP_LABELS = {
+        page_scrape: { label: 'Page scrape', hint: 'Browser → markdown for presearch snippet' },
+        presearch_llm: { label: 'Presearch LLM', hint: 'content_type · title · year · season' },
+        db_search: { label: 'Local DB search', hint: 'Match candidates & query phases' },
+        flixbd_search: { label: 'FlixBD search', hint: 'Remote rows merged into extract context' },
+        combined_llm: { label: 'Combined extract LLM', hint: 'Full page + search context → structured payload' },
+    };
+
+    Alpine.data('llmExtractDebugUi', (initialUrl, streamEndpoint) => ({
+        urlInput: initialUrl || '',
+        streamEndpoint,
+        streaming: false,
+        abortCtrl: null,
+        timeline: [],
+        totalSteps: 5,
+        activeIndex: 0,
+        activeStepLabel: '',
+        liveMessage: '',
+        elapsedLabel: '',
+        streamErr: '',
+        finalReport: null,
+        t0: 0,
+
+        formatTok(n) {
+            const x = Number(n);
+            if (!Number.isFinite(x)) return '0';
+            return x.toLocaleString();
+        },
+
+        escapeHtml(s) {
+            return String(s ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        },
+
+        highlightJsonSyntax(str) {
+            const raw = String(str ?? '');
+            try {
+                const P = window.Prism;
+                if (P && P.languages && P.languages.json && typeof P.highlight === 'function') {
+                    return P.highlight(raw, P.languages.json, 'json');
+                }
+            } catch (_) {
+                /* fallback */
+            }
+            return this.escapeHtml(raw);
+        },
+
+        progressPct() {
+            if (!this.totalSteps) return 0;
+            const done = this.timeline.filter((r) => r.phase === 'done').length;
+            const hasActive = this.timeline.some((r) => r.phase === 'active');
+            const frac = done + (this.streaming && hasActive ? 0.35 : 0);
+            return Math.min(100, Math.round((frac / this.totalSteps) * 100));
+        },
+
+        badgeClass(ph) {
+            if (ph === 'done') return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+            if (ph === 'active') return 'bg-[#f97316]/15 text-[#fb923c] border border-[#f97316]/30';
+            if (ph === 'error') return 'bg-red-500/10 text-red-400 border border-red-400/25';
+            return 'bg-[#1a1a1a] text-[#737373] border border-[#262626]';
+        },
+
+        phaseWord(ph) {
+            return { pending: 'Waiting', active: 'Running', done: 'Done', error: 'Failed' }[ph] || ph;
+        },
+
+        initTimeline() {
+            const order = Object.keys(STEP_LABELS);
+            this.timeline = order.map((key) => ({
+                key,
+                label: STEP_LABELS[key].label,
+                hint: STEP_LABELS[key].hint,
+                phase: 'pending',
+                detailJson: '',
+                extraLines: [],
+                markdownBody: '',
+                markdownReady: false,
+                presearchSnippetMd: '',
+                preSnippetChars: 0,
+                showPreSnippetBlock: false,
+                presearchLlmReady: false,
+                presearchRawResponse: '',
+                presearchSystemPrompt: '',
+                presearchUserPrompt: '',
+                combinedLlmReady: false,
+                combinedSystemPrompt: '',
+                combinedUserPrompt: '',
+                combinedFinalResponse: '',
+                combinedLlmEvents: [],
+                tokenUsage: null,
+                modelResponseJsonPretty: '',
+            }));
+            this.finalReport = null;
+            this.streamErr = '';
+        },
+
+        setRowPhase(key, phase) {
+            const row = this.timeline.find((r) => r.key === key);
+            if (row) row.phase = phase;
+        },
+
+        prettyPrintModelJson(rawText) {
+            const s = String(rawText ?? '').trim();
+            if (!s) return '';
+            try {
+                return JSON.stringify(JSON.parse(s), null, 2);
+            } catch {
+                return '';
+            }
+        },
+
+        applyStepPayload(key, data) {
+            const row = this.timeline.find((r) => r.key === key);
+            if (!row) return;
+            row.modelResponseJsonPretty = '';
+            let payloadForJson = data;
+            if (key === 'page_scrape' && data && typeof data === 'object') {
+                const md = String(data.markdown ?? '');
+                row.markdownBody = md;
+                row.markdownReady = true;
+                const sn = Number(data.presearch_snippet_chars) || 0;
+                row.preSnippetChars = sn;
+                row.presearchSnippetMd = md.slice(0, Math.min(sn, md.length));
+                // Hide extra block when snippet is the whole scrape (avoid duplicate textarea).
+                row.showPreSnippetBlock = md.length > 0 && sn > 0 && sn < md.length;
+                const { markdown: _m, ...meta } = data;
+                payloadForJson = meta;
+            } else if (key === 'presearch_llm' && data && typeof data === 'object') {
+                row.presearchLlmReady = true;
+                row.presearchRawResponse = data.llm_raw_response ?? '';
+                row.presearchSystemPrompt = data.llm_system_prompt ?? '';
+                row.presearchUserPrompt = data.llm_user_prompt ?? '';
+                const { llm_raw_response, llm_system_prompt, llm_user_prompt, token_usage, ...meta } = data;
+                row.tokenUsage = token_usage ?? null;
+                row.modelResponseJsonPretty = this.prettyPrintModelJson(llm_raw_response ?? '');
+                payloadForJson = meta;
+            } else if (key === 'combined_llm' && data && typeof data === 'object') {
+                row.combinedLlmReady = true;
+                row.combinedSystemPrompt = data.llm_system_prompt ?? '';
+                row.combinedUserPrompt = data.llm_user_prompt ?? '';
+                row.combinedFinalResponse = data.llm_final_response_text ?? '';
+                row.combinedLlmEvents = Array.isArray(data.llm_events) ? data.llm_events : [];
+                const {
+                    llm_system_prompt,
+                    llm_user_prompt,
+                    llm_final_response_text,
+                    llm_events,
+                    token_usage,
+                    ...meta
+                } = data;
+                row.tokenUsage = token_usage ?? null;
+                row.modelResponseJsonPretty = this.prettyPrintModelJson(llm_final_response_text ?? '');
+                payloadForJson = meta;
+            } else {
+                row.tokenUsage = null;
+            }
+            try {
+                row.detailJson = JSON.stringify(payloadForJson, null, 2);
+            } catch (e) {
+                row.detailJson = String(payloadForJson);
+            }
+            row.extraLines = this.linesForStep(key, data);
+        },
+
+        linesForStep(key, d) {
+            if (!d) return [];
+            if (key === 'page_scrape') {
+                return [
+                    `${d.markdown_total_chars} chars markdown`,
+                    `presearch uses first ${d.presearch_snippet_chars} chars`,
+                ];
+            }
+            if (key === 'presearch_llm') {
+                const lines = [
+                    `content_type=${d.content_type}`,
+                    `primary="${d.primary_name}"`,
+                    d.alt_name ? `alt="${d.alt_name}"` : '',
+                    d.year != null ? `year=${d.year}` : '',
+                    d.season_tag ? `season_tag=${d.season_tag}` : '',
+                ].filter(Boolean);
+                const t = d.token_usage;
+                if (t && (t.total_tokens > 0 || t.calls > 0)) {
+                    lines.push(
+                        `tokens: in ${t.prompt_tokens} · out ${t.completion_tokens} · Σ ${t.total_tokens} (${t.calls} call${t.calls === 1 ? '' : 's'})`,
+                    );
+                }
+                return lines;
+            }
+            if (key === 'db_search') {
+                const lines = [`${d.match_count} DB match(es)`];
+                (d.candidate_preview || []).slice(0, 8).forEach((c) => lines.push(`#${c.pk} ${c.title}`));
+                if ((d.match_count || 0) > 8) lines.push('…');
+                return lines;
+            }
+            if (key === 'flixbd_search') {
+                const lines = [`${d.result_count} FlixBD row(s) for LLM`];
+                (d.results || []).slice(0, 12).forEach((r) => {
+                    const idPart = r && r.id != null ? `#${r.id}` : '?';
+                    const title = r && r.title ? String(r.title) : '(no title)';
+                    lines.push(`${idPart} ${title}`);
+                });
+                if ((d.results || []).length > 12) lines.push('…');
+                return lines;
+            }
+            if (key === 'combined_llm') {
+                const lines = [d.status === 'ok' ? 'Parse + resolution + pass-2 finished' : ''];
+                const u = d.llm_user_prompt || '';
+                const s = d.llm_system_prompt || '';
+                const f = d.llm_final_response_text || '';
+                const t = d.token_usage;
+                if (u.length) lines.push(`user_prompt: ${u.length} chars`);
+                if (s.length) lines.push(`system_prompt: ${s.length} chars`);
+                if (f.length) lines.push(`final_model_text: ${f.length} chars`);
+                if (t && (t.total_tokens > 0 || t.calls > 0)) {
+                    lines.push(
+                        `tokens: in ${t.prompt_tokens} · out ${t.completion_tokens} · Σ ${t.total_tokens} (${t.calls} call${t.calls === 1 ? '' : 's'})`,
+                    );
+                }
+                return lines;
+            }
+        },
+
+        tickElapsed() {
+            if (!this.t0) return;
+            const s = (Date.now() - this.t0) / 1000;
+            this.elapsedLabel = s < 60 ? `${s.toFixed(1)}s elapsed` : `${(s / 60).toFixed(1)}m elapsed`;
+        },
+
+        init() {
+            if (this.urlInput && this.urlInput.trim()) {
+                this.$nextTick(() => this.runStream());
+            }
+        },
+
+        getCsrf() {
+            const el = document.querySelector('[name=csrfmiddlewaretoken]');
+            return el ? el.value : '';
+        },
+
+        abortStream() {
+            if (this.abortCtrl) this.abortCtrl.abort();
+        },
+
+        async runStream() {
+            const u = (this.urlInput || '').trim();
+            if (!u) return;
+            this.abortStream();
+            this.abortCtrl = new AbortController();
+            this.streaming = true;
+            this.t0 = Date.now();
+            this.elapsedLabel = '0.0s elapsed';
+            this.liveMessage = 'Connecting…';
+            this.activeIndex = 0;
+            this.activeStepLabel = '';
+            this.initTimeline();
+            const tick = setInterval(() => this.tickElapsed(), 200);
+
+            const body = new URLSearchParams();
+            body.set('url', u);
+            body.set('csrfmiddlewaretoken', this.getCsrf());
+
+            try {
+                const res = await fetch(this.streamEndpoint, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        Accept: 'text/event-stream',
+                        'X-CSRFToken': this.getCsrf(),
+                    },
+                    body,
+                    signal: this.abortCtrl.signal,
+                });
+                if (!res.ok) {
+                    let msg = `HTTP ${res.status}`;
+                    try {
+                        const j = await res.json();
+                        if (j.error) msg = j.error;
+                    } catch (e) { /* ignore */ }
+                    throw new Error(msg);
+                }
+                const reader = res.body.getReader();
+                const dec = new TextDecoder();
+                let buf = '';
+                this.liveMessage = 'Pipeline running…';
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += dec.decode(value, { stream: true });
+                    const parts = buf.split('\n\n');
+                    buf = parts.pop() || '';
+                    for (const block of parts) {
+                        const line = block.split('\n').find((l) => l.startsWith('data:'));
+                        if (!line) continue;
+                        let payload;
+                        try {
+                            payload = JSON.parse(line.slice(5).trimStart());
+                        } catch (e) {
+                            continue;
+                        }
+                        this.handleEvent(payload);
+                    }
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    this.streamErr = 'Stopped by user.';
+                    this.timeline.forEach((r) => {
+                        if (r.phase === 'active') r.phase = 'pending';
+                    });
+                } else {
+                    this.streamErr = e.message || String(e);
+                }
+            } finally {
+                clearInterval(tick);
+                this.tickElapsed();
+                const aborted = !!(this.abortCtrl && this.abortCtrl.signal.aborted);
+                this.streaming = false;
+                this.liveMessage = this.finalReport
+                    ? (this.finalReport.ok ? 'Finished' : 'Finished with errors')
+                    : (aborted ? 'Stopped' : '');
+                if (!aborted && !this.finalReport && !this.streamErr) {
+                    this.streamErr = 'Stream ended unexpectedly.';
+                }
+                this.abortCtrl = null;
+            }
+        },
+
+        handleEvent(payload) {
+            if (payload.type === 'meta') {
+                this.totalSteps = payload.total_steps || this.totalSteps;
+                this.liveMessage = 'Running pipeline…';
+            } else if (payload.type === 'step_begin') {
+                this.activeIndex = payload.index || 0;
+                const meta = STEP_LABELS[payload.step];
+                this.activeStepLabel = meta ? meta.label : payload.step;
+                this.liveMessage = `Running · ${this.activeStepLabel}`;
+                if (payload.step) this.setRowPhase(payload.step, 'active');
+            } else if (payload.type === 'step_end') {
+                if (payload.step) {
+                    this.setRowPhase(payload.step, 'done');
+                    this.applyStepPayload(payload.step, payload.data || {});
+                }
+                const pct = Math.round(((payload.index || 0) / this.totalSteps) * 100);
+                this.liveMessage = `Completed step ${payload.index}/${this.totalSteps}`;
+            } else if (payload.type === 'complete') {
+                this.finalReport = payload.report || null;
+                this.liveMessage = 'All steps complete.';
+            } else if (payload.type === 'error') {
+                this.finalReport = payload.report || { ok: false, error: 'error', message: 'Unknown failure' };
+                this.liveMessage = 'Pipeline stopped with errors.';
+                const activeRow = this.timeline.find((r) => r.phase === 'active');
+                if (activeRow) activeRow.phase = 'error';
+            }
+        },
+    }));
+});
+</script>
+
+<style>[x-cloak]{display:none!important}</style>
+{% endblock %}

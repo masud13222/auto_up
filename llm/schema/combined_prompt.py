@@ -1,44 +1,13 @@
 import json
+from typing import Literal
+
 from .blocked_names import BLOCKED_SITE_NAMES, SITE_NAME, TARGET_SITE_ROW_ID_JSON_KEY
+from .duplicate_schema import duplicate_schema
 from .movie_schema import movie_schema
 from .tvshow_schema import tvshow_schema
-from .duplicate_schema import duplicate_schema
 
 _blocked_names_str = ", ".join(BLOCKED_SITE_NAMES)
-
 _COMPACT = {"separators": (",", ":")}
-
-# ───────────────────────────────────────────────
-# Combined Schema: Auto-detect + Extract in ONE call
-# ───────────────────────────────────────────────
-
-combined_schema = {
-    "type": "object",
-    "properties": {
-        "content_type": {
-            "type": "string",
-            "enum": ["movie", "tvshow"],
-            "description": "Whether the content is a movie or TV show",
-        },
-        "data": {
-            "type": "object",
-            "description": "Extracted data following movie_schema or tvshow_schema",
-        },
-        "duplicate_check": duplicate_schema,
-    },
-    "required": ["content_type", "data"],
-    "additionalProperties": False,
-    "allOf": [
-        {
-            "if": {"properties": {"content_type": {"const": "movie"}}},
-            "then": {"properties": {"data": movie_schema}},
-        },
-        {
-            "if": {"properties": {"content_type": {"const": "tvshow"}}},
-            "then": {"properties": {"data": tvshow_schema}},
-        },
-    ],
-}
 
 
 def _build_resolution_note(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
@@ -63,11 +32,14 @@ def _build_duplicate_section(db_match_candidates: list = None, flixbd_results: l
     site = SITE_NAME
     ctx_parts = []
     if db_match_candidates:
-        ctx_parts.append(f"### DB Candidates ({len(db_match_candidates)}):\n```json\n{json.dumps(db_match_candidates, separators=(',',':'), ensure_ascii=False)}\n```")
+        ctx_parts.append(
+            f"### DB Candidates ({len(db_match_candidates)}):\n```json\n"
+            f"{json.dumps(db_match_candidates, separators=(',', ':'), ensure_ascii=False)}\n```"
+        )
     if flixbd_results:
         ctx_parts.append(
             f"### {site} search results (top {len(flixbd_results)}):\n"
-            f"```json\n{json.dumps(flixbd_results, separators=(',',':'), ensure_ascii=False)}\n```\n"
+            f"```json\n{json.dumps(flixbd_results, separators=(',', ':'), ensure_ascii=False)}\n```\n"
             f"(Row `id` → use as `{TARGET_SITE_ROW_ID_JSON_KEY}`, never as `matched_task_id`.)"
         )
 
@@ -147,27 +119,8 @@ Extracted:[480p,720p,1080p]. {site} id=218 matches. Missing:[480p].
 """
 
 
-def get_combined_system_prompt(
-    extra_below: bool = False,
-    extra_above: bool = False,
-    max_extra: int = 0,
-    db_match_candidates: list = None,
-    flixbd_results: list = None,
-) -> str:
-    res_note = _build_resolution_note(extra_below, extra_above, max_extra)
-    has_dup = bool(db_match_candidates or flixbd_results)
-    dup_section = _build_duplicate_section(db_match_candidates, flixbd_results) if has_dup else ""
-
-    return f"""You are a structured data extraction function. Detect content type AND extract data. Return ONLY valid JSON.
-
-INPUT: Markdown (HTML→Markdown). Use headings, lists, link labels, and link URLs.
-
-## STEP 1 — DETECT
-TV signs: Season, Episode, S01, E01, Complete Season, Web Series → "tvshow". Otherwise → "movie".
-
-## STEP 2 — EXTRACT (rules below, then schema)
-
-### CORE RULES (follow strictly, in this order):
+def _core_rules_block() -> str:
+    return f"""### CORE RULES (follow strictly, in this order):
 1. Return ONLY valid JSON. No markdown fences, no extra text.
 2. Use only what is explicit in the Markdown. Never guess. Omit missing fields (no null, no empty strings).
 3. Download URLs: copy each URL exactly as written in the Markdown link target. Do not shorten, decode, rebuild, or alter in any way.
@@ -177,21 +130,57 @@ TV signs: Season, Episode, S01, E01, Complete Season, Web Series → "tvshow". O
 7. One dual/multi-audio file = ONE entry with `l` as array. Do not split same file into separate language entries.
 8. If same resolution has both dual-audio and single-language files, keep only dual-audio.
 9. Prefer x264 when multiple codec options exist.
-10. Never invent season numbers, episode ranges, or resolution keys not shown on page.
+10. Never invent season numbers, episode ranges, or resolution keys not shown on page."""
+
+
+def _seo_block() -> str:
+    return """### SEO:
+- meta_title: 50-60 chars. meta_description: 140-160 chars, natural CTA. meta_keywords: 10-15 comma-separated."""
+
+
+def _movie_body(res_note: str, site: str) -> str:
+    return f"""INPUT: Markdown (HTML→Markdown). This page is a **movie** (single film). Extract movie data only.
+
+## EXTRACT (rules below, then schema)
+
+{_core_rules_block()}
 
 ### RESOLUTION: {res_note}
 
 ### TITLES:
-- Movie: `Title Year Source Language - {SITE_NAME}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
-- TV: `Title Year Season NN EPxx[-yy] Source Language - {SITE_NAME}`. Combo → `Season NN Complete`.
+- Movie: `Title Year Source Language - {site}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
 
-### SEO:
-- meta_title: 50-60 chars. meta_description: 140-160 chars, natural CTA. meta_keywords: 10-15 comma-separated.
+{_seo_block()}
 
 ### FILE ENTRIES:
 Each resolution value = list of objects: `{{"u":"URL","l":"Hindi","f":"BASENAME"}}`
-Filename pattern (dots not spaces): `Title.Year.<segment>.<lang>.<res>.<src>.WEB-DL.x264.{SITE_NAME}.<ext>`
+Filename pattern (dots not spaces): `Title.Year.<segment>.<lang>.<res>.<src>.WEB-DL.x264.{site}.<ext>`
 - Movie: Title.Year.Lang.Res.Src...
+- Dual audio → use `Dual.Audio` in filename. Src: NF/AMZN/DSNP/JC/ZEE5 if clear, else omit. Default ext: .mkv.
+- `f` = basename only (no / \\ :). Do not return separate `download_filenames` object.
+
+---
+### MOVIE SCHEMA:
+{json.dumps(movie_schema, **_COMPACT)}"""
+
+
+def _tv_body(res_note: str, site: str) -> str:
+    return f"""INPUT: Markdown (HTML→Markdown). This page is a **TV show** (series). Extract TV data only.
+
+## EXTRACT (rules below, then schema)
+
+{_core_rules_block()}
+
+### RESOLUTION: {res_note}
+
+### TITLES:
+- TV: `Title Year Season NN EPxx[-yy] Source Language - {site}`. Combo → `Season NN Complete`.
+
+{_seo_block()}
+
+### FILE ENTRIES:
+Each resolution value = list of objects: `{{"u":"URL","l":"Hindi","f":"BASENAME"}}`
+Filename pattern (dots not spaces): `Title.Year.<segment>.<lang>.<res>.<src>.WEB-DL.x264.{site}.<ext>`
 - TV combo: Title.Year.S01.Complete.Lang.Res...
 - TV partial: Title.Year.S01E01-E08.Lang.Res...
 - TV single: Title.Year.S01E05.Lang.Res...
@@ -223,16 +212,44 @@ Other TV rules:
 - poster_url: any absolute image URL is valid including third-party CDNs.
 
 ---
-### MOVIE SCHEMA:
-{json.dumps(movie_schema, **_COMPACT)}
-
 ### TV SCHEMA:
-{json.dumps(tvshow_schema, **_COMPACT)}
+{json.dumps(tvshow_schema, **_COMPACT)}"""
+
+
+def get_combined_system_prompt(
+    locked_content_type: Literal["movie", "tvshow"],
+    extra_below: bool = False,
+    extra_above: bool = False,
+    max_extra: int = 0,
+    db_match_candidates: list = None,
+    flixbd_results: list = None,
+) -> str:
+    res_note = _build_resolution_note(extra_below, extra_above, max_extra)
+    has_dup = bool(db_match_candidates or flixbd_results)
+    dup_section = _build_duplicate_section(db_match_candidates, flixbd_results) if has_dup else ""
+
+    if locked_content_type == "movie":
+        body = _movie_body(res_note, SITE_NAME)
+        if has_dup:
+            output_line = '{"content_type":"movie","data":{...},"duplicate_check":{...}}'
+        else:
+            output_line = '{"content_type":"movie","data":{...}}'
+        intro = "You are a structured data extraction function. Extract **movie** metadata and download links. Return ONLY valid JSON. `content_type` must be exactly `\"movie\"`."
+    else:
+        body = _tv_body(res_note, SITE_NAME)
+        if has_dup:
+            output_line = '{"content_type":"tvshow","data":{...},"duplicate_check":{...}}'
+        else:
+            output_line = '{"content_type":"tvshow","data":{...}}'
+        intro = "You are a structured data extraction function. Extract **TV show** metadata and download links. Return ONLY valid JSON. `content_type` must be exactly `\"tvshow\"`."
+
+    return f"""{intro}
+
+{body}
 {dup_section}
 ## OUTPUT:
-{{"content_type":"movie" or "tvshow","data":{{...}}{',"duplicate_check":{{...}}' if has_dup else ''}}}
+{output_line}
 Return ONLY the JSON."""
 
 
-# Backward compat — default: only standard resolutions
-COMBINED_SYSTEM_PROMPT = get_combined_system_prompt()
+COMBINED_SYSTEM_PROMPT = get_combined_system_prompt(locked_content_type="movie")

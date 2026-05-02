@@ -155,6 +155,48 @@ def _get_stats():
 
 
 @login_required
+def llm_extract_debug(request):
+    """
+    Debug: scrape URL → presearch → DB/FlixBD search queries → combined LLM extract.
+    Stops before Drive link resolution and upload pipelines.
+    Results stream over POST /llm/extract-debug/stream/ (SSE); this page prefills ``url`` only.
+    """
+    url = ""
+    if request.method == "POST":
+        url = (request.POST.get("url") or "").strip()
+    else:
+        url = (request.GET.get("url") or "").strip()
+
+    return render(
+        request,
+        "panel/llm_extract_debug.html",
+        {"url": url},
+    )
+
+
+@login_required
+def llm_extract_debug_stream(request):
+    """Server-Sent Events stream of pipeline progress + final formatted report."""
+    from upload.service.panel_extract_debug import iter_panel_url_extract_events
+
+    if request.method != "POST":
+        return JsonResponse({"error": "method_not_allowed"}, status=405)
+    raw_url = (request.POST.get("url") or "").strip()
+    if not raw_url:
+        return JsonResponse({"error": "empty_url"}, status=400)
+
+    def event_stream():
+        for ev in iter_panel_url_extract_events(raw_url):
+            yield f'data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n'.encode("utf-8")
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream; charset=utf-8")
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response["Pragma"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
+
+
+@login_required
 def dashboard(request):
     return render(request, 'panel/dashboard.html', {'stats': _get_stats()})
 

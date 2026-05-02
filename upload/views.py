@@ -19,7 +19,7 @@ def _queue_new_task(url: str, *, q_priority: int = 0) -> MediaTask:
 
 def _process_one_with_duplicate_check(url: str, *, q_priority: int = 0) -> dict:
     """
-    Legacy behavior: block or merge with existing MediaTask for same URL.
+    When URL deduplication is on: block or merge with an existing MediaTask for the same URL.
     Returns a dict suitable for JSON (always includes keys used by the panel).
     """
     existing = MediaTask.objects.filter(url=url).first()
@@ -98,7 +98,6 @@ def process_media(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST method required."}, status=405)
 
-    # Panel sends skip_duplicate_check=1 to queue without URL dedup. Omit field = legacy duplicate check.
     if "skip_duplicate_check" not in request.POST:
         skip_dup = False
     else:
