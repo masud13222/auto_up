@@ -57,7 +57,7 @@ Other TV rules:
 - `episode_range` required in every item. Zero-pad: "01", "01-08".
 - Multi-season: separate season objects sorted by season_number. Only include seasons with download blocks.
 - If same logical file repeats (mirrors), emit only one entry.
-- poster_url: any absolute image URL is valid including third-party CDNs.
+- poster_url: any absolute image URL is valid including third-party CDNs. 
 
 ---
 ### TV SCHEMA:
@@ -93,6 +93,7 @@ Compare per exact season_number + episode_range + resolution. Never union across
 - Same range + better source → `replace` or `replace_items`.
 - Different seasons are additive; never replace another season.
 - `replace_items` only when no combo/full-season pack is involved.
+- `Existing` has empty `episodes_range` ([] or missing) → treat ALL extracted items as missing → `update`.
 
 ### REASON FORMAT
 Single line: `Matched {site} row id=X.` or `No {site} match.`
@@ -119,6 +120,8 @@ def build_combined_tv_duplicate_examples(site: str, row_id_key: str) -> str:
 Extracted: S02 EP01-08 [480p,720p,1080p]. Existing:[720p,1080p]. Missing:[480p] for that range.
 → is_duplicate=true, {row_id_key}=441, matched_task_id=9002, action=`update`, has_new_episodes=false.
   `update_details`: {{"missing_items":[{{"season_number":2,"episode_range":"01-08","missing_resolutions":["480p"],"is_new_range":false}}],"summary":"S02 EP01-08: need 480p"}}
+
+**EX-2b: {site} match exists but episodes_range is empty → update**
 
 **EX-3: No {site} match, DB match → update**
 {site} search results are unrelated titles only (no row with same tvshow + exact year + strong title match for extracted content). Example:
