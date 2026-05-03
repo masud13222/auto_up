@@ -1,15 +1,17 @@
-import os
 import json
-import shutil
 import logging
+import os
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from django.conf import settings
+
+from screenshot.services.capture import capture_screenshots_for_publish
+from settings.models import UploadSettings
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
-from screenshot.services.capture import capture_screenshots_for_publish
-from django.conf import settings
 
 from .media_entry_bridge import (
     coerce_download_source_value,
@@ -37,7 +39,7 @@ def _movie_entry_label(resolution: str, entry: dict) -> str:
 
 
 def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]:
-    """Keep valid movie entries and collect invalid-entry issues for partial uploads."""
+    """Normalize download_links; return (movie_data, validation issue strings)."""
     download_links = movie_data.get("download_links") or {}
     if not isinstance(download_links, dict):
         raise ValueError("Movie `download_links` must be a JSON object")
@@ -94,30 +96,22 @@ def _movie_download_entries_from_llm(movie_data: dict) -> tuple[dict, list[str]]
 
 
 def process_movie_pipeline(media_task, movie_data, dup_info=None):
-    """
-    Movie pipeline: per-file `download_links` entries (validated) -> parallel download + subtitle clean ->
-    optional keyframe screenshots -> parallel Drive upload -> FlixBD publish.
-    Skips qualities already on Drive; duplicate update only downloads missing_resolutions.
-    """
+    """Validate sources, parallel download/clean/upload, optional screenshots, FlixBD publish."""
     title = movie_data.get("title", "Unknown")
 
-    # Step 1: Check download links
     download_links = movie_data.get("download_links", {})
     if not download_links:
         logger.warning(f"No download links found for {title}")
         save_task(media_task, status='failed', error_message='No download links found', result=movie_data)
         return json.dumps({"status": "error", "message": "No download links found"})
 
-    # Save: LLM extraction complete + resolved links
     save_task(media_task, result=movie_data)
     logger.info(f"Saved LLM extraction result for: {title}")
 
-    # Screenshots: keyframes on first publish; duplicate **update** keeps merged URLs (see _merge_drive_links)
     is_dup_update = bool(dup_info and dup_info.get("action") == "update")
     if not is_dup_update:
         movie_data.pop("screen_shots_url", None)
 
-    # Step 2: Require file-wise download entries from main extract
     logger.info(f"Validating download links for movie: {title}")
     try:
         download_links, validation_issues = _movie_download_entries_from_llm(movie_data)
@@ -127,10 +121,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status="failed", error_message=msg, result=movie_data)
         return json.dumps({"status": "error", "message": msg})
 
-    # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()
-
-    from settings.models import UploadSettings
     upload_settings = UploadSettings.objects.first()
     if not upload_settings:
         raise Exception("UploadSettings not configured.")
@@ -143,22 +134,19 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
     drive_links: dict[str, list[dict]] = {}
-    # {movie_download_entry_key(...): "2.15 GB"} — key includes Drive file id so duplicate basenames differ
     file_sizes = {}
 
-    # Duplicate "update": LLM lists only qualities missing on FlixBD/DB — skip re-downloading the rest.
     missing_only: set[str] | None = None
     if dup_info and dup_info.get("action") == "update":
         mr = dup_info.get("missing_resolutions")
         if isinstance(mr, list) and mr:
             missing_only = {str(x).strip().lower() for x in mr if x is not None and str(x).strip()}
             logger.info(
-                f"Duplicate update mode: will only download/upload resolutions {sorted(missing_only)} "
-                f"(others already on target site)"
+                "Duplicate update: only resolutions %s (others already on site)",
+                sorted(missing_only),
             )
 
     def _download_and_clean(item):
-        """Download + subtitle clean only (runs in thread)."""
         from upload.service.flixbd_client import format_file_size
         resolution = item["resolution"]
         entry = item["entry"]
@@ -188,7 +176,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         return item, file_path, size_str
 
     def _upload_and_delete(item, file_path):
-        """Upload to Drive with retries; delete local after final outcome."""
         if not file_path or not os.path.exists(file_path):
             return item, None
         logger.info("Uploading %s to Drive", _movie_entry_label(item["resolution"], item["entry"]))
@@ -206,7 +193,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             logger.debug(f"Removed local file: {file_path}")
         return item, link
 
-    # Collect downloadable files (skip already-uploaded ones)
     to_process: list[dict] = []
     uploaded_entry_ids: set[tuple[str, str, str, str]] = set()
     fresh_upload_entry_ids: set[tuple[str, str, str, str]] = set()
@@ -221,7 +207,7 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 continue
             if missing_only is not None and resolution.lower() not in missing_only:
                 logger.info(
-                    "Skipping %s: duplicate update — not in missing_resolutions (already published on target site)",
+                    "Skipping %s: duplicate update, not in missing_resolutions",
                     _movie_entry_label(resolution, entry),
                 )
                 continue
@@ -231,7 +217,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
 
     if not to_process:
         if drive_links:
-            # All already uploaded -- mark as complete and try FlixBD publish
             movie_data["download_links"] = drive_links
             if validation_issues:
                 movie_data["partial_upload"] = True
@@ -275,7 +260,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='failed', error_message=msg, result=movie_data)
         return json.dumps({"status": "error", "message": msg})
 
-    # Step 4a: Parallel download + subtitle clean
     logger.info(
         "Starting parallel download+clean: %s",
         [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
@@ -299,14 +283,12 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
             logger.info(f"Set {len(ss_urls)} screenshot URL(s) from largest local file")
         else:
             logger.warning(
-                "No screen_shots_url for %s — keyframes failed, screenshots disabled, "
-                "or Telegram/Worker settings incomplete (check logs above).",
+                "No screen_shots_url for %s — keyframes failed or screenshot settings incomplete.",
                 title,
             )
     elif paths_ok and is_dup_update:
-        logger.info("Duplicate update: skipping screenshot capture (keeping existing screen_shots_url)")
+        logger.info("Duplicate update: skipping screenshot capture")
 
-    # Step 4b: Parallel upload + delete
     logger.info(
         "Starting parallel upload: %s",
         [_movie_entry_label(item["resolution"], item["entry"]) for item in to_process],
@@ -331,20 +313,16 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
                 drive_links.setdefault(resolution, []).append(src_entry)
                 entry_id = movie_download_entry_key(resolution, src_entry)
                 uploaded_entry_ids.add(entry_id)
-                # Pre-upload key uses source URL hash; post-upload uses Drive file id — both
-                # must count as "uploaded" so missing_targets does not false-flag partial.
                 uploaded_entry_ids.add(movie_download_entry_key(resolution, item["entry"]))
                 fresh_upload_entry_ids.add(entry_id)
                 movie_data["download_links"] = drive_links
                 save_task(media_task, result=movie_data)
                 logger.info("Saved Drive link for %s", _movie_entry_label(resolution, src_entry))
 
-    # Clean empty folder
     movie_dir = os.path.join(settings.DOWNLOADS_DIR, safe_title)
     if os.path.isdir(movie_dir) and not os.listdir(movie_dir):
         shutil.rmtree(movie_dir, ignore_errors=True)
 
-    # Final save
     if drive_links:
         movie_data["download_links"] = drive_links
 
@@ -372,7 +350,6 @@ def process_movie_pipeline(media_task, movie_data, dup_info=None):
         save_task(media_task, status='completed', result=movie_data, error_message='')
         logger.info(f"Movie pipeline complete for: {title}")
 
-    # Step 5: Publish to FlixBD
     flixbd_partial = _publish_to_flixbd_movie(
         media_task,
         movie_data,
@@ -408,18 +385,9 @@ def _publish_to_flixbd_movie(
     publish_entry_ids=None,
 ) -> bool:
     """
-    Add Drive links to FlixBD after upload completes.
-
-    **Duplicate / update path:** ``process_media_task`` sets ``site_content_id`` from the
-    LLM duplicate_check target site row id or an existing DB row. Then this function runs ``patch_movie_title`` so
-    ``website_movie_title`` from the **latest** LLM merge hits FlixBD. If
-    ``site_content_id`` is still null, we **create** a new movie (no PATCH) — title
-    will not update an existing row.
-
-    Full download-row clear runs only for duplicate **replace** (``clear_flixbd_links``), not for **update**,
-    so adding a missing quality does not wipe existing FlixBD rows before POST (duplicates use HTTP 409).
-
-    Never raises -- errors are logged only.
+    POST Drive links to FlixBD. Duplicate update: links only; title PATCH only if
+    dup_info['patch_flixbd_website_title']. Replace may full-update metadata and clear rows.
+    Returns True if any publish step reported failures. Never raises.
     """
     from upload.service import flixbd_client as fx
     from upload.tasks.runtime_helpers import (
@@ -456,13 +424,10 @@ def _publish_to_flixbd_movie(
             logger.info(f"FlixBD: existing row id={cid} — update existing movie then add links")
             content_id = int(cid)
             if dup_info and dup_info.get("action") == "update":
-                if not fx.update_movie(content_id, movie_data):
+                if dup_info.get("patch_flixbd_website_title"):
                     fx.patch_movie_title(content_id, movie_data)
-                # Do not clear all movie downloads on duplicate "update": same failure mode as
-                # TV (wipe site rows then repost a subset). Replace uses clear_flixbd_links below.
                 logger.info(
-                    "FlixBD: update — preserving existing download rows for movie id=%s; "
-                    "POST below adds/reconciles links (409 on duplicates)",
+                    "FlixBD: update — preserving existing download rows for movie id=%s",
                     content_id,
                 )
             elif dup_info and dup_info.get("clear_flixbd_links"):
@@ -519,4 +484,3 @@ def _publish_to_flixbd_movie(
     except Exception as e:
         logger.error(f"FlixBD publish failed for movie '{title}': {e}", exc_info=True)
         return True
-

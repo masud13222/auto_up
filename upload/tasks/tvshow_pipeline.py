@@ -1,15 +1,17 @@
-import os
 import json
-import shutil
 import logging
+import os
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from django.conf import settings
+
+from screenshot.services.capture import capture_screenshots_for_publish
+from settings.models import UploadSettings
 from upload.service.downloader import Downloader
 from upload.service.uploader import DriveUploader
 from upload.utils.subtitle_remove import process_downloaded_files
-from screenshot.services.capture import capture_screenshots_for_publish
-from django.conf import settings
 
 from .media_entry_bridge import (
     coerce_download_source_value,
@@ -26,7 +28,7 @@ _RESOLUTION_KEY_RE = re.compile(r"^(?:\d{3,4}p|4k)$", re.I)
 
 
 def _tv_item_download_entries_from_llm(item: dict, season_num) -> tuple[dict, list[dict]]:
-    """Keep valid TV entries and collect invalid-entry issues for partial uploads."""
+    """Normalize item resolutions; return (normalized resolutions dict, issue rows)."""
     resolutions = item.get("resolutions") or {}
     if not isinstance(resolutions, dict):
         raise ValueError(
@@ -152,21 +154,9 @@ def _tv_missing_issue_text(issue: dict) -> str:
 
 
 def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
-    """
-    TV Show pipeline: per-file `resolutions` entries from main LLM extract -> Download/Clean/Upload -> FlixBD -> Cleanup
-
-    Parallelism strategy:
-    - Items (combo/partial/single) processed SEQUENTIALLY
-    - Downloads:  PARALLEL (all resolutions download at once)
-    - FFmpeg:     SEQUENTIAL (one at a time, prevents OOM)
-    - Uploads:    PARALLEL (runs in background alongside next ffmpeg)
-    - Supports resume -- skips items/resolutions already uploaded to Drive
-
-    File size is captured from local file after download (before deletion).
-    """
+    """Per-item sequential pipeline; parallel download per item, sequential ffmpeg, parallel upload."""
     title = tvshow_data.get("title", "Unknown")
 
-    # Step 1: Check if seasons have download items
     seasons = tvshow_data.get("seasons", [])
     if not seasons:
         logger.warning(f"No seasons/download data found for {title}")
@@ -181,7 +171,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         save_task(media_task, status='failed', error_message='No download items found in seasons', result=tvshow_data)
         return json.dumps({"status": "error", "message": "No download items found"})
 
-    # Save: LLM extraction complete
     save_task(media_task, result=tvshow_data)
     logger.info(f"Saved LLM extraction result for TV show: {title}")
 
@@ -189,13 +178,9 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
     if not is_dup_update:
         tvshow_data.pop("screen_shots_url", None)
 
-    # Step 2: File metadata embedded in each resolutions entry
     logger.info(f"Validating resolution entries for TV show: {title}")
 
-    # Step 3: Setup Drive
     service = DriveUploader._get_drive_service()
-
-    from settings.models import UploadSettings
     upload_settings = UploadSettings.objects.first()
     if not upload_settings:
         raise Exception("UploadSettings not configured.")
@@ -207,7 +192,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in title).strip()
 
-    # Pre-create season folders
     season_folders = {}
     for season in seasons:
         season_num = season.get("season_number")
@@ -217,7 +201,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                 service, season_folder_name, show_folder_id
             )
 
-    # Build list of all download items
     all_items = []
     validation_issues: list[dict] = []
     try:
@@ -255,10 +238,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         save_task(media_task, status="failed", error_message=msg, result=tvshow_data)
         return json.dumps({"status": "error", "message": msg})
 
-    # -- Helper functions --
-
     def _download_one(source_item, season_num, item_label):
-        """Download only -- runs in PARALLEL thread."""
         from upload.service.flixbd_client import format_file_size
         resolution = source_item["resolution"]
         entry = source_item["entry"]
@@ -277,7 +257,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             log_memory(f"After download {label}")
             return source_item, file_path, None
 
-        # Capture file size BEFORE ffmpeg/deletion
         try:
             raw_size = os.path.getsize(file_path)
             size_str = format_file_size(raw_size)
@@ -288,7 +267,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         return source_item, file_path, size_str
 
     def _clean_one(source_item, file_path):
-        """FFmpeg subtitle clean -- runs SEQUENTIALLY in main thread."""
         label = _tv_entry_label(source_item["resolution"], source_item["entry"])
         log_memory(f"Before ffmpeg {label}")
         cleaned = process_downloaded_files({label: file_path})
@@ -297,7 +275,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         return file_path
 
     def _upload_one(source_item, file_path, season_folder_id, season_num, item_label):
-        """Upload to Drive with retries; delete local after final outcome."""
         label = _tv_entry_label(source_item["resolution"], source_item["entry"])
         log_memory(f"Before upload {label}")
         try:
@@ -311,7 +288,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             logger.error(f"Upload failed for S{season_num} {item_label} {label}: {e}")
             link = None
 
-        # Delete local file after final upload outcome
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Removed local file: {file_path}")
@@ -319,15 +295,9 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         log_memory(f"After upload+delete {label}")
         return source_item, link
 
-    # -- Step 4: Process items --
-    # Items: SEQUENTIAL | Downloads: PARALLEL | FFmpeg: SEQUENTIAL | Uploads: PARALLEL
     uploaded_count = 0
     total_items = len(all_items)
-
-    # Largest video seen so far (bytes) — refresh series screenshots from bigger files only
     tvshow_ss_best_size = 0
-
-    # {(season_num, label, quality): "2.1 GB"} -- collected across all items
     file_sizes_map = {}
     expected_upload_targets = set()
     fresh_upload_targets = set()
@@ -342,7 +312,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         resolutions = item_info["resolutions"]
         season_folder_id = item_info["season_folder_id"]
 
-        # Collect files to process (skip already-uploaded ones)
         to_process = []
         already_uploaded = {}
         for resolution, entries in resolutions.items():
@@ -378,7 +347,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             f"{[_tv_entry_label(item['resolution'], item['entry']) for item in to_process]}"
         )
 
-        # -- Phase 1: Download ALL resolutions PARALLEL --
         uploaded_resolutions = dict(already_uploaded)
 
         with ThreadPoolExecutor(max_workers=3) as upload_executor:
@@ -390,9 +358,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                     for item in to_process
                 }
 
-                # -- Phase 2: As each download completes --
-                #   FFmpeg: SEQUENTIAL (blocks in main thread)
-                #   Upload: PARALLEL (fire to background thread)
                 cleaned_batch = []
                 for future in as_completed(download_futures):
                     try:
@@ -437,8 +402,7 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                             )
                         else:
                             logger.warning(
-                                "No screen_shots_url from S%s %s — keyframes failed or "
-                                "Telegram/Worker settings incomplete (see screenshot logs).",
+                                "No screen_shots_url from S%s %s — keyframes failed or settings incomplete.",
                                 season_num,
                                 item_label,
                             )
@@ -456,7 +420,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
                     )
                     upload_futures.append((uf, source_item))
 
-            # Wait for all background uploads to finish (with statement handles shutdown)
             for uf, source_item in upload_futures:
                 try:
                     uploaded_item, link = uf.result()
@@ -480,7 +443,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         if uploaded_resolutions:
             uploaded_count += 1
 
-            # Update tvshow_data with drive links
             for season in tvshow_data.get("seasons", []):
                 if season.get("season_number") == season_num:
                     for item in season.get("download_items", []):
@@ -493,7 +455,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
             logger.info(f"[{idx}/{total_items}] Saved: S{season_num} {item_label}")
             log_memory(f"After item {idx}/{total_items}")
 
-    # Clean empty folder
     show_dir = os.path.join(settings.DOWNLOADS_DIR, safe_title)
     if os.path.isdir(show_dir) and not os.listdir(show_dir):
         shutil.rmtree(show_dir, ignore_errors=True)
@@ -523,7 +484,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
         for s, label, q, lang, filename in sorted(expected_upload_targets - uploaded_targets)
     ]
 
-    # Final save
     if missing:
         tvshow_data["partial_upload"] = True
         tvshow_data["partial_upload_missing_items"] = missing
@@ -541,7 +501,6 @@ def process_tvshow_pipeline(media_task, tvshow_data, dup_info=None):
 
     log_memory("Pipeline complete")
 
-    # Step 5: Publish to FlixBD
     flixbd_partial = _publish_to_flixbd_series(
         media_task,
         tvshow_data,
@@ -575,14 +534,9 @@ def _publish_to_flixbd_series(
     publish_entry_ids=None,
 ) -> bool:
     """
-    Add Drive links to FlixBD after upload completes.
-
-    **Update path:** same as movie — ``site_content_id`` (LLM duplicate_check site row id or DB row)
-    triggers ``patch_series_title`` / ``update_series`` with latest
-    ``website_tvshow_title``. Full download clear is only for **replace** or **replace_items** scope,
-    not for **update**.
-
-    Never raises -- errors are logged only.
+    POST Drive links to FlixBD. Duplicate update: links only; title PATCH if
+    dup_info['patch_flixbd_website_title']. Replace paths may full-update metadata.
+    Returns True on publish failures. Never raises.
     """
     from upload.service import flixbd_client as fx
     from upload.tasks.runtime_helpers import (
@@ -619,12 +573,8 @@ def _publish_to_flixbd_series(
             logger.info(f"FlixBD: existing series id={cid} — update existing series then add links")
             content_id = int(cid)
             if dup_info and dup_info.get("action") == "update":
-                if not fx.update_series(content_id, tvshow_data):
+                if dup_info.get("patch_flixbd_website_title"):
                     fx.patch_series_title(content_id, tvshow_data)
-                # Never clear all series downloads on duplicate "update": merged data often
-                # only carries the new season batch, and add_series_download_links may post
-                # only fresh_upload_targets this run — a full clear would wipe S1/S2 already
-                # on FlixBD. New links are POSTed below; duplicates resolve via HTTP 409.
                 logger.info(
                     "FlixBD: update — preserving existing download rows for series id=%s; "
                     "adding links from this run only",

@@ -718,6 +718,9 @@ def process_media_task(task_pk: int) -> str:
             mr = dup_result.get("missing_resolutions")
             if isinstance(mr, list) and mr:
                 dup_info["missing_resolutions"] = mr
+            uwt = dup_result.get("updated_website_title")
+            if isinstance(uwt, str) and uwt.strip():
+                dup_info["patch_flixbd_website_title"] = True
 
         if content_type == "tvshow":
             return process_tvshow_pipeline(media_task, data, dup_info=dup_info)
