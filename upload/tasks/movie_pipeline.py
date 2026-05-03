@@ -426,9 +426,11 @@ def _publish_to_flixbd_movie(
             if dup_info and dup_info.get("action") == "update":
                 if dup_info.get("patch_flixbd_website_title"):
                     fx.patch_movie_title(content_id, movie_data)
+                allowed_entry_ids = set(publish_entry_ids or ())
                 logger.info(
-                    "FlixBD: update — preserving existing download rows for movie id=%s",
+                    "FlixBD: update — preserving rows for movie id=%s; POST only %s new entr(y/ies)",
                     content_id,
+                    len(allowed_entry_ids),
                 )
             elif dup_info and dup_info.get("clear_flixbd_links"):
                 if not fx.update_movie(content_id, movie_data):
