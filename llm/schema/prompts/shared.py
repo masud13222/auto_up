@@ -14,12 +14,18 @@ def build_extract_resolution_line(
 ) -> str:
     """
     Single ### RESOLUTION paragraph for extract prompts.
-    Base trio is always stated; optional rules are added only when that flag is True
-    (no “OFF” / negative sentences).
+    Base trio is always stated. If no optional extra is enabled, a strict “ignore
+    other resolutions” line is appended. When any extra is enabled, that line is
+    omitted and only the matching optional sentences apply.
     """
     parts: list[str] = [
         "Include 480p, 720p, and 1080p when those qualities appear in the Markdown.",
     ]
+    any_extra = extra_below or extra_above or max_extra > 0
+    if not any_extra:
+        parts.append(
+            "Ignore and exclude all other resolutions (2160p, 4K, 1440p, 360p, 520p, etc.)."
+        )
     if extra_below:
         parts.append(
             "You may use resolution keys below 720p (e.g. 520p, 360p) when they appear on the page."
