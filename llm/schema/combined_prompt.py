@@ -12,7 +12,7 @@ from typing import Literal
 from .prompts.combined_movie import build_combined_movie_extract_body
 from .prompts.combined_tv import build_combined_tv_extract_body
 from .prompts.duplicate_section import build_duplicate_section
-from .prompts.shared import build_resolution_note, core_rules_block_shared, seo_block_shared
+from .prompts.shared import core_rules_block_shared, seo_block_shared
 
 
 def get_combined_system_prompt(
@@ -23,7 +23,6 @@ def get_combined_system_prompt(
     db_match_candidates: list | None = None,
     flixbd_results: list | None = None,
 ) -> str:
-    res_note = build_resolution_note(extra_below, extra_above, max_extra)
     has_dup = bool(db_match_candidates or flixbd_results)
     dup_section = (
         build_duplicate_section(
@@ -39,7 +38,13 @@ def get_combined_system_prompt(
     seo = seo_block_shared()
 
     if locked_content_type == "movie":
-        body = build_combined_movie_extract_body(core, seo, res_note)
+        body = build_combined_movie_extract_body(
+            core,
+            seo,
+            extra_below=extra_below,
+            extra_above=extra_above,
+            max_extra=max_extra,
+        )
         output_line = (
             '{"content_type":"movie","data":{...},"duplicate_check":{...}}'
             if has_dup
@@ -47,7 +52,13 @@ def get_combined_system_prompt(
         )
         intro = "You are a structured data extraction function. Extract **movie** metadata and download links. Return ONLY valid JSON. `content_type` must be exactly `\"movie\"`."
     else:
-        body = build_combined_tv_extract_body(core, seo, res_note)
+        body = build_combined_tv_extract_body(
+            core,
+            seo,
+            extra_below=extra_below,
+            extra_above=extra_above,
+            max_extra=max_extra,
+        )
         output_line = (
             '{"content_type":"tvshow","data":{...},"duplicate_check":{...}}'
             if has_dup

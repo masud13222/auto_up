@@ -5,9 +5,18 @@ from __future__ import annotations
 from ..blocked_names import SITE_NAME
 from ..json_encoding import json_compact
 from ..movie_schema import movie_schema
+from .shared import build_extract_resolution_line
 
 
-def build_combined_movie_extract_body(core_rules_block: str, seo_block: str, res_note: str) -> str:
+def build_combined_movie_extract_body(
+    core_rules_block: str,
+    seo_block: str,
+    *,
+    extra_below: bool = False,
+    extra_above: bool = False,
+    max_extra: int = 0,
+) -> str:
+    resolution_line = build_extract_resolution_line(extra_below, extra_above, max_extra)
     site = SITE_NAME
     schema_json = json_compact(movie_schema)
     return f"""INPUT: Markdown (HTML→Markdown). This page is a **movie** (single film). Extract movie data only.
@@ -16,7 +25,7 @@ def build_combined_movie_extract_body(core_rules_block: str, seo_block: str, res
 
 {core_rules_block}
 
-### RESOLUTION: {res_note}
+### RESOLUTION: {resolution_line}
 
 ### TITLES:
 - Movie: `Title Year Source Language - {site}` (Source=WEB-DL/CAMRip/HDRip/BluRay/WEBRip/HDTS, not resolution).
@@ -54,7 +63,7 @@ Compare `Extracted` (from your extracted `data`) vs `Existing` (from matched {si
 - Same coverage but higher source → `replace`. Source order: CAM < HDCAM < HDTC < HDTS < DVDScr < DVDRip < HC-HDRip < HDRip < WEBRip < WEB-DL < BluRay < REMUX.
 
 ### NORMALIZE — movie
-Resolution keys: 480p, 720p, 1080p, 1440p, 2160p (4K→2160p). Ignore codecs.
+Resolution keys: 480p, 720p, 1080p. Ignore codecs.
 
 ### REASON FORMAT
 Single line: `Matched {site} row id=X.` or `No {site} match.`

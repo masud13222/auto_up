@@ -5,9 +5,18 @@ from __future__ import annotations
 from ..blocked_names import SITE_NAME
 from ..json_encoding import json_compact
 from ..tvshow_schema import tvshow_schema
+from .shared import build_extract_resolution_line
 
 
-def build_combined_tv_extract_body(core_rules_block: str, seo_block: str, res_note: str) -> str:
+def build_combined_tv_extract_body(
+    core_rules_block: str,
+    seo_block: str,
+    *,
+    extra_below: bool = False,
+    extra_above: bool = False,
+    max_extra: int = 0,
+) -> str:
+    resolution_line = build_extract_resolution_line(extra_below, extra_above, max_extra)
     site = SITE_NAME
     schema_json = json_compact(tvshow_schema)
     return f"""INPUT: Markdown (HTML→Markdown). This page is a **TV show** (series). Extract TV data only.
@@ -19,7 +28,7 @@ def build_combined_tv_extract_body(core_rules_block: str, seo_block: str, res_no
 ### MEDIA (TV)
 Never invent season numbers or episode ranges not shown on the page.
 
-### RESOLUTION: {res_note}
+### RESOLUTION: {resolution_line}
 
 ### TITLES:
 - TV: `Title Year Season NN EPxx[-yy] Source Language - {site}`. Combo → `Season NN Complete`.

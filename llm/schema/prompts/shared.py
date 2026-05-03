@@ -7,18 +7,31 @@ from ..blocked_names import BLOCKED_SITE_NAMES
 _BLOCKED = ", ".join(BLOCKED_SITE_NAMES)
 
 
-def build_resolution_note(extra_below: bool = False, extra_above: bool = False, max_extra: int = 0) -> str:
-    parts = ["Base: 480p, 720p, 1080p always included when present."]
+def build_extract_resolution_line(
+    extra_below: bool = False,
+    extra_above: bool = False,
+    max_extra: int = 0,
+) -> str:
+    """
+    Single ### RESOLUTION paragraph for extract prompts.
+    Base trio is always stated; optional rules are added only when that flag is True
+    (no “OFF” / negative sentences).
+    """
+    parts: list[str] = [
+        "Include 480p, 720p, and 1080p when those qualities appear in the Markdown.",
+    ]
     if extra_below:
-        parts.append("Below 720p: ON (include 520p, 360p, 240p etc).")
-    else:
-        parts.append("Below 720p: OFF.")
+        parts.append(
+            "You may use resolution keys below 720p (e.g. 520p, 360p) when they appear on the page."
+        )
     if extra_above:
-        parts.append("Above 1080p: ON (include 2160p/4K).")
-    else:
-        parts.append("Above 1080p: OFF.")
+        parts.append(
+            "You may use 2160p when it appears; map 4K labels to the key 2160p."
+        )
     if max_extra > 0:
-        parts.append(f"Max extras beyond base: {max_extra}.")
+        parts.append(
+            f"Beyond 480p, 720p, and 1080p, use at most {max_extra} additional resolution keys."
+        )
     return " ".join(parts)
 
 

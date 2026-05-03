@@ -54,7 +54,7 @@ movie_schema = {
                 },
             },
             "additionalProperties": False,
-            "description": "Resolution keys (480p, 720p, 1080p, etc.) -> file list",
+            "description": "Resolution keys (480p, 720p, 1080p) map to arrays of file-entry objects.",
         },
         "cast": {"type": "string", "description": "Comma-separated actors"},
         "languages": {"type": "array", "items": {"type": "string"}},
